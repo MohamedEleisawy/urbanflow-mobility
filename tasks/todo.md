@@ -14,7 +14,7 @@
 - [x] Configurer ESLint et Prettier sur le frontend et le backend
 - [x] Documenter l'architecture imposée (ADR 0001)
 - [x] Vérifier que les trois services démarrent et compilent
-- [ ] Initialiser Git et pousser sur GitHub
+- [x] Initialiser Git et pousser sur GitHub
 
 ### Hors périmètre (étapes ultérieures)
 
