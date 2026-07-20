@@ -47,3 +47,8 @@ venv/
 Thumbs.db
 .eslintcache
 .turbo/
+
+# ---------- Documents locaux (non versionnés sur GitHub) ----------
+/dossier/
+/tasks/
+/*.pdf
