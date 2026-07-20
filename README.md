@@ -93,6 +93,24 @@ docker compose up --build
 
 ---
 
+## Déploiement du frontend sur Vercel
+
+Le dépôt étant un monorepo, `frontend/` n'est pas à la racine : lors de la
+création du projet sur [vercel.com](https://vercel.com), configurer le champ
+**Root Directory** sur `projet/frontend` (Vercel détecte automatiquement
+Next.js — aucun `vercel.json` n'est nécessaire).
+
+| Paramètre        | Valeur              |
+| ----------------- | -------------------- |
+| Root Directory    | `projet/frontend`    |
+| Framework Preset  | Next.js (auto-détecté)|
+| Build Command     | `next build` (défaut)|
+| Output Directory  | `.next` (défaut)     |
+
+Backend et microservice carbone ne sont pas concernés par ce déploiement.
+
+---
+
 ## Qualité de code
 
 | Commande                            | Effet                                  |
