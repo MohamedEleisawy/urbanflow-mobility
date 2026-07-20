@@ -1,0 +1,62 @@
+@startuml UrbanFlow_UseCases
+!pragma layout smetana
+skinparam actorStyle awesome
+skinparam usecase {
+  BackgroundColor #F5F5F5
+  BorderColor #1E3A5F
+  ArrowColor #2D7D46
+}
+
+title Diagramme de Cas d'Utilisation UrbanFlow
+
+left to right direction
+
+actor "Visiteur\n(non connecté)" as Visitor
+actor "Usager\n(authentifié)" as User
+actor "Administrateur" as Admin
+
+' Héritage : L'Usager hérite des droits du Visiteur
+User -|> Visitor
+
+rectangle "Plateforme UrbanFlow Mobility" {
+
+  ' --- Package Mobilité (Libre accès) ---
+  package "Mobilité (Libre accès)" {
+    usecase "UC01: Rechercher un itinéraire" as UC01
+    usecase "UC02: Voir les perturbations" as UC02
+    usecase "UC07: Consulter la carte" as UC07
+  }
+
+  ' --- Package Espace Personnel (Authentifié) ---
+  package "Espace Personnel (Authentifié)" {
+    usecase "UC05: S'authentifier" as UC05
+    usecase "UC03: Calculer & Suivre son CO₂" as UC03
+    usecase "UC06: Gérer ses préférences" as UC06
+    usecase "UC08: Exporter ses données" as UC08
+  }
+
+  ' --- Package Administration ---
+  package "Administration" {
+    usecase "UC09: Gérer les utilisateurs" as UC09
+    usecase "UC10: Importer des flux de données" as UC10
+    usecase "UC11: Voir les statistiques" as UC11
+  }
+}
+
+' --- Flèches du Visiteur ---
+Visitor --> UC01
+Visitor --> UC02
+Visitor --> UC07
+
+' --- Flèches de l'Usager ---
+User --> UC05
+User --> UC03
+User --> UC06
+User --> UC08
+
+' --- Flèches de l'Administrateur ---
+Admin --> UC09
+Admin --> UC10
+Admin --> UC11
+
+@enduml

@@ -1,0 +1,53 @@
+# =============================================================================
+# UrbanFlow Mobility — orchestration de développement (version minimale)
+# =============================================================================
+# Cette version ne contient que les trois services applicatifs.
+# PostgreSQL/PostGIS et Redis seront ajoutés à l'étape correspondante.
+#
+#   docker compose up --build
+# =============================================================================
+
+services:
+  frontend:
+    build:
+      context: ./projet
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      - '3000:3000'
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001/api
+    volumes:
+      # Le code est monté pour le hot-reload ; node_modules reste celui de
+      # l'image (volume anonyme) afin d'éviter les conflits hôte/conteneur.
+      - ./projet/frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./projet
+      dockerfile: docker/backend.Dockerfile
+    ports:
+      - '3001:3001'
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      CARBON_SERVICE_URL: http://carbon-service:8000
+    volumes:
+      - ./projet/backend:/app
+      - /app/node_modules
+    depends_on:
+      - carbon-service
+
+  carbon-service:
+    build:
+      context: ./projet
+      dockerfile: docker/carbon-service.Dockerfile
+    ports:
+      - '8000:8000'
+    environment:
+      CARBON_ENVIRONMENT: development
+    volumes:
+      - ./projet/carbon-service/app:/app/app

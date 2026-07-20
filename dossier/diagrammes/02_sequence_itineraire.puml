@@ -1,0 +1,39 @@
+@startuml UrbanFlow_Sequence_Simplifie
+skinparam sequence {
+  ArrowColor #1E3A5F
+  ActorBorderColor #1E3A5F
+  LifeLineBorderColor #2D7D46
+  ParticipantBackgroundColor #F5F5F5
+  ParticipantBorderColor #1E3A5F
+}
+title Diagramme de Séquence Simplifié — Recherche d'itinéraire
+
+actor "Usager" as U
+participant "Application\n(Interface)" as FE
+participant "Serveur Central\n(Moteur API)" as API
+participant "Mémoire Rapide\n(Cache Redis)" as Cache
+database "Base Cartographique\n(PostgreSQL)" as PG
+participant "Opérateur Transport\n(Temps réel)" as GTFS
+
+autonumber
+
+U -> FE : Saisit son point de départ et d'arrivée
+FE -> API : Envoie la demande de trajet
+
+API -> Cache : Vérifie si ce trajet a été calculé récemment (moins de 30s)
+
+alt Trajet trouvé en mémoire (Ultra rapide)
+  Cache --> API : Renvoie immédiatement l'itinéraire mémorisé
+else Nouveau trajet (Calcul complet nécessaire)
+  API -> PG : Cherche le chemin le plus court sur la carte
+  PG --> API : Renvoie les routes possibles
+  API -> GTFS : Vérifie les pannes ou retards en cours
+  GTFS --> API : Renvoie les alertes
+  API -> API : Croise la carte avec le temps réel
+  API -> Cache : Mémorise ce résultat pour le prochain usager
+end
+
+API --> FE : Renvoie les options de trajets finalisées
+FE --> U : Affiche les itinéraires (durée, CO2, carte)
+
+@enduml

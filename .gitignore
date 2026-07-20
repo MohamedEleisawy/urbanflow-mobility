@@ -1,0 +1,49 @@
+# ---------- Dépendances ----------
+node_modules/
+.pnp
+.pnp.*
+
+# ---------- Build / sorties ----------
+dist/
+build/
+out/
+coverage/
+projet/frontend/.next/
+projet/frontend/next-env.d.ts
+
+# ---------- Secrets et environnement ----------
+# Aucun secret ne doit être versionné : seul .env.example l'est.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# ---------- Logs ----------
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+
+# ---------- Python (carbon-service) ----------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# ---------- Outils / IDE ----------
+.claude/settings.local.json
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.eslintcache
+.turbo/
