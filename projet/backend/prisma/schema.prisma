@@ -1,0 +1,231 @@
+// =============================================================================
+// UrbanFlow Mobility — schéma Prisma (étape 2A : modèle de domaine de base)
+// =============================================================================
+// Ce fichier traduit en tables PostgreSQL le diagramme de classes du dossier
+// de conception (dossier/diagrammes/03_class_domain.puml). Il ne contient que
+// des données : les méthodes du diagramme (calculateEcoScore(), anonymize()...)
+// sont de la logique métier et seront écrites dans des services NestJS, pas ici.
+//
+// Décisions non explicitement tranchées par le diagramme, prises pour cette
+// étape et documentées à chaque endroit concerné :
+//   - GeoPoint (latitude/longitude) est aplati en colonnes Float directement
+//     sur Route et Stop, plutôt qu'en colonne géométrie PostGIS. PostGIS reste
+//     activé dans la base pour les futures requêtes spatiales en SQL brut.
+//   - AlertSeverity (référencé mais non défini dans le diagramme) reprend les
+//     niveaux standards de GTFS-Realtime Service Alerts (INFO/WARNING/SEVERE).
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum RoleEnum {
+  USER
+  ADMIN
+}
+
+enum ThemeEnum {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
+enum LanguageEnum {
+  FR
+  EN
+}
+
+enum ModeTransport {
+  WALK
+  BUS
+  TRAM
+  METRO
+  BIKE
+  ESCOOTER
+  CAR
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  SEVERE
+}
+
+// -----------------------------------------------------------------------------
+// Utilisateur
+// -----------------------------------------------------------------------------
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique
+  passwordHash String
+  role         RoleEnum  @default(USER)
+  createdAt    DateTime  @default(now())
+  // Suppression logique (RGPD) : jamais de DELETE physique sur ce compte.
+  deletedAt    DateTime?
+
+  preferences   UserPreferences?
+  carbonRecords CarbonRecord[]
+  carbonBudgets CarbonBudget[]
+
+  @@map("users")
+}
+
+model UserPreferences {
+  id                   String          @id @default(uuid()) @db.Uuid
+  preferredModes       ModeTransport[]
+  pmrMode              Boolean         @default(false)
+  co2BudgetWeekly      Float
+  notificationsEnabled Boolean         @default(true)
+  language             LanguageEnum    @default(FR)
+  theme                ThemeEnum       @default(SYSTEM)
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @unique @db.Uuid
+
+  @@map("user_preferences")
+}
+
+// -----------------------------------------------------------------------------
+// Mobilité — itinéraires
+// -----------------------------------------------------------------------------
+
+model Route {
+  id String @id @default(uuid()) @db.Uuid
+
+  // GeoPoint "origin" aplati (voir décision en tête de fichier).
+  originLat Float
+  originLng Float
+  // GeoPoint "destination" aplati.
+  destinationLat Float
+  destinationLng Float
+
+  requestedAt      DateTime @default(now())
+  totalDurationMin Int
+  totalDistanceM   Int
+  // 0 = voiture individuelle, 100 = mobilité douce (cf. note du diagramme).
+  ecoScore       Float
+  carbonEstimate Float
+
+  segments      Segment[]
+  carbonRecords CarbonRecord[]
+
+  @@map("routes")
+}
+
+model Segment {
+  id            String        @id @default(uuid()) @db.Uuid
+  mode          ModeTransport
+  operator      String
+  departureTime DateTime
+  arrivalTime   DateTime
+  distanceM     Int
+  line          String
+  gtfsTripId    String
+
+  route   Route  @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  routeId String @db.Uuid
+
+  // Deux relations distinctes vers Stop (from / to) : chacune doit être nommée
+  // pour que Prisma sache laquelle est laquelle.
+  fromStop   Stop   @relation("SegmentFromStop", fields: [fromStopId], references: [id])
+  fromStopId String @db.Uuid
+
+  toStop   Stop   @relation("SegmentToStop", fields: [toStopId], references: [id])
+  toStopId String @db.Uuid
+
+  @@map("segments")
+}
+
+model Stop {
+  id   String @id @default(uuid()) @db.Uuid
+  name String
+
+  // GeoPoint "location" aplati (voir décision en tête de fichier).
+  latitude  Float
+  longitude Float
+
+  pmrAccessible Boolean @default(false)
+  operatorCode  String
+
+  segmentsFrom Segment[] @relation("SegmentFromStop")
+  segmentsTo   Segment[] @relation("SegmentToStop")
+
+  @@map("stops")
+}
+
+// -----------------------------------------------------------------------------
+// Empreinte carbone
+// -----------------------------------------------------------------------------
+
+model CarbonRecord {
+  id              String        @id @default(uuid()) @db.Uuid
+  date            DateTime      @default(now())
+  co2Grams        Float
+  mode            ModeTransport
+  distanceM       Int
+  savedVsCarGrams Float
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @db.Uuid
+
+  route   Route  @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  routeId String @db.Uuid
+
+  @@map("carbon_records")
+}
+
+model CarbonBudget {
+  id                  String @id @default(uuid()) @db.Uuid
+  year                Int
+  week                Int
+  weeklyBudgetGrams   Float
+  consumedWeeklyGrams Float  @default(0)
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @db.Uuid
+
+  // Le diagramme relie CarbonBudget à CarbonRecord ("aggregates") sans lister
+  // de clé étrangère sur CarbonRecord pour cette relation : elle sera donc
+  // calculée par requête (userId + année/semaine) plutôt que par une colonne
+  // absente du diagramme.
+  //
+  // La contrainte d'unicité ci-dessous garantit un seul budget par usager et
+  // par semaine — non explicite dans le diagramme, mais nécessaire au sens
+  // même de "budget hebdomadaire".
+  @@unique([userId, year, week])
+  @@map("carbon_budgets")
+}
+
+// -----------------------------------------------------------------------------
+// Perturbations (flux GTFS-Realtime)
+// -----------------------------------------------------------------------------
+
+model Alert {
+  id String @id @default(uuid()) @db.Uuid
+
+  // Le diagramme modélise stopIds/lineIds comme de simples listes
+  // d'identifiants GTFS, pas comme des clés étrangères vers Stop : on les
+  // stocke donc en tableaux de texte natifs PostgreSQL, sans relation formelle.
+  stopIds String[]
+  lineIds String[]
+
+  affectedMode ModeTransport
+  severity     AlertSeverity
+  cause        String
+  effect       String
+  startTime    DateTime
+  endTime      DateTime
+  gtfsAlertId  String        @unique
+
+  @@map("alerts")
+}

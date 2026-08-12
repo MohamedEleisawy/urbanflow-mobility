@@ -1,13 +1,35 @@
 # =============================================================================
-# UrbanFlow Mobility — orchestration de développement (version minimale)
+# UrbanFlow Mobility — orchestration de développement
 # =============================================================================
-# Cette version ne contient que les trois services applicatifs.
-# PostgreSQL/PostGIS et Redis seront ajoutés à l'étape correspondante.
+# Étape 2A : ajout de PostgreSQL + PostGIS. Redis sera ajouté à l'étape
+# correspondante.
 #
 #   docker compose up --build
 # =============================================================================
 
 services:
+  postgres:
+    # Image officielle PostGIS : un PostgreSQL standard avec l'extension
+    # PostGIS déjà installée. Elle est activée automatiquement sur la base
+    # POSTGRES_DB au premier démarrage du conteneur.
+    image: postgis/postgis:16-3.4
+    environment:
+      # Identifiants de développement local uniquement — jamais utilisés en
+      # production (voir CLAUDE.md, section Sécurité par défaut).
+      POSTGRES_USER: ${POSTGRES_USER:-urbanflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-urbanflow_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-urbanflow_dev}
+    ports:
+      - '5432:5432'
+    volumes:
+      # Les données survivent aux redémarrages du conteneur.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-urbanflow}']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   frontend:
     build:
       context: ./projet
@@ -35,11 +57,17 @@ services:
       NODE_ENV: development
       PORT: 3001
       CARBON_SERVICE_URL: http://carbon-service:8000
+      # Host "postgres" = nom du service ci-dessus, résolu par le réseau
+      # Docker interne (pas "localhost", qui désignerait le conteneur backend).
+      DATABASE_URL: postgresql://${POSTGRES_USER:-urbanflow}:${POSTGRES_PASSWORD:-urbanflow_dev_password}@postgres:5432/${POSTGRES_DB:-urbanflow_dev}?schema=public
     volumes:
       - ./projet/backend:/app
       - /app/node_modules
     depends_on:
-      - carbon-service
+      postgres:
+        condition: service_healthy
+      carbon-service:
+        condition: service_started
 
   carbon-service:
     build:
@@ -51,3 +79,6 @@ services:
       CARBON_ENVIRONMENT: development
     volumes:
       - ./projet/carbon-service/app:/app/app
+
+volumes:
+  postgres_data:

@@ -1,3 +1,7 @@
+// Charge projet/backend/.env (DATABASE_URL...) dans process.env avant tout
+// le reste. Nécessaire uniquement en local : en Docker, ces variables sont
+// déjà injectées par docker-compose.yml.
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 
