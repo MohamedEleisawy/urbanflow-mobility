@@ -29,6 +29,10 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-floating-promises': 'warn',
       '@typescript-eslint/no-unsafe-argument': 'warn',
+      // Permet de nommer "_variable" une valeur volontairement ignorée, par
+      // exemple lors d'une déstructuration qui sert à exclure une propriété
+      // (ex: { passwordHash: _passwordHash, ...rest } = user).
+      '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^_', argsIgnorePattern: '^_' }],
       "prettier/prettier": ["error", { endOfLine: "auto" }],
     },
   },

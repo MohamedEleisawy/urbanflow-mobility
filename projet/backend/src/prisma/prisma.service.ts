@@ -5,7 +5,10 @@ import { PrismaClient } from '@prisma/client';
 // On l'étend ici pour le brancher sur le cycle de vie de Nest : la connexion à
 // PostgreSQL s'ouvre au démarrage du module et se ferme proprement à l'arrêt.
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+export class PrismaService
+  extends PrismaClient
+  implements OnModuleInit, OnModuleDestroy
+{
   async onModuleInit() {
     await this.$connect();
   }
