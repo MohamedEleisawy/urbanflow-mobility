@@ -60,6 +60,8 @@ services:
       # Host "postgres" = nom du service ci-dessus, résolu par le réseau
       # Docker interne (pas "localhost", qui désignerait le conteneur backend).
       DATABASE_URL: postgresql://${POSTGRES_USER:-urbanflow}:${POSTGRES_PASSWORD:-urbanflow_dev_password}@postgres:5432/${POSTGRES_DB:-urbanflow_dev}?schema=public
+      # Secret de développement uniquement (voir .env.example) — jamais utilisé en production.
+      JWT_SECRET: ${JWT_SECRET:-changez-moi-en-local-avec-openssl-rand-hex-32}
     volumes:
       - ./projet/backend:/app
       - /app/node_modules

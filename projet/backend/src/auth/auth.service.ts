@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { hashPassword, verifyPassword } from '../common/crypto/password.util';
+import { JwtPayload } from './jwt-payload.type';
 
 // Hash factice (calculé une seule fois au chargement du module), utilisé
 // quand l'email fourni ne correspond à aucun utilisateur. Sans ça, la
@@ -36,7 +37,13 @@ export class AuthService {
       throw new UnauthorizedException('Email ou mot de passe incorrect');
     }
 
-    const payload = { sub: user.id, email: user.email, role: user.role };
+    // Typé explicitement : JwtAuthGuard relira exactement cette structure
+    // lors de la vérification du token (voir jwt-payload.type.ts).
+    const payload: JwtPayload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+    };
 
     return {
       accessToken: this.jwtService.sign(payload),

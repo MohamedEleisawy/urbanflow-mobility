@@ -21,5 +21,10 @@ if (!jwtSecret) {
   ],
   controllers: [AuthController],
   providers: [AuthService],
+  // JwtModule est réexporté pour que JwtService soit injectable dans les
+  // autres modules qui protègent leurs routes avec JwtAuthGuard (ex :
+  // UsersModule). Sans cet export, NestJS ne saurait pas construire le
+  // guard depuis UsersModule et planterait au démarrage.
+  exports: [JwtModule],
 })
 export class AuthModule {}

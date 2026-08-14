@@ -50,7 +50,10 @@ describe('UsersService', () => {
       );
 
       await expect(
-        service.create({ email: 'lena@example.com', password: 'motdepasse123' }),
+        service.create({
+          email: 'lena@example.com',
+          password: 'motdepasse123',
+        }),
       ).rejects.toThrow(ConflictException);
     });
   });
@@ -59,7 +62,9 @@ describe('UsersService', () => {
     it("lève NotFoundException si l'utilisateur n'existe pas", async () => {
       prisma.user.findUnique.mockResolvedValue(null);
 
-      await expect(service.findById('id-inexistant')).rejects.toThrow(NotFoundException);
+      await expect(service.findById('id-inexistant')).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('renvoie un utilisateur sans passwordHash quand il existe', async () => {
