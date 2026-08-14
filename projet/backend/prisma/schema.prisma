@@ -76,6 +76,7 @@ model User {
   preferences   UserPreferences?
   carbonRecords CarbonRecord[]
   carbonBudgets CarbonBudget[]
+  routes        Route[]
 
   @@map("users")
 }
@@ -115,6 +116,21 @@ model Route {
   // 0 = voiture individuelle, 100 = mobilité douce (cf. note du diagramme).
   ecoScore       Float
   carbonEstimate Float
+
+  // Usager qui a enregistré cet itinéraire dans son historique.
+  //
+  // NULLABLE volontairement : le diagramme de cas d'utilisation place
+  // "UC01 Rechercher un itinéraire" dans le bloc "Mobilité (Libre accès)",
+  // donc un visiteur non connecté doit pouvoir obtenir un itinéraire. Dans
+  // ce cas la route n'appartient à personne (userId = null).
+  //
+  // Le diagramme de classes ne reliait User à Route qu'indirectement
+  // (User -> CarbonRecord -> Route). Ce lien direct a été ajouté à l'étape
+  // 4A car il est indispensable à l'historique personnel décrit dans le
+  // dossier ("Historique : les utilisateurs authentifiés peuvent
+  // enregistrer leur trajet et consulter leur historique").
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String? @db.Uuid
 
   segments      Segment[]
   carbonRecords CarbonRecord[]
