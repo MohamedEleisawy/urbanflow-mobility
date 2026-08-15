@@ -27,6 +27,15 @@ interface PathStep {
   edge: GraphEdge;
 }
 
+// Distance maximale acceptée entre le point saisi par l'usager et l'arrêt
+// le plus proche (étape 4C-2).
+//
+// Sans cette limite, une recherche depuis Tokyo s'accrocherait à un arrêt
+// parisien et proposerait un itinéraire absurde. 2 km correspond à une
+// distance de marche raisonnable à l'échelle d'une métropole : au-delà,
+// on considère qu'aucun arrêt ne dessert le point demandé.
+const RAYON_RECHERCHE_MAX_M = 2000;
+
 @Injectable()
 export class RoutesService {
   constructor(private readonly prisma: PrismaService) {}
@@ -93,9 +102,14 @@ export class RoutesService {
   async searchRoutes(dto: SearchRouteDto): Promise<ItineraryDto[]> {
     // On charge tout en mémoire : le calcul se fait ensuite en TypeScript.
     // Acceptable tant que le réseau reste petit (voir "limites" du carnet).
+    //
+    // orderBy est INDISPENSABLE (étape 4C-2) : sans ORDER BY, PostgreSQL ne
+    // garantit aucun ordre de lignes. Cet ordre se propagerait jusqu'au
+    // départage des égalités dans Dijkstra, et deux recherches identiques
+    // pourraient renvoyer deux chemins différents (de coût pourtant égal).
     const [stops, segments] = await Promise.all([
-      this.prisma.stop.findMany(),
-      this.prisma.segment.findMany(),
+      this.prisma.stop.findMany({ orderBy: { id: 'asc' } }),
+      this.prisma.segment.findMany({ orderBy: { id: 'asc' } }),
     ]);
 
     if (stops.length === 0) {
@@ -151,7 +165,12 @@ export class RoutesService {
     return itineraries;
   }
 
-  // Arrêt dont la distance à vol d'oiseau est la plus faible.
+  /**
+   * Arrêt dont la distance à vol d'oiseau est la plus faible.
+   *
+   * Renvoie null si le point demandé n'est desservi par aucun arrêt à moins
+   * de RAYON_RECHERCHE_MAX_M (étape 4C-2).
+   */
   private findNearestStop(
     stops: Stop[],
     latitude: number,
@@ -168,10 +187,25 @@ export class RoutesService {
         stop.longitude,
       );
 
-      if (distance < smallestDistance) {
+      // Départage EXPLICITE en cas d'égalité parfaite : on retient l'arrêt
+      // dont l'identifiant est le plus petit. Sans cette règle, le gagnant
+      // serait "le premier rencontré", donc dépendrait de l'ordre de la
+      // liste — et le résultat ne serait pas déterministe.
+      const estMeilleur =
+        distance < smallestDistance ||
+        (distance === smallestDistance &&
+          nearest !== null &&
+          stop.id < nearest.id);
+
+      if (estMeilleur) {
         smallestDistance = distance;
         nearest = stop;
       }
+    }
+
+    // Trop loin de tout : le point n'est desservi par aucun arrêt.
+    if (smallestDistance > RAYON_RECHERCHE_MAX_M) {
+      return null;
     }
 
     return nearest;
@@ -251,7 +285,20 @@ export class RoutesService {
       let currentCost = Infinity;
 
       for (const [stopId, cost] of bestCost) {
-        if (!settled.has(stopId) && cost < currentCost) {
+        if (settled.has(stopId)) {
+          continue;
+        }
+
+        // Départage EXPLICITE à coût égal : le plus petit identifiant gagne
+        // (étape 4C-2). Sinon l'arrêt retenu dépendrait de l'ordre
+        // d'insertion dans la Map, donc de l'ordre des lignes en base, et
+        // deux recherches identiques pourraient donner deux chemins
+        // différents — de même coût, mais pas les mêmes.
+        const estMeilleur =
+          cost < currentCost ||
+          (cost === currentCost && current !== undefined && stopId < current);
+
+        if (estMeilleur) {
           current = stopId;
           currentCost = cost;
         }

@@ -249,4 +249,79 @@ describe('POST /api/routes/search (e2e)', () => {
 
     expect(response.body).toEqual([]);
   });
+
+  // ---------------------------------------------------------------------------
+  // Étape 4C-2 : bornes, typage strict, rayon de recherche, déterminisme
+  // ---------------------------------------------------------------------------
+
+  it('accepte les coordonnées aux bornes exactes (±90 / ±180)', () => {
+    // Ces valeurs sont valides : elles doivent passer la validation.
+    // Aucun arrêt ne s'y trouve, donc la réponse est un tableau vide —
+    // mais surtout PAS une erreur 400.
+    return request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 90, fromLon: 180, toLat: -90, toLon: -180 })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toEqual([]);
+      });
+  });
+
+  it('refuse une coordonnée envoyée en chaîne de caractères', () => {
+    // Le contrat déclare des nombres : "0" doit être refusé (@IsNumber).
+    return request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: '0', fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(400);
+  });
+
+  it('renvoie [] quand le point demandé est trop éloigné du réseau', async () => {
+    // Les arrêts du test sont autour de (0,0). Ce point en est distant de
+    // plusieurs centaines de kilomètres : au-delà du rayon de 2 km, on
+    // considère qu'aucun arrêt ne le dessert.
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 10, fromLon: 10, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    expect(response.body).toEqual([]);
+  });
+
+  it('renvoie exactement le même résultat pour deux appels identiques', async () => {
+    const critere = { fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 };
+
+    const premier = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send(critere)
+      .expect(200);
+
+    const second = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send(critere)
+      .expect(200);
+
+    expect(second.body).toEqual(premier.body);
+  });
+
+  it('renvoie des segments chaînés de l’origine vers la destination', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    const rapide = (
+      response.body as {
+        criterion: string;
+        segments: { fromStopId: string; toStopId: string }[];
+      }[]
+    ).find((i) => i.criterion === 'FASTEST');
+
+    const segments = rapide?.segments ?? [];
+    expect(segments.length).toBeGreaterThan(1);
+
+    // Chaque segment repart exactement là où le précédent s'arrête.
+    for (let i = 0; i < segments.length - 1; i++) {
+      expect(segments[i].toStopId).toBe(segments[i + 1].fromStopId);
+    }
+  });
 });

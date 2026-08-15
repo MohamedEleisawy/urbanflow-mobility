@@ -318,5 +318,149 @@ describe('RoutesService', () => {
       expect(json).not.toContain('departureTime');
       expect(json).not.toContain('arrivalTime');
     });
+
+    // -------------------------------------------------------------------------
+    // Étape 4C-2 : déterminisme, rayon de recherche, chaînage
+    // -------------------------------------------------------------------------
+
+    it('garantit que les segments sont chaînés dans le bon ordre', async () => {
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+
+      const [itineraire] = await service.searchRoutes({
+        ...depuisA,
+        ...versC,
+      });
+
+      // Le premier segment part bien de l'origine...
+      expect(itineraire.segments[0].fromStopId).toBe(A.id);
+      // ...le dernier arrive bien à la destination...
+      expect(itineraire.segments[itineraire.segments.length - 1].toStopId).toBe(
+        C.id,
+      );
+      // ...et chaque segment repart exactement là où le précédent s'arrête.
+      for (let i = 0; i < itineraire.segments.length - 1; i++) {
+        expect(itineraire.segments[i].toStopId).toBe(
+          itineraire.segments[i + 1].fromStopId,
+        );
+      }
+    });
+
+    it('renvoie exactement le même résultat pour deux appels identiques', async () => {
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC, aVersC]);
+
+      const premier = await service.searchRoutes({ ...depuisA, ...versC });
+      const second = await service.searchRoutes({ ...depuisA, ...versC });
+
+      expect(second).toEqual(premier);
+    });
+
+    it("choisit le même chemin même si l'ordre des segments change (départage déterministe)", async () => {
+      // Deux chemins de coût STRICTEMENT identique : A→X→C et A→Y→C.
+      // Sans règle de départage, le gagnant dépendrait de l'ordre des
+      // lignes renvoyées par PostgreSQL. La règle retenue est : à coût
+      // égal, l'identifiant le plus petit gagne — donc X ("stop-x").
+      const X = { ...B, id: 'stop-x', name: 'Bifurcation X' };
+      const Y = { ...B, id: 'stop-y', name: 'Bifurcation Y' };
+
+      const aVersX = segment(A.id, X.id, 'WALK', 500, 5);
+      const xVersC = segment(X.id, C.id, 'BUS', 500, 5);
+      const aVersY = segment(A.id, Y.id, 'WALK', 500, 5);
+      const yVersC = segment(Y.id, C.id, 'BUS', 500, 5);
+
+      prisma.stop.findMany.mockResolvedValue([A, X, Y, C]);
+      prisma.segment.findMany.mockResolvedValue([
+        aVersX,
+        xVersC,
+        aVersY,
+        yVersC,
+      ]);
+      const ordreNormal = await service.searchRoutes({ ...depuisA, ...versC });
+
+      // Mêmes données, mais fournies dans l'ordre inverse.
+      prisma.stop.findMany.mockResolvedValue([C, Y, X, A]);
+      prisma.segment.findMany.mockResolvedValue([
+        yVersC,
+        aVersY,
+        xVersC,
+        aVersX,
+      ]);
+      const ordreInverse = await service.searchRoutes({ ...depuisA, ...versC });
+
+      expect(ordreInverse).toEqual(ordreNormal);
+      // Et c'est bien X qui a été retenu, conformément à la règle.
+      expect(ordreNormal[0].segments[0].toStopId).toBe('stop-x');
+    });
+
+    it('choisit correctement parmi trois chemins possibles', async () => {
+      // A→B→C  : 3800 m / 20 min  → le plus RAPIDE
+      // A→C    : 3000 m / 30 min
+      // A→E→C  : 2000 m / 50 min  → le plus COURT
+      const E = { ...B, id: 'stop-e', name: 'Detour E' };
+      const aVersE = segment(A.id, E.id, 'WALK', 1000, 25);
+      const eVersC = segment(E.id, C.id, 'WALK', 1000, 25);
+
+      prisma.stop.findMany.mockResolvedValue([A, B, C, E]);
+      prisma.segment.findMany.mockResolvedValue([
+        aVersB,
+        bVersC,
+        aVersC,
+        aVersE,
+        eVersC,
+      ]);
+
+      const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+      const rapide = result.find((i) => i.criterion === 'FASTEST');
+      const court = result.find((i) => i.criterion === 'SHORTEST');
+
+      // Le plus rapide est bien le minimum des trois durées (20 < 30 < 50).
+      expect(rapide?.totalDurationMin).toBe(20);
+      // Le plus court est bien le minimum des trois distances (2000 < 3000 < 3800).
+      expect(court?.totalDistanceM).toBe(2000);
+    });
+
+    it('renvoie [] quand le point de départ est trop loin de tout arrêt', async () => {
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+
+      // 0,025° de latitude ≈ 2,8 km : au-delà du rayon de 2 km.
+      const result = await service.searchRoutes({
+        fromLat: A.latitude + 0.025,
+        fromLon: A.longitude,
+        ...versC,
+      });
+
+      expect(result).toEqual([]);
+    });
+
+    it('renvoie [] quand la destination est trop loin de tout arrêt', async () => {
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+
+      const result = await service.searchRoutes({
+        ...depuisA,
+        toLat: C.latitude + 0.025,
+        toLon: C.longitude,
+      });
+
+      expect(result).toEqual([]);
+    });
+
+    it('accepte un point situé juste à l’intérieur du rayon de recherche', async () => {
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+
+      // 0,013° de latitude ≈ 1,45 km : à l'intérieur du rayon de 2 km.
+      const result = await service.searchRoutes({
+        fromLat: A.latitude + 0.013,
+        fromLon: A.longitude,
+        ...versC,
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0].segments[0].fromStopId).toBe(A.id);
+    });
   });
 });
