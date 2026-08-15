@@ -1,4 +1,9 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+  // "prisma" est exclu du build applicatif : seed.ts est un script exécuté à
+  // la main (npm run db:seed), pas du code de l'application. Sans cette
+  // exclusion, TypeScript l'inclurait, la racine commune des sources
+  // deviendrait le dossier du projet, et la sortie passerait de dist/main.js
+  // à dist/src/main.js — ce qui casserait "npm run start:prod".
+  "exclude": ["node_modules", "test", "dist", "prisma", "**/*spec.ts"]
 }

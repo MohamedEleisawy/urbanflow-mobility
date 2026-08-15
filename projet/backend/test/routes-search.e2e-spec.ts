@@ -19,7 +19,10 @@ describe('POST /api/routes/search (e2e)', () => {
   // Identifiants des données créées pour ce test, afin de ne supprimer
   // QUE celles-ci à la fin (et pas les données de développement).
   const stopIds: string[] = [];
+  // Données PERSONNELLES d'un usager, créées volontairement pour prouver
+  // qu'elles n'influencent JAMAIS la recherche publique (étape 4C-3).
   let routeId: string;
+  let userId: string;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -73,79 +76,104 @@ describe('POST /api/routes/search (e2e)', () => {
     });
     stopIds.push(a.id, b.id, c.id);
 
-    // Un segment doit appartenir à une Route (clé étrangère obligatoire).
-    // On en crée une sans propriétaire (userId null), ce que le schéma
-    // autorise depuis l'étape 4A.
+    // --- Le RÉSEAU PUBLIC : c'est lui, et lui seul, qui doit alimenter la
+    // recherche depuis l'étape 4C-3.
+    await prisma.networkLink.createMany({
+      data: [
+        // A → B : 10 min, 600 m
+        {
+          fromStopId: a.id,
+          toStopId: b.id,
+          mode: 'WALK',
+          operator: 'E2E',
+          lineName: 'À pied',
+          distanceM: 600,
+          durationMin: 10,
+        },
+        // B → C : 10 min, 3200 m   => A→B→C = 20 min / 3800 m
+        {
+          fromStopId: b.id,
+          toStopId: c.id,
+          mode: 'BUS',
+          operator: 'E2E',
+          lineName: 'Bus 12',
+          distanceM: 3200,
+          durationMin: 10,
+        },
+        // A → C direct : 30 min, 3000 m  => plus long en temps, plus court
+        {
+          fromStopId: a.id,
+          toStopId: c.id,
+          mode: 'BUS',
+          operator: 'E2E',
+          lineName: 'Bus 99',
+          distanceM: 3000,
+          durationMin: 30,
+        },
+      ],
+    });
+
+    // --- Des données PERSONNELLES, créées exprès comme piège.
+    // Un usager enregistre un trajet A→C ultra-rapide (1 min, 100 m).
+    // S'il influençait la recherche publique, il deviendrait à la fois le
+    // plus rapide ET le plus court, et TOUS les tests ci-dessous
+    // échoueraient. Ils constituent donc eux-mêmes une preuve d'isolation.
+    const user = await prisma.user.create({
+      data: {
+        email: `e2e-search-${Date.now()}@example.com`,
+        passwordHash: 'hash-factice-non-utilise',
+      },
+    });
+    userId = user.id;
+
     const route = await prisma.route.create({
       data: {
+        userId,
         originLat: 0,
         originLng: 0,
         destinationLat: 0.02,
         destinationLng: 0,
-        totalDurationMin: 0,
-        totalDistanceM: 0,
+        totalDurationMin: 1,
+        totalDistanceM: 100,
         ecoScore: 0,
         carbonEstimate: 0,
       },
     });
     routeId = route.id;
 
-    const base = new Date('2026-08-15T08:00:00.000Z').getTime();
-    const plus = (minutes: number) => new Date(base + minutes * 60_000);
-
-    await prisma.segment.createMany({
-      data: [
-        // A → B : 10 min, 600 m
-        {
-          routeId,
-          fromStopId: a.id,
-          toStopId: b.id,
-          mode: 'WALK',
-          operator: 'E2E',
-          line: '-',
-          gtfsTripId: 'e2e-ab',
-          distanceM: 600,
-          departureTime: plus(0),
-          arrivalTime: plus(10),
-        },
-        // B → C : 10 min, 3200 m   => A→B→C = 20 min / 3800 m
-        {
-          routeId,
-          fromStopId: b.id,
-          toStopId: c.id,
-          mode: 'BUS',
-          operator: 'E2E',
-          line: 'Bus 12',
-          gtfsTripId: 'e2e-bc',
-          distanceM: 3200,
-          departureTime: plus(10),
-          arrivalTime: plus(20),
-        },
-        // A → C direct : 30 min, 3000 m  => plus long en temps, plus court
-        {
-          routeId,
-          fromStopId: a.id,
-          toStopId: c.id,
-          mode: 'BUS',
-          operator: 'E2E',
-          line: 'Bus 99',
-          gtfsTripId: 'e2e-ac',
-          distanceM: 3000,
-          departureTime: plus(0),
-          arrivalTime: plus(30),
-        },
-      ],
+    await prisma.segment.create({
+      data: {
+        routeId,
+        fromStopId: a.id,
+        toStopId: c.id,
+        mode: 'BIKE',
+        operator: 'PRIVE',
+        line: 'raccourci personnel',
+        gtfsTripId: 'prive-ac',
+        distanceM: 100,
+        departureTime: new Date('2026-08-15T08:00:00.000Z'),
+        arrivalTime: new Date('2026-08-15T08:01:00.000Z'),
+      },
     });
   });
 
   afterAll(async () => {
-    // Nettoyage : segments puis route puis arrêts (ordre imposé par les
-    // clés étrangères). On ne supprime que nos propres données.
+    // Nettoyage, dans l'ordre imposé par les clés étrangères. On ne
+    // supprime que nos propres données, jamais celles du développement.
     if (routeId) {
       await prisma.segment.deleteMany({ where: { routeId } });
       await prisma.route.delete({ where: { id: routeId } });
     }
+    if (userId) {
+      await prisma.user.delete({ where: { id: userId } });
+    }
     if (stopIds.length > 0) {
+      // Les liaisons réseau sont supprimées en cascade avec leurs arrêts,
+      // mais on les efface explicitement : c'est plus lisible et cela ne
+      // dépend pas du comportement de la base.
+      await prisma.networkLink.deleteMany({
+        where: { fromStopId: { in: stopIds } },
+      });
       await prisma.stop.deleteMany({ where: { id: { in: stopIds } } });
     }
     await app.close();
@@ -323,5 +351,73 @@ describe('POST /api/routes/search (e2e)', () => {
     for (let i = 0; i < segments.length - 1; i++) {
       expect(segments[i].toStopId).toBe(segments[i + 1].fromStopId);
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Étape 4C-3 : isolation entre réseau public et données personnelles
+  // ---------------------------------------------------------------------------
+
+  it("ignore le trajet personnel d'un usager, pourtant bien plus rapide", async () => {
+    // Rappel du piège posé dans beforeAll : un usager a enregistré un
+    // segment A→C de 1 minute / 100 m. S'il alimentait le graphe public,
+    // il serait forcément choisi comme le plus rapide ET le plus court.
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    const itineraires = response.body as {
+      criterion: string;
+      totalDurationMin: number;
+      totalDistanceM: number;
+      segments: { mode: string }[];
+    }[];
+
+    for (const itineraire of itineraires) {
+      // Aucun itinéraire ne peut être aussi rapide/court que le raccourci.
+      expect(itineraire.totalDurationMin).toBeGreaterThan(1);
+      expect(itineraire.totalDistanceM).toBeGreaterThan(100);
+      // Le mode BIKE n'existe que dans le trajet personnel.
+      for (const segment of itineraire.segments) {
+        expect(segment.mode).not.toBe('BIKE');
+      }
+    }
+  });
+
+  it('ne divulgue pas les libellés du trajet personnel', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    const json = JSON.stringify(response.body);
+    expect(json).not.toContain('raccourci personnel');
+    expect(json).not.toContain('PRIVE');
+    expect(json).not.toContain('prive-ac');
+  });
+
+  it('utilise bien les valeurs du réseau public', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    const rapide = (
+      response.body as {
+        criterion: string;
+        totalDurationMin: number;
+        totalDistanceM: number;
+        segments: { mode: string }[];
+      }[]
+    ).find((i) => i.criterion === 'FASTEST');
+
+    // 20 min / 3800 m sont exactement les valeurs des liaisons réseau
+    // A→B (10 min, 600 m) + B→C (10 min, 3200 m). Elles ne peuvent pas
+    // provenir du trajet personnel, qui vaut 1 min / 100 m.
+    expect(rapide?.totalDurationMin).toBe(20);
+    expect(rapide?.totalDistanceM).toBe(3800);
+    // Les modes proviennent bien du réseau (WALK puis BUS), pas du BIKE
+    // du raccourci personnel.
+    expect(rapide?.segments.map((s) => s.mode)).toEqual(['WALK', 'BUS']);
   });
 });

@@ -16,6 +16,10 @@ describe('RoutesService', () => {
       delete: jest.Mock;
     };
     stop: { findMany: jest.Mock };
+    // networkLink = le réseau public, seule source du graphe depuis 4C-3.
+    networkLink: { findMany: jest.Mock };
+    // segment reste simulé UNIQUEMENT pour pouvoir prouver, dans les tests
+    // d'isolation, que la recherche ne l'interroge JAMAIS.
     segment: { findMany: jest.Mock };
   };
 
@@ -44,6 +48,7 @@ describe('RoutesService', () => {
         delete: jest.fn(),
       },
       stop: { findMany: jest.fn() },
+      networkLink: { findMany: jest.fn() },
       segment: { findMany: jest.fn() },
     };
     service = new RoutesService(prisma as unknown as PrismaService);
@@ -180,7 +185,8 @@ describe('RoutesService', () => {
       operatorCode: 'RATP',
     };
 
-    // Fabrique un segment en exprimant sa durée en minutes.
+    // Fabrique une liaison du réseau public. Depuis 4C-3 la durée est une
+    // donnée directe (durationMin) : plus besoin de bricoler deux horaires.
     const segment = (
       fromStopId: string,
       toStopId: string,
@@ -192,10 +198,7 @@ describe('RoutesService', () => {
       toStopId,
       mode,
       distanceM,
-      departureTime: new Date('2026-08-15T08:00:00.000Z'),
-      arrivalTime: new Date(
-        new Date('2026-08-15T08:00:00.000Z').getTime() + durationMin * 60_000,
-      ),
+      durationMin,
     });
 
     const aVersB = segment(A.id, B.id, 'WALK', 600, 10);
@@ -209,7 +212,7 @@ describe('RoutesService', () => {
 
     it('renvoie un itinéraire direct quand un seul segment relie les deux arrêts', async () => {
       prisma.stop.findMany.mockResolvedValue([A, C]);
-      prisma.segment.findMany.mockResolvedValue([aVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersC]);
 
       const result = await service.searchRoutes({ ...depuisA, ...versC });
 
@@ -232,7 +235,7 @@ describe('RoutesService', () => {
 
     it('enchaîne deux segments quand il n’existe pas de liaison directe', async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
-      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
 
       const result = await service.searchRoutes({ ...depuisA, ...versC });
 
@@ -249,7 +252,7 @@ describe('RoutesService', () => {
 
     it('propose deux itinéraires distincts : le plus rapide et le plus court', async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
-      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC, aVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC, aVersC]);
 
       const result = await service.searchRoutes({ ...depuisA, ...versC });
 
@@ -271,7 +274,7 @@ describe('RoutesService', () => {
 
     it("renvoie [] quand l'arrivée n'est reliée à rien", async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C, D]);
-      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
 
       // On cherche vers D, qui n'a aucun segment entrant.
       const result = await service.searchRoutes({
@@ -285,7 +288,7 @@ describe('RoutesService', () => {
 
     it('renvoie [] quand la base ne contient aucun arrêt', async () => {
       prisma.stop.findMany.mockResolvedValue([]);
-      prisma.segment.findMany.mockResolvedValue([]);
+      prisma.networkLink.findMany.mockResolvedValue([]);
 
       const result = await service.searchRoutes({ ...depuisA, ...versC });
 
@@ -294,7 +297,7 @@ describe('RoutesService', () => {
 
     it('renvoie [] quand le départ et l’arrivée pointent vers le même arrêt', async () => {
       prisma.stop.findMany.mockResolvedValue([A, C]);
-      prisma.segment.findMany.mockResolvedValue([aVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersC]);
 
       const result = await service.searchRoutes({
         fromLat: A.latitude,
@@ -308,7 +311,7 @@ describe('RoutesService', () => {
 
     it('ne renvoie jamais de données personnelles (ni routeId, ni userId, ni horaires)', async () => {
       prisma.stop.findMany.mockResolvedValue([A, C]);
-      prisma.segment.findMany.mockResolvedValue([aVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersC]);
 
       const result = await service.searchRoutes({ ...depuisA, ...versC });
 
@@ -325,7 +328,7 @@ describe('RoutesService', () => {
 
     it('garantit que les segments sont chaînés dans le bon ordre', async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
-      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
 
       const [itineraire] = await service.searchRoutes({
         ...depuisA,
@@ -348,7 +351,7 @@ describe('RoutesService', () => {
 
     it('renvoie exactement le même résultat pour deux appels identiques', async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
-      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC, aVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC, aVersC]);
 
       const premier = await service.searchRoutes({ ...depuisA, ...versC });
       const second = await service.searchRoutes({ ...depuisA, ...versC });
@@ -370,7 +373,7 @@ describe('RoutesService', () => {
       const yVersC = segment(Y.id, C.id, 'BUS', 500, 5);
 
       prisma.stop.findMany.mockResolvedValue([A, X, Y, C]);
-      prisma.segment.findMany.mockResolvedValue([
+      prisma.networkLink.findMany.mockResolvedValue([
         aVersX,
         xVersC,
         aVersY,
@@ -380,7 +383,7 @@ describe('RoutesService', () => {
 
       // Mêmes données, mais fournies dans l'ordre inverse.
       prisma.stop.findMany.mockResolvedValue([C, Y, X, A]);
-      prisma.segment.findMany.mockResolvedValue([
+      prisma.networkLink.findMany.mockResolvedValue([
         yVersC,
         aVersY,
         xVersC,
@@ -402,7 +405,7 @@ describe('RoutesService', () => {
       const eVersC = segment(E.id, C.id, 'WALK', 1000, 25);
 
       prisma.stop.findMany.mockResolvedValue([A, B, C, E]);
-      prisma.segment.findMany.mockResolvedValue([
+      prisma.networkLink.findMany.mockResolvedValue([
         aVersB,
         bVersC,
         aVersC,
@@ -423,7 +426,7 @@ describe('RoutesService', () => {
 
     it('renvoie [] quand le point de départ est trop loin de tout arrêt', async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
-      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
 
       // 0,025° de latitude ≈ 2,8 km : au-delà du rayon de 2 km.
       const result = await service.searchRoutes({
@@ -437,7 +440,7 @@ describe('RoutesService', () => {
 
     it('renvoie [] quand la destination est trop loin de tout arrêt', async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
-      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
 
       const result = await service.searchRoutes({
         ...depuisA,
@@ -450,7 +453,7 @@ describe('RoutesService', () => {
 
     it('accepte un point situé juste à l’intérieur du rayon de recherche', async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
-      prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
 
       // 0,013° de latitude ≈ 1,45 km : à l'intérieur du rayon de 2 km.
       const result = await service.searchRoutes({
@@ -461,6 +464,67 @@ describe('RoutesService', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0].segments[0].fromStopId).toBe(A.id);
+    });
+
+    // -------------------------------------------------------------------------
+    // Étape 4C-3 : isolation entre réseau public et données personnelles
+    // -------------------------------------------------------------------------
+    describe('isolation des données personnelles', () => {
+      it("n'interroge JAMAIS la table des segments personnels", async () => {
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+        await service.searchRoutes({ ...depuisA, ...versC });
+
+        // Preuve directe : la recherche ne touche pas aux données des usagers.
+        expect(prisma.segment.findMany).not.toHaveBeenCalled();
+        // ...et lit bien le réseau public à la place.
+        expect(prisma.networkLink.findMany).toHaveBeenCalled();
+      });
+
+      it('ignore les trajets personnels : sans réseau public, aucun itinéraire', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, B, C]);
+        // Le réseau public est VIDE...
+        prisma.networkLink.findMany.mockResolvedValue([]);
+        // ...alors qu'un usager a bien enregistré des segments entre ces
+        // mêmes arrêts. Avant 4C-3, ces segments auraient alimenté le
+        // graphe public. Ce ne doit plus être le cas.
+        prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+
+        const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+        expect(result).toEqual([]);
+      });
+
+      it("n'emprunte que des liaisons du réseau public, jamais celles d'un usager", async () => {
+        prisma.stop.findMany.mockResolvedValue([A, B, C]);
+        // Réseau public : uniquement le trajet direct A→C.
+        prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+        // Un usager a enregistré un raccourci A→B→C bien plus rapide.
+        // Il ne doit avoir AUCUNE influence sur le résultat.
+        prisma.segment.findMany.mockResolvedValue([aVersB, bVersC]);
+
+        const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].segments).toHaveLength(1);
+        expect(result[0].segments[0].toStopId).toBe(C.id);
+        // La durée est bien celle du réseau (30 min), et non celle du
+        // raccourci personnel (20 min).
+        expect(result[0].totalDurationMin).toBe(30);
+      });
+
+      it('fonctionne avec le réseau public seul, sans aucune donnée utilisateur', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+        // Aucune route, aucun segment, aucun usager en base.
+        prisma.segment.findMany.mockResolvedValue([]);
+
+        const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].segments[0].fromStopName).toBe('Gare du Nord');
+      });
     });
   });
 });

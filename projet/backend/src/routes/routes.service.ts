@@ -91,13 +91,21 @@ export class RoutesService {
    * Principe en 4 temps :
    *   1. trouver l'arrêt le plus proche du départ et celui le plus proche
    *      de l'arrivée (formule de Haversine) ;
-   *   2. construire un graphe : les arrêts sont les sommets, les segments
-   *      enregistrés en base sont les arêtes ;
+   *   2. construire un graphe : les arrêts (Stop) sont les sommets, les
+   *      liaisons du RÉSEAU PUBLIC (NetworkLink) sont les arêtes ;
    *   3. appliquer Dijkstra deux fois : une fois en minimisant la durée,
    *      une fois en minimisant la distance ;
    *   4. mettre en forme les résultats.
    *
    * Renvoie un tableau vide si aucun itinéraire n'est possible.
+   *
+   * IMPORTANT (étape 4C-3) : cette méthode ne lit QUE des données publiques.
+   * Elle n'interroge ni Route ni Segment, qui appartiennent aux usagers.
+   * Jusqu'à l'étape 4C-2, le graphe était construit à partir des segments
+   * des itinéraires personnels : la recherche, pourtant publique, dérivait
+   * donc de données privées, et n'importe quel usager pouvait y injecter
+   * des liaisons fantaisistes. La table NetworkLink, qui n'a aucun
+   * propriétaire, supprime ces deux problèmes par construction.
    */
   async searchRoutes(dto: SearchRouteDto): Promise<ItineraryDto[]> {
     // On charge tout en mémoire : le calcul se fait ensuite en TypeScript.
@@ -107,9 +115,9 @@ export class RoutesService {
     // garantit aucun ordre de lignes. Cet ordre se propagerait jusqu'au
     // départage des égalités dans Dijkstra, et deux recherches identiques
     // pourraient renvoyer deux chemins différents (de coût pourtant égal).
-    const [stops, segments] = await Promise.all([
+    const [stops, links] = await Promise.all([
       this.prisma.stop.findMany({ orderBy: { id: 'asc' } }),
-      this.prisma.segment.findMany({ orderBy: { id: 'asc' } }),
+      this.prisma.networkLink.findMany({ orderBy: { id: 'asc' } }),
     ]);
 
     if (stops.length === 0) {
@@ -125,7 +133,7 @@ export class RoutesService {
       return [];
     }
 
-    const graph = this.buildGraph(segments);
+    const graph = this.buildGraph(links);
     const stopsById = new Map(stops.map((stop) => [stop.id, stop]));
 
     // Deux exécutions de Dijkstra, avec deux "poids" différents : c'est ce
@@ -211,43 +219,36 @@ export class RoutesService {
     return nearest;
   }
 
-  // Transforme la liste des segments en graphe orienté.
+  // Transforme les liaisons du réseau public en graphe orienté.
   //
-  // Le graphe est ORIENTÉ : un segment va de fromStop vers toStop et ne peut
-  // pas être emprunté en sens inverse. C'est fidèle aux données (un trajet de
-  // bus a un sens) — le trajet retour doit exister comme un segment distinct.
+  // Le graphe est ORIENTÉ : une liaison va de fromStop vers toStop et ne peut
+  // pas être empruntée en sens inverse. C'est fidèle à la réalité (une ligne
+  // de bus a un sens) — le trajet retour existe comme une liaison distincte.
+  //
+  // Depuis l'étape 4C-3, la durée est lue directement sur la liaison
+  // (durationMin) au lieu d'être calculée à partir de deux horaires absolus :
+  // un réseau décrit une durée de parcours typique, pas l'heure d'un trajet
+  // particulier. Cette méthode s'en trouve nettement simplifiée.
   private buildGraph(
-    segments: {
+    links: {
       fromStopId: string;
       toStopId: string;
       mode: ModeTransport;
       distanceM: number;
-      departureTime: Date;
-      arrivalTime: Date;
+      durationMin: number;
     }[],
   ): Graph {
     const graph: Graph = new Map();
 
-    for (const segment of segments) {
-      // Le modèle stocke deux horaires absolus, pas une durée : on la
-      // calcule. Math.max évite une durée négative si les données sont
-      // incohérentes.
-      const durationMin = Math.max(
-        0,
-        Math.round(
-          (segment.arrivalTime.getTime() - segment.departureTime.getTime()) /
-            60_000,
-        ),
-      );
-
-      const edges = graph.get(segment.fromStopId) ?? [];
+    for (const link of links) {
+      const edges = graph.get(link.fromStopId) ?? [];
       edges.push({
-        toStopId: segment.toStopId,
-        mode: segment.mode,
-        distanceM: segment.distanceM,
-        durationMin,
+        toStopId: link.toStopId,
+        mode: link.mode,
+        distanceM: link.distanceM,
+        durationMin: link.durationMin,
       });
-      graph.set(segment.fromStopId, edges);
+      graph.set(link.fromStopId, edges);
     }
 
     return graph;

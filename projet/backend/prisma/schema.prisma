@@ -176,7 +176,63 @@ model Stop {
   segmentsFrom Segment[] @relation("SegmentFromStop")
   segmentsTo   Segment[] @relation("SegmentToStop")
 
+  // Liaisons du réseau public partant de cet arrêt / y arrivant (étape 4C-3).
+  linksFrom NetworkLink[] @relation("LinkFromStop")
+  linksTo   NetworkLink[] @relation("LinkToStop")
+
   @@map("stops")
+}
+
+// -----------------------------------------------------------------------------
+// Réseau de transport public (étape 4C-3)
+// -----------------------------------------------------------------------------
+
+/// Une liaison du réseau public : "la ligne X relie l'arrêt A à l'arrêt B".
+///
+/// C'est l'ARÊTE du graphe utilisé par la recherche publique d'itinéraires
+/// (POST /api/routes/search), dont les SOMMETS sont les Stop.
+///
+/// À ne pas confondre avec Segment, malgré leur ressemblance :
+///
+///   Segment      = une OCCURRENCE : "j'ai pris le bus 12 le 15/08 à 8h00".
+///                  Appartient à une Route, donc à un usager.
+///                  Porte des horaires absolus (departureTime/arrivalTime).
+///
+///   NetworkLink  = une RÈGLE : "le bus 12 relie A à B en 10 minutes".
+///                  N'appartient à PERSONNE : aucune colonne userId.
+///                  Porte une durée typique (durationMin).
+///
+/// C'est cette absence de propriétaire qui garantit, par construction, que la
+/// recherche publique ne peut divulguer aucune donnée personnelle : on ne peut
+/// pas divulguer ce qu'on ne stocke pas.
+///
+/// Le dossier de conception distingue explicitement (§3.1.3) les "données
+/// métiers spatiales" (arrêts, lignes, itinéraires du réseau) des "données
+/// utilisateurs". Cette table matérialise cette séparation.
+///
+/// Alimentée pour l'instant par un jeu de démonstration (prisma/seed.ts) ;
+/// elle le sera par l'import GTFS à l'étape suivante.
+model NetworkLink {
+  id String @id @default(uuid()) @db.Uuid
+
+  mode     ModeTransport
+  // Nom de la ligne empruntée ("Bus 12", "M4"). Chaîne simple, comme dans le
+  // diagramme de classes : les lignes ne sont pas encore une entité à part.
+  lineName String
+  operator String
+
+  // Durée TYPIQUE de la liaison, en minutes — et non deux horaires absolus.
+  // C'est précisément ce qui distingue une règle de réseau d'un trajet vécu.
+  durationMin Int
+  distanceM   Int
+
+  fromStop   Stop   @relation("LinkFromStop", fields: [fromStopId], references: [id], onDelete: Cascade)
+  fromStopId String @db.Uuid
+
+  toStop   Stop   @relation("LinkToStop", fields: [toStopId], references: [id], onDelete: Cascade)
+  toStopId String @db.Uuid
+
+  @@map("network_links")
 }
 
 // -----------------------------------------------------------------------------
