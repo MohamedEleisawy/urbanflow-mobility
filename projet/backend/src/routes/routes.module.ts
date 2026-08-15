@@ -9,5 +9,9 @@ import { AuthModule } from '../auth/auth.module';
   imports: [AuthModule],
   controllers: [RoutesController],
   providers: [RoutesService],
+  // Exporté pour que SegmentsService puisse réutiliser findOneForUser() et
+  // vérifier la propriété d'une Route, au lieu de dupliquer cette logique
+  // de sécurité à un deuxième endroit.
+  exports: [RoutesService],
 })
 export class RoutesModule {}
