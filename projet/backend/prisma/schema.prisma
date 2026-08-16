@@ -173,6 +173,17 @@ model Stop {
   pmrAccessible Boolean @default(false)
   operatorCode  String
 
+  /// Identifiant de l'arrêt dans le flux GTFS (stops.txt, colonne stop_id).
+  ///
+  /// NULLABLE : les arrêts du jeu de démonstration ne viennent pas de GTFS,
+  /// et un arrêt pourra toujours être créé à la main.
+  ///
+  /// UNIQUE : c'est la clé qui rendra l'import IDEMPOTENT. Réimporter le
+  /// même flux mettra à jour l'arrêt existant au lieu d'en créer un second.
+  /// Notre `id` interne reste un UUID : on ne dépend donc jamais du format
+  /// d'identifiant d'un opérateur, qui varie d'un réseau à l'autre.
+  gtfsStopId String? @unique
+
   segmentsFrom Segment[] @relation("SegmentFromStop")
   segmentsTo   Segment[] @relation("SegmentToStop")
 
@@ -186,6 +197,41 @@ model Stop {
 // -----------------------------------------------------------------------------
 // Réseau de transport public (étape 4C-3)
 // -----------------------------------------------------------------------------
+
+/// Une ligne de transport : "Métro 4", "Bus 38" (étape 4C-4-1).
+///
+/// Correspond à une ligne du fichier GTFS routes.txt. Attention au piège de
+/// vocabulaire : GTFS appelle "route" ce que nous appelons une LIGNE, alors
+/// que notre modèle `Route` désigne l'itinéraire personnel d'un usager.
+/// D'où le nom `TransitLine`, qui lève toute ambiguïté.
+///
+/// Pourquoi une table séparée plutôt que trois colonnes sur NetworkLink ?
+///   - une ligne dessert PLUSIEURS liaisons : répéter son nom, son mode et
+///     son opérateur sur chaque tronçon serait de la duplication ;
+///   - GTFS fournit les lignes dans un fichier distinct : une table par
+///     concept rend l'import direct et lisible ;
+///   - renommer une ligne ne demandera qu'une seule mise à jour.
+model TransitLine {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Identifiant de la ligne dans le flux GTFS (routes.txt, route_id).
+  /// Nullable et unique, pour les mêmes raisons que Stop.gtfsStopId.
+  gtfsRouteId String? @unique
+
+  /// Nom affiché de la ligne. À l'import, il viendra de route_short_name
+  /// (ex : "4"), avec route_long_name en repli si le premier est absent.
+  name String
+
+  /// Mode de transport de la ligne, déduit du route_type GTFS à l'import.
+  mode ModeTransport
+
+  /// Exploitant de la ligne (agency.txt).
+  operator String
+
+  links NetworkLink[]
+
+  @@map("transit_lines")
+}
 
 /// Une liaison du réseau public : "la ligne X relie l'arrêt A à l'arrêt B".
 ///
@@ -215,14 +261,14 @@ model Stop {
 model NetworkLink {
   id String @id @default(uuid()) @db.Uuid
 
-  mode     ModeTransport
-  // Nom de la ligne empruntée ("Bus 12", "M4"). Chaîne simple, comme dans le
-  // diagramme de classes : les lignes ne sont pas encore une entité à part.
-  lineName String
-  operator String
+  // Le mode, le nom et l'exploitant ne sont plus stockés ici depuis
+  // l'étape 4C-4-1 : ils appartiennent à la ligne, pas au tronçon.
+  line   TransitLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  lineId String      @db.Uuid
 
   // Durée TYPIQUE de la liaison, en minutes — et non deux horaires absolus.
   // C'est précisément ce qui distingue une règle de réseau d'un trajet vécu.
+  // À l'import GTFS, ce sera la MÉDIANE des durées observées sur ce tronçon.
   durationMin Int
   distanceM   Int
 
@@ -232,6 +278,15 @@ model NetworkLink {
   toStop   Stop   @relation("LinkToStop", fields: [toStopId], references: [id], onDelete: Cascade)
   toStopId String @db.Uuid
 
+  /// Une ligne ne relie un arrêt A à un arrêt B qu'UNE SEULE FOIS.
+  ///
+  /// C'est la contrainte qui portera l'idempotence de l'import : les
+  /// dizaines de trajets quotidiens d'une même ligne sur le tronçon A→B
+  /// produiront une seule liaison, et non un doublon par passage.
+  ///
+  /// Deux LIGNES différentes reliant A à B restent bien deux liaisons
+  /// distinctes, puisque lineId fait partie de la clé.
+  @@unique([lineId, fromStopId, toStopId])
   @@map("network_links")
 }
 

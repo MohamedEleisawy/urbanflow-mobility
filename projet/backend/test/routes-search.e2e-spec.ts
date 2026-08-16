@@ -19,6 +19,7 @@ describe('POST /api/routes/search (e2e)', () => {
   // Identifiants des données créées pour ce test, afin de ne supprimer
   // QUE celles-ci à la fin (et pas les données de développement).
   const stopIds: string[] = [];
+  const lineIds: string[] = [];
   // Données PERSONNELLES d'un usager, créées volontairement pour prouver
   // qu'elles n'influencent JAMAIS la recherche publique (étape 4C-3).
   let routeId: string;
@@ -76,37 +77,44 @@ describe('POST /api/routes/search (e2e)', () => {
     });
     stopIds.push(a.id, b.id, c.id);
 
+    // --- Les LIGNES (étape 4C-4-1) : le mode et l'exploitant vivent ici,
+    // plus sur la liaison. Une liaison ne peut pas exister sans sa ligne.
+    const ligneMarche = await prisma.transitLine.create({
+      data: { name: 'À pied E2E', mode: 'WALK', operator: 'E2E' },
+    });
+    const ligneBus12 = await prisma.transitLine.create({
+      data: { name: 'Bus 12 E2E', mode: 'BUS', operator: 'E2E' },
+    });
+    const ligneBus99 = await prisma.transitLine.create({
+      data: { name: 'Bus 99 E2E', mode: 'BUS', operator: 'E2E' },
+    });
+    lineIds.push(ligneMarche.id, ligneBus12.id, ligneBus99.id);
+
     // --- Le RÉSEAU PUBLIC : c'est lui, et lui seul, qui doit alimenter la
     // recherche depuis l'étape 4C-3.
     await prisma.networkLink.createMany({
       data: [
         // A → B : 10 min, 600 m
         {
+          lineId: ligneMarche.id,
           fromStopId: a.id,
           toStopId: b.id,
-          mode: 'WALK',
-          operator: 'E2E',
-          lineName: 'À pied',
           distanceM: 600,
           durationMin: 10,
         },
         // B → C : 10 min, 3200 m   => A→B→C = 20 min / 3800 m
         {
+          lineId: ligneBus12.id,
           fromStopId: b.id,
           toStopId: c.id,
-          mode: 'BUS',
-          operator: 'E2E',
-          lineName: 'Bus 12',
           distanceM: 3200,
           durationMin: 10,
         },
         // A → C direct : 30 min, 3000 m  => plus long en temps, plus court
         {
+          lineId: ligneBus99.id,
           fromStopId: a.id,
           toStopId: c.id,
-          mode: 'BUS',
-          operator: 'E2E',
-          lineName: 'Bus 99',
           distanceM: 3000,
           durationMin: 30,
         },
@@ -175,6 +183,11 @@ describe('POST /api/routes/search (e2e)', () => {
         where: { fromStopId: { in: stopIds } },
       });
       await prisma.stop.deleteMany({ where: { id: { in: stopIds } } });
+    }
+    if (lineIds.length > 0) {
+      // Après les liaisons : une ligne ne peut pas être supprimée tant
+      // qu'un tronçon la référence.
+      await prisma.transitLine.deleteMany({ where: { id: { in: lineIds } } });
     }
     await app.close();
   });

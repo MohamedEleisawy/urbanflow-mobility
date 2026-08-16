@@ -115,9 +115,15 @@ export class RoutesService {
     // garantit aucun ordre de lignes. Cet ordre se propagerait jusqu'au
     // départage des égalités dans Dijkstra, et deux recherches identiques
     // pourraient renvoyer deux chemins différents (de coût pourtant égal).
+    // include: { line: true } (étape 4C-4-1) : le mode de transport est
+    // désormais porté par la LIGNE et non plus par la liaison. Une seule
+    // requête suffit, Prisma joint les deux tables.
     const [stops, links] = await Promise.all([
       this.prisma.stop.findMany({ orderBy: { id: 'asc' } }),
-      this.prisma.networkLink.findMany({ orderBy: { id: 'asc' } }),
+      this.prisma.networkLink.findMany({
+        orderBy: { id: 'asc' },
+        include: { line: true },
+      }),
     ]);
 
     if (stops.length === 0) {
@@ -233,9 +239,10 @@ export class RoutesService {
     links: {
       fromStopId: string;
       toStopId: string;
-      mode: ModeTransport;
       distanceM: number;
       durationMin: number;
+      // Depuis 4C-4-1, le mode vient de la ligne qui exploite le tronçon.
+      line: { mode: ModeTransport };
     }[],
   ): Graph {
     const graph: Graph = new Map();
@@ -244,7 +251,7 @@ export class RoutesService {
       const edges = graph.get(link.fromStopId) ?? [];
       edges.push({
         toStopId: link.toStopId,
-        mode: link.mode,
+        mode: link.line.mode,
         distanceM: link.distanceM,
         durationMin: link.durationMin,
       });

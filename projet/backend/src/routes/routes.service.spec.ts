@@ -185,20 +185,24 @@ describe('RoutesService', () => {
       operatorCode: 'RATP',
     };
 
-    // Fabrique une liaison du réseau public. Depuis 4C-3 la durée est une
-    // donnée directe (durationMin) : plus besoin de bricoler deux horaires.
+    // Fabrique une liaison du réseau public.
+    //   - depuis 4C-3, la durée est une donnée directe (durationMin) ;
+    //   - depuis 4C-4-1, le mode est porté par la LIGNE, d'où l'objet
+    //     `line` imbriqué qui reproduit ce que renvoie `include: { line }`.
     const segment = (
       fromStopId: string,
       toStopId: string,
       mode: 'WALK' | 'BUS',
       distanceM: number,
       durationMin: number,
+      lineId = 'ligne-1',
     ) => ({
       fromStopId,
       toStopId,
-      mode,
       distanceM,
       durationMin,
+      lineId,
+      line: { id: lineId, name: 'Ligne de test', mode, operator: 'RATP' },
     });
 
     const aVersB = segment(A.id, B.id, 'WALK', 600, 10);
@@ -464,6 +468,59 @@ describe('RoutesService', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0].segments[0].fromStopId).toBe(A.id);
+    });
+
+    // -------------------------------------------------------------------------
+    // Étape 4C-4-1 : le mode vient de la ligne, pas de la liaison
+    // -------------------------------------------------------------------------
+    describe('lignes de transport (TransitLine)', () => {
+      it('demande à Prisma de joindre la ligne à chaque liaison', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+        await service.searchRoutes({ ...depuisA, ...versC });
+
+        // Sans include, le mode serait introuvable : cette requête est la
+        // condition même du fonctionnement du graphe.
+        expect(prisma.networkLink.findMany).toHaveBeenCalledWith({
+          orderBy: { id: 'asc' },
+          include: { line: true },
+        });
+      });
+
+      it('lit le mode de transport depuis la ligne', async () => {
+        // La liaison ne porte plus de mode : seule la ligne en a un.
+        const liaison = segment(A.id, C.id, 'BUS', 3000, 30, 'ligne-bus-99');
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([liaison]);
+
+        const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+        expect(result[0].segments[0].mode).toBe('BUS');
+      });
+
+      it('traite deux lignes différentes reliant les MÊMES arrêts comme deux liaisons distinctes', async () => {
+        // Cas très courant dans un vrai réseau : un bus et un métro
+        // desservent tous deux A→C. La contrainte unique du schéma porte sur
+        // (lineId, fromStopId, toStopId), donc les deux coexistent.
+        const parBus = segment(A.id, C.id, 'BUS', 3000, 30, 'ligne-bus');
+        const parMarche = segment(A.id, C.id, 'WALK', 2000, 45, 'ligne-marche');
+
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([parBus, parMarche]);
+
+        const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+        const rapide = result.find((i) => i.criterion === 'FASTEST');
+        const court = result.find((i) => i.criterion === 'SHORTEST');
+
+        // Le plus rapide est le bus (30 min), le plus court la marche (2000 m) :
+        // les deux liaisons ont donc bien été prises en compte séparément.
+        expect(rapide?.totalDurationMin).toBe(30);
+        expect(rapide?.segments[0].mode).toBe('BUS');
+        expect(court?.totalDistanceM).toBe(2000);
+        expect(court?.segments[0].mode).toBe('WALK');
+      });
     });
 
     // -------------------------------------------------------------------------

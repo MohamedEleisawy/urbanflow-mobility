@@ -108,49 +108,86 @@ const [NORD, EST, REPUBLIQUE, CHATELET, HOTEL_DE_VILLE, BASTILLE] = ARRETS.map(
 //   - en métro (via Hôtel de Ville) : 2200 m en 6 min  → le plus RAPIDE
 //   - à pied (direct)               : 1730 m en 22 min → le plus COURT
 // C'est exactement ce qui permet à FASTEST et SHORTEST de différer.
+// --- Les lignes de transport (TransitLine, depuis l'étape 4C-4-1) -----------
+// Le mode et l'exploitant appartiennent désormais à la LIGNE, plus à chaque
+// tronçon. Identifiants fixes, comme pour les arrêts, afin de rester
+// idempotent.
+const LIGNES = [
+  {
+    id: '00000000-0000-4000-9000-000000000001',
+    name: 'Métro 4',
+    mode: ModeTransport.METRO,
+    operator: 'RATP',
+  },
+  {
+    id: '00000000-0000-4000-9000-000000000002',
+    name: 'Bus 38',
+    mode: ModeTransport.BUS,
+    operator: 'RATP',
+  },
+  {
+    id: '00000000-0000-4000-9000-000000000003',
+    name: 'Métro 5',
+    mode: ModeTransport.METRO,
+    operator: 'RATP',
+  },
+  {
+    id: '00000000-0000-4000-9000-000000000004',
+    name: 'Métro 1',
+    mode: ModeTransport.METRO,
+    operator: 'RATP',
+  },
+  {
+    id: '00000000-0000-4000-9000-000000000005',
+    name: 'À pied',
+    mode: ModeTransport.WALK,
+    operator: 'RATP',
+  },
+];
+
+const [M4, BUS38, M5, M1, MARCHE] = LIGNES.map((l) => l.id);
+
 interface Liaison {
+  lineId: string;
   from: string;
   to: string;
-  mode: ModeTransport;
-  lineName: string;
   durationMin: number;
   distanceM: number;
 }
 
 // Crée les deux sens d'une même liaison.
 function ligne(
+  lineId: string,
   a: string,
   b: string,
-  mode: ModeTransport,
-  lineName: string,
   durationMin: number,
   distanceM: number,
 ): Liaison[] {
   return [
-    { from: a, to: b, mode, lineName, durationMin, distanceM },
-    { from: b, to: a, mode, lineName, durationMin, distanceM },
+    { lineId, from: a, to: b, durationMin, distanceM },
+    { lineId, from: b, to: a, durationMin, distanceM },
   ];
 }
 
 const LIAISONS: Liaison[] = [
   // Métro 4 : Gare du Nord — Gare de l'Est — Châtelet
-  ...ligne(NORD, EST, ModeTransport.METRO, 'Métro 4', 3, 550),
-  ...ligne(EST, CHATELET, ModeTransport.METRO, 'Métro 4', 5, 2200),
+  ...ligne(M4, NORD, EST, 3, 550),
+  ...ligne(M4, EST, CHATELET, 5, 2200),
 
   // Bus 38 : Gare du Nord — République — Châtelet (plus lent que le métro)
-  ...ligne(NORD, REPUBLIQUE, ModeTransport.BUS, 'Bus 38', 7, 1610),
-  ...ligne(REPUBLIQUE, CHATELET, ModeTransport.BUS, 'Bus 38', 9, 1590),
+  ...ligne(BUS38, NORD, REPUBLIQUE, 7, 1610),
+  ...ligne(BUS38, REPUBLIQUE, CHATELET, 9, 1590),
 
   // Métro 5 : Gare de l'Est — République — Bastille
-  ...ligne(EST, REPUBLIQUE, ModeTransport.METRO, 'Métro 5', 4, 1200),
-  ...ligne(REPUBLIQUE, BASTILLE, ModeTransport.METRO, 'Métro 5', 4, 1400),
+  ...ligne(M5, EST, REPUBLIQUE, 4, 1200),
+  ...ligne(M5, REPUBLIQUE, BASTILLE, 4, 1400),
 
   // Métro 1 : Châtelet — Hôtel de Ville — Bastille
-  ...ligne(CHATELET, HOTEL_DE_VILLE, ModeTransport.METRO, 'Métro 1', 2, 700),
-  ...ligne(HOTEL_DE_VILLE, BASTILLE, ModeTransport.METRO, 'Métro 1', 4, 1500),
+  ...ligne(M1, CHATELET, HOTEL_DE_VILLE, 2, 700),
+  ...ligne(M1, HOTEL_DE_VILLE, BASTILLE, 4, 1500),
 
   // Correspondance à pied : plus courte en distance, mais bien plus lente.
-  ...ligne(CHATELET, BASTILLE, ModeTransport.WALK, 'À pied', 22, 1730),
+  ...ligne(MARCHE, CHATELET, BASTILLE, 22, 1730),
 ];
 
 async function main() {
@@ -166,17 +203,26 @@ async function main() {
   }
   console.log(`  ${ARRETS.length} arrêts`);
 
-  // 2) Les liaisons : on efface puis on recrée.
+  // 2) Les lignes, AVANT les liaisons : une liaison ne peut pas exister
+  //    sans sa ligne (lineId est une clé étrangère obligatoire).
+  for (const ligneTransport of LIGNES) {
+    await prisma.transitLine.upsert({
+      where: { id: ligneTransport.id },
+      update: ligneTransport,
+      create: ligneTransport,
+    });
+  }
+  console.log(`  ${LIGNES.length} lignes`);
+
+  // 3) Les liaisons : on efface puis on recrée.
   //    C'est sans risque : aucune autre table ne référence network_links,
   //    et les données personnelles (routes, segments) ne sont pas touchées.
   await prisma.networkLink.deleteMany();
   await prisma.networkLink.createMany({
     data: LIAISONS.map((liaison) => ({
+      lineId: liaison.lineId,
       fromStopId: liaison.from,
       toStopId: liaison.to,
-      mode: liaison.mode,
-      lineName: liaison.lineName,
-      operator: 'RATP',
       durationMin: liaison.durationMin,
       distanceM: liaison.distanceM,
     })),
