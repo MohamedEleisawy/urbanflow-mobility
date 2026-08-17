@@ -1,0 +1,7 @@
+route_id,agency_id,route_short_name,route_long_name,route_type
+R1,RATP,4,Porte de Clignancourt - Mairie de Montrouge,1
+R2,RATP,38,Gare du Nord - Porte d'Orléans,3
+R3,SNCF,H,Paris Nord - Persan,2
+R4,RATP,,Ligne sans nom court,0
+BADR1,RATP,X,Type manquant,
+BADR2,RATP,Y,Type illisible,abc

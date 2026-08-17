@@ -1,0 +1,9 @@
+stop_id,stop_name,stop_lat,stop_lon,location_type,wheelchair_boarding
+S1,Gare du Nord,48.8809,2.3553,0,1
+S2,"Châtelet, salle d'échanges",48.8583,2.3470,0,2
+S3,Bastille,48.8532,2.3693,,0
+S4,République,48.8675,2.3636,0,
+STATION1,Gare du Nord (station),48.8809,2.3553,1,1
+BAD1,,48.8600,2.3500,0,0
+BAD2,Latitude illisible,pas-un-nombre,2.3500,0,0
+BAD3,Longitude hors bornes,48.8600,500.0,0,0
