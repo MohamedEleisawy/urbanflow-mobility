@@ -6,6 +6,8 @@
 // est comptée, et si elle n'est pas retenue, on sait pourquoi.
 // =============================================================================
 
+import { describeRouteType } from './route-type.mapping';
+
 /// Les quatre fichiers que nous lisons.
 export type GtfsFileName = 'stops' | 'routes' | 'trips' | 'stopTimes';
 
@@ -73,6 +75,24 @@ export class GtfsImportReport {
     unsupportedLocationType: 0,
   };
 
+  /// Nombre d'entités réellement ÉCRITES en base (étape 4C-4-3).
+  ///
+  /// À ne pas confondre avec `files.*.valid`, qui compte les lignes
+  /// correctement LUES. Une ligne peut être parfaitement valide et ne pas
+  /// être importée : c'est le cas d'une ligne de train, dont le route_type
+  /// n'a pas d'équivalent dans notre enum.
+  readonly imported: Record<'stops' | 'transitLines', number> = {
+    stops: 0,
+    transitLines: 0,
+  };
+
+  /// route_type non traduits, comptés PAR TYPE.
+  ///
+  /// On ne se contente pas d'un total : savoir qu'un flux contient
+  /// 40 lignes de train et 2 de ferry est bien plus utile pour décider si
+  /// l'enum ModeTransport doit un jour être étendu.
+  readonly unsupportedRouteTypes: Record<number, number> = {};
+
   /// Une ligne a été rencontrée dans le fichier.
   countRow(file: GtfsFileName): void {
     this.files[file].total += 1;
@@ -93,6 +113,17 @@ export class GtfsImportReport {
   countFiltered(file: GtfsFileName, reason: GtfsFilterReason): void {
     this.files[file].filtered += 1;
     this.filtered[reason] += 1;
+  }
+
+  /// Une entité a été écrite (créée ou mise à jour) en base.
+  countImported(entity: 'stops' | 'transitLines'): void {
+    this.imported[entity] += 1;
+  }
+
+  /// Une ligne valide n'a pas pu être importée faute de mode équivalent.
+  countUnsupportedRouteType(routeType: number): void {
+    this.unsupportedRouteTypes[routeType] =
+      (this.unsupportedRouteTypes[routeType] ?? 0) + 1;
   }
 
   /// Vérifie l'invariant sur les quatre fichiers. Sert de garde-fou : si
@@ -130,6 +161,22 @@ export class GtfsImportReport {
       lignes.push("  Motifs d'écartement volontaire :");
       for (const [motif, nombre] of ecartees) {
         lignes.push(`    ${motif} : ${nombre}`);
+      }
+    }
+
+    if (this.imported.stops > 0 || this.imported.transitLines > 0) {
+      lignes.push('  Écrits en base :');
+      lignes.push(`    arrêts : ${this.imported.stops}`);
+      lignes.push(`    lignes : ${this.imported.transitLines}`);
+    }
+
+    const nonSupportes = Object.entries(this.unsupportedRouteTypes);
+    if (nonSupportes.length > 0) {
+      lignes.push('  Lignes non importées (mode sans équivalent) :');
+      for (const [type, nombre] of nonSupportes) {
+        lignes.push(
+          `    route_type ${describeRouteType(Number(type))} : ${nombre}`,
+        );
       }
     }
 
