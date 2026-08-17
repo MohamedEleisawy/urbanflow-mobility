@@ -1,0 +1,3 @@
+route_id,service_id,trip_id,direction_id
+NR1,SEM,NT1,0
+NR1,SEM,NT2,0

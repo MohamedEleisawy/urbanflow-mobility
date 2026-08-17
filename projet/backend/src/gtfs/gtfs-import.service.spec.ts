@@ -4,6 +4,7 @@ import { ModeTransport } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { GtfsImportService } from './gtfs-import.service';
 import { GtfsReaderService } from './gtfs-reader.service';
+import { NetworkBuilderService } from './network-builder.service';
 
 // Le service journalise son bilan, ce qui est voulu en exploitation mais
 // noierait la sortie des tests. On coupe le logger : le contenu du bilan
@@ -34,14 +35,21 @@ describe('GtfsImportService', () => {
     transitLine: { upsert: UpsertMock };
   };
 
+  // La construction du réseau est simulée : elle a son propre fichier de
+  // tests. Ici on vérifie l'import du RÉFÉRENTIEL et le fait que la
+  // construction est bien déclenchée ensuite.
+  let networkBuilder: { buildNetwork: jest.Mock };
+
   beforeEach(() => {
     prisma = {
       stop: { upsert: jest.fn<Promise<unknown>, [UpsertArg]>() },
       transitLine: { upsert: jest.fn<Promise<unknown>, [UpsertArg]>() },
     };
+    networkBuilder = { buildNetwork: jest.fn().mockResolvedValue(undefined) };
     service = new GtfsImportService(
       prisma as unknown as PrismaService,
       new GtfsReaderService(),
+      networkBuilder as unknown as NetworkBuilderService,
     );
   });
 
@@ -175,13 +183,17 @@ describe('GtfsImportService', () => {
       expect(resume).toContain('route_type 2 (train)');
     });
 
-    it("n'importe QUE le référentiel : stop_times n'est pas lu", async () => {
-      const report = await service.importReferential(FIXTURES, 'RATP');
+    it('déclenche la construction du réseau APRÈS le référentiel', async () => {
+      await service.importReferential(FIXTURES, 'RATP');
 
-      // La construction des liaisons appartient à 4C-4-4 : à ce stade,
-      // stop_times.txt et trips.txt ne sont même pas ouverts.
-      expect(report.files.stopTimes.total).toBe(0);
-      expect(report.files.trips.total).toBe(0);
+      // Les liaisons référencent des arrêts et des lignes : celles-ci
+      // doivent exister avant. On vérifie donc que la construction est
+      // bien appelée, et avec le même dossier et le même rapport.
+      expect(networkBuilder.buildNetwork).toHaveBeenCalledTimes(1);
+      expect(networkBuilder.buildNetwork).toHaveBeenCalledWith(
+        FIXTURES,
+        expect.any(Object),
+      );
     });
   });
 

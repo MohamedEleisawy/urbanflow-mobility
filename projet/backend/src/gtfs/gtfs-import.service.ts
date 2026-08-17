@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { GtfsReaderService } from './gtfs-reader.service';
 import { GtfsImportReport } from './gtfs-import-report';
 import { describeRouteType, mapRouteType } from './route-type.mapping';
+import { NetworkBuilderService } from './network-builder.service';
 
 /**
  * Import du RÉFÉRENTIEL GTFS : les arrêts et les lignes (étape 4C-4-3).
@@ -26,6 +27,7 @@ export class GtfsImportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly reader: GtfsReaderService,
+    private readonly networkBuilder: NetworkBuilderService,
   ) {}
 
   /**
@@ -41,8 +43,11 @@ export class GtfsImportService {
   ): Promise<GtfsImportReport> {
     const report = new GtfsImportReport();
 
+    // L'ordre est imposé par les dépendances : les liaisons référencent des
+    // arrêts et des lignes, qui doivent donc exister d'abord.
     await this.importStops(folder, operatorCode, report);
     await this.importLines(folder, report);
+    await this.networkBuilder.buildNetwork(folder, report);
 
     // Le bilan est journalisé, jamais silencieux : c'est la seule façon de
     // savoir ce qu'un flux réel contenait vraiment.

@@ -81,9 +81,25 @@ export class GtfsImportReport {
   /// correctement LUES. Une ligne peut être parfaitement valide et ne pas
   /// être importée : c'est le cas d'une ligne de train, dont le route_type
   /// n'a pas d'équivalent dans notre enum.
-  readonly imported: Record<'stops' | 'transitLines', number> = {
-    stops: 0,
-    transitLines: 0,
+  readonly imported: Record<'stops' | 'transitLines' | 'networkLinks', number> =
+    {
+      stops: 0,
+      transitLines: 0,
+      networkLinks: 0,
+    };
+
+  /// Paires d'arrêts consécutifs rencontrées lors de la construction du
+  /// réseau (étape 4C-4-4). Une paire est un candidat de liaison ; plusieurs
+  /// paires identiques se regroupent ensuite en UNE seule NetworkLink.
+  readonly pairs: { total: number; valid: number; invalidDuration: number } = {
+    total: 0,
+    valid: 0,
+    invalidDuration: 0,
+  };
+
+  /// Anomalies de structure du flux, sans gravité mais à signaler.
+  readonly anomalies: { unsortedStopTimes: number } = {
+    unsortedStopTimes: 0,
   };
 
   /// route_type non traduits, comptés PAR TYPE.
@@ -116,8 +132,27 @@ export class GtfsImportReport {
   }
 
   /// Une entité a été écrite (créée ou mise à jour) en base.
-  countImported(entity: 'stops' | 'transitLines'): void {
+  countImported(entity: 'stops' | 'transitLines' | 'networkLinks'): void {
     this.imported[entity] += 1;
+  }
+
+  /// Une paire d'arrêts consécutifs exploitable.
+  countValidPair(): void {
+    this.pairs.total += 1;
+    this.pairs.valid += 1;
+  }
+
+  /// Une paire dont les horaires ne permettent pas de calculer une durée
+  /// (arrivée antérieure au départ, par exemple).
+  countInvalidPair(): void {
+    this.pairs.total += 1;
+    this.pairs.invalidDuration += 1;
+  }
+
+  /// stop_times.txt n'était pas groupé par trajet : un trajet déjà traité
+  /// réapparaît plus loin dans le fichier.
+  countUnsortedStopTimes(): void {
+    this.anomalies.unsortedStopTimes += 1;
   }
 
   /// Une ligne valide n'a pas pu être importée faute de mode équivalent.
@@ -164,10 +199,30 @@ export class GtfsImportReport {
       }
     }
 
-    if (this.imported.stops > 0 || this.imported.transitLines > 0) {
+    if (this.pairs.total > 0) {
+      lignes.push(
+        `  Paires d'arrêts consécutifs : ${this.pairs.total} ` +
+          `(${this.pairs.valid} exploitables, ` +
+          `${this.pairs.invalidDuration} à durée invalide)`,
+      );
+    }
+
+    if (this.anomalies.unsortedStopTimes > 0) {
+      lignes.push(
+        `  Anomalie : stop_times.txt non groupé par trajet ` +
+          `(${this.anomalies.unsortedStopTimes} reprises)`,
+      );
+    }
+
+    if (
+      this.imported.stops > 0 ||
+      this.imported.transitLines > 0 ||
+      this.imported.networkLinks > 0
+    ) {
       lignes.push('  Écrits en base :');
-      lignes.push(`    arrêts : ${this.imported.stops}`);
-      lignes.push(`    lignes : ${this.imported.transitLines}`);
+      lignes.push(`    arrêts   : ${this.imported.stops}`);
+      lignes.push(`    lignes   : ${this.imported.transitLines}`);
+      lignes.push(`    liaisons : ${this.imported.networkLinks}`);
     }
 
     const nonSupportes = Object.entries(this.unsupportedRouteTypes);

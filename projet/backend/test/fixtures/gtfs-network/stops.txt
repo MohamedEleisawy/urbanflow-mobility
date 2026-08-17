@@ -1,0 +1,4 @@
+stop_id,stop_name,stop_lat,stop_lon,location_type,wheelchair_boarding
+N1,Reseau Nord,-33.00,18.00,0,1
+N2,Reseau Centre,-33.01,18.00,0,0
+N3,Reseau Sud,-33.02,18.00,0,1
