@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { GtfsReaderService } from './gtfs-reader.service';
 import { GtfsImportService } from './gtfs-import.service';
 import { NetworkBuilderService } from './network-builder.service';
+import { GtfsSourceService } from './gtfs-source.service';
 
 // Module de lecture des flux GTFS (étape 4C-4-2).
 //
@@ -14,7 +15,17 @@ import { NetworkBuilderService } from './network-builder.service';
 // GtfsImportService a besoin de PrismaService : celui-ci est disponible
 // partout grâce à PrismaModule, déclaré @Global() depuis l'étape 2A.
 @Module({
-  providers: [GtfsReaderService, GtfsImportService, NetworkBuilderService],
-  exports: [GtfsReaderService, GtfsImportService, NetworkBuilderService],
+  providers: [
+    GtfsReaderService,
+    GtfsImportService,
+    NetworkBuilderService,
+    GtfsSourceService,
+  ],
+  exports: [
+    GtfsReaderService,
+    GtfsImportService,
+    NetworkBuilderService,
+    GtfsSourceService,
+  ],
 })
 export class GtfsModule {}

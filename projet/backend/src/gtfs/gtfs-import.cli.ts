@@ -1,10 +1,12 @@
 // =============================================================================
 // Script d'import GTFS en ligne de commande (étape 4C-4-3)
 // =============================================================================
-//   npm run gtfs:import -- <dossier> [codeExploitant]
+//   npm run gtfs:import -- <source> [codeExploitant]
 //
-// Exemple :
-//   npm run gtfs:import -- test/fixtures/gtfs RATP
+// La source peut être (étape 4C-4-5) :
+//   - un dossier    : npm run gtfs:import -- test/fixtures/gtfs RATP
+//   - une archive   : npm run gtfs:import -- ./reseau.zip RATP
+//   - une URL       : npm run gtfs:import -- https://exemple.fr/reseau.zip RATP
 //
 // Pourquoi un script et pas un endpoint HTTP ?
 // Le dossier de conception prévoit à terme un endpoint réservé à
@@ -25,11 +27,12 @@ import { AppModule } from '../app.module';
 import { GtfsImportService } from './gtfs-import.service';
 
 async function main(): Promise<void> {
-  const [dossier, codeExploitant] = process.argv.slice(2);
+  const [source, codeExploitant] = process.argv.slice(2);
 
-  if (!dossier) {
+  if (!source) {
     console.error(
-      'Usage : npm run gtfs:import -- <dossier> [codeExploitant]\n' +
+      'Usage : npm run gtfs:import -- <source> [codeExploitant]\n' +
+        'La source peut être un dossier, une archive .zip ou une URL http(s).\n' +
         'Exemple : npm run gtfs:import -- test/fixtures/gtfs RATP',
     );
     process.exit(1);
@@ -39,7 +42,7 @@ async function main(): Promise<void> {
   const service = app.get(GtfsImportService);
 
   try {
-    await service.importReferential(dossier, codeExploitant ?? '');
+    await service.importFromSource(source, codeExploitant ?? '');
   } finally {
     await app.close();
   }

@@ -1,7 +1,9 @@
 // Charge projet/backend/.env : en test end-to-end, main.ts n'est jamais
 // exécuté (voir routes-search.e2e-spec.ts pour l'explication détaillée).
 import 'dotenv/config';
+import { createReadStream } from 'node:fs';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, Logger, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
@@ -215,5 +217,121 @@ describe('Import GTFS puis recherche (e2e)', () => {
 
     await prisma.route.delete({ where: { id: itineraire.id } });
     await prisma.user.delete({ where: { id: usager.id } });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Étape 4C-4-5 : les trois sources
+  // ---------------------------------------------------------------------------
+  describe('sources : dossier, ZIP et URL', () => {
+    const ZIP = join(__dirname, 'fixtures', 'gtfs-network.zip');
+
+    /// Photographie du réseau importé, SANS les identifiants internes :
+    /// ceux-ci sont régénérés à chaque import et ne peuvent pas être
+    /// comparés d'une source à l'autre.
+    const etatDuReseau = async () => {
+      const liaisons = await prisma.networkLink.findMany({
+        where: { line: { gtfsRouteId: { in: ROUTES_GTFS } } },
+        select: {
+          durationMin: true,
+          distanceM: true,
+          fromStop: { select: { gtfsStopId: true, name: true } },
+          toStop: { select: { gtfsStopId: true, name: true } },
+          line: { select: { gtfsRouteId: true, name: true, mode: true } },
+        },
+      });
+
+      return liaisons
+        .map((l) => ({
+          de: l.fromStop.gtfsStopId,
+          vers: l.toStop.gtfsStopId,
+          ligne: l.line.gtfsRouteId,
+          mode: l.line.mode,
+          durationMin: l.durationMin,
+          distanceM: l.distanceM,
+        }))
+        .sort((a, b) => `${a.de}${a.vers}`.localeCompare(`${b.de}${b.vers}`));
+    };
+
+    const importer = (source: string) =>
+      app.get(GtfsImportService).importFromSource(source, 'E2E');
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('les trois sources produisent EXACTEMENT le même réseau en base', async () => {
+      // --- Source 1 : dossier ---
+      await nettoyer();
+      await importer(FIXTURES);
+      const parDossier = await etatDuReseau();
+
+      // --- Source 2 : archive ZIP locale ---
+      await nettoyer();
+      await importer(ZIP);
+      const parZip = await etatDuReseau();
+
+      // --- Source 3 : archive distante (téléchargement simulé) ---
+      await nettoyer();
+      jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValue(
+          new Response(
+            Readable.toWeb(createReadStream(ZIP)) as ReadableStream<Uint8Array>,
+            { status: 200 },
+          ),
+        );
+      await importer('https://exemple.fr/reseau.zip');
+      const parUrl = await etatDuReseau();
+
+      // Le pipeline métier est le même dans les trois cas : seule la façon
+      // d'obtenir les fichiers change.
+      expect(parDossier).toHaveLength(2);
+      expect(parZip).toEqual(parDossier);
+      expect(parUrl).toEqual(parDossier);
+    });
+
+    it('reste idempotent quelle que soit la source', async () => {
+      await nettoyer();
+      await importer(FIXTURES);
+      const apresDossier = await etatDuReseau();
+
+      // Réimporter la même donnée par une AUTRE source ne doit rien
+      // dupliquer : la clé de rapprochement est l'identifiant GTFS, pas la
+      // provenance du fichier.
+      await importer(ZIP);
+      const apresZip = await etatDuReseau();
+
+      expect(apresZip).toEqual(apresDossier);
+      expect(apresZip).toHaveLength(2);
+    });
+
+    it('laisse le réseau exploitable par la recherche après un import ZIP', async () => {
+      await nettoyer();
+      await importer(ZIP);
+
+      const response = await request(app.getHttpServer())
+        .post('/api/routes/search')
+        .send(RECHERCHE)
+        .expect(200);
+
+      const itineraires = response.body as { totalDurationMin: number }[];
+      expect(itineraires[0].totalDurationMin).toBe(14);
+    });
+
+    it('remonte une erreur claire pour une archive corrompue', async () => {
+      await expect(
+        importer(join(__dirname, 'fixtures', 'gtfs-corrompu.zip')),
+      ).rejects.toThrow(/Archive GTFS illisible/);
+    });
+
+    it('remonte une erreur claire pour une URL en échec', async () => {
+      jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValue(new Response(null, { status: 500 }));
+
+      await expect(importer('https://exemple.fr/panne.zip')).rejects.toThrow(
+        /HTTP 500/,
+      );
+    });
   });
 });

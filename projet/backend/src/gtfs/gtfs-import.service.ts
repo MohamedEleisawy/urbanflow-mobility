@@ -5,6 +5,7 @@ import { GtfsReaderService } from './gtfs-reader.service';
 import { GtfsImportReport } from './gtfs-import-report';
 import { describeRouteType, mapRouteType } from './route-type.mapping';
 import { NetworkBuilderService } from './network-builder.service';
+import { GtfsSourceService } from './gtfs-source.service';
 
 /**
  * Import du RÉFÉRENTIEL GTFS : les arrêts et les lignes (étape 4C-4-3).
@@ -28,7 +29,33 @@ export class GtfsImportService {
     private readonly prisma: PrismaService,
     private readonly reader: GtfsReaderService,
     private readonly networkBuilder: NetworkBuilderService,
+    private readonly sourceService: GtfsSourceService,
   ) {}
+
+  /**
+   * Importe un flux GTFS depuis N'IMPORTE QUELLE source (étape 4C-4-5) :
+   * un dossier local, une archive .zip locale, ou une URL http(s).
+   *
+   * C'est le point d'entrée à utiliser. Le service ne sait rien du ZIP ni
+   * du réseau : il demande un dossier au GtfsSourceService, puis applique
+   * exactement le même traitement dans les trois cas.
+   *
+   * @param source       dossier, chemin d'archive .zip, ou URL
+   * @param operatorCode code d'exploitant attribué aux arrêts importés
+   */
+  async importFromSource(
+    source: string,
+    operatorCode = '',
+  ): Promise<GtfsImportReport> {
+    const flux = await this.sourceService.resolve(source);
+
+    try {
+      return await this.importReferential(flux.folder, operatorCode);
+    } finally {
+      // Les fichiers temporaires sont supprimés même si l'import échoue.
+      await flux.cleanup();
+    }
+  }
 
   /**
    * Lit `stops.txt` et `routes.txt` du dossier indiqué et les écrit en base.

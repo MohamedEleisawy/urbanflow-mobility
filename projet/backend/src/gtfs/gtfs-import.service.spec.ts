@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { GtfsImportService } from './gtfs-import.service';
 import { GtfsReaderService } from './gtfs-reader.service';
 import { NetworkBuilderService } from './network-builder.service';
+import { GtfsSourceService } from './gtfs-source.service';
 
 // Le service journalise son bilan, ce qui est voulu en exploitation mais
 // noierait la sortie des tests. On coupe le logger : le contenu du bilan
@@ -39,6 +40,10 @@ describe('GtfsImportService', () => {
   // tests. Ici on vérifie l'import du RÉFÉRENTIEL et le fait que la
   // construction est bien déclenchée ensuite.
   let networkBuilder: { buildNetwork: jest.Mock };
+  // La résolution des sources (dossier / ZIP / URL) a son propre fichier de
+  // tests : ici on vérifie seulement que l'importeur s'en sert correctement.
+  let sourceService: { resolve: jest.Mock };
+  let cleanup: jest.Mock;
 
   beforeEach(() => {
     prisma = {
@@ -46,10 +51,15 @@ describe('GtfsImportService', () => {
       transitLine: { upsert: jest.fn<Promise<unknown>, [UpsertArg]>() },
     };
     networkBuilder = { buildNetwork: jest.fn().mockResolvedValue(undefined) };
+    cleanup = jest.fn().mockResolvedValue(undefined);
+    sourceService = {
+      resolve: jest.fn().mockResolvedValue({ folder: FIXTURES, cleanup }),
+    };
     service = new GtfsImportService(
       prisma as unknown as PrismaService,
       new GtfsReaderService(),
       networkBuilder as unknown as NetworkBuilderService,
+      sourceService as unknown as GtfsSourceService,
     );
   });
 
@@ -194,6 +204,62 @@ describe('GtfsImportService', () => {
         FIXTURES,
         expect.any(Object),
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Étape 4C-4-5 : import depuis n'importe quelle source
+  // ---------------------------------------------------------------------------
+  describe('importFromSource', () => {
+    it('demande au service de sources de résoudre la source', async () => {
+      await service.importFromSource('https://exemple.fr/reseau.zip', 'RATP');
+
+      // L'importeur ne sait rien du ZIP ni du réseau : il délègue.
+      expect(sourceService.resolve).toHaveBeenCalledWith(
+        'https://exemple.fr/reseau.zip',
+      );
+    });
+
+    it('importe depuis le dossier fourni par le service de sources', async () => {
+      const report = await service.importFromSource('peu-importe.zip', 'RATP');
+
+      // Le traitement est identique quelle que soit la source : ce sont
+      // bien les fixtures résolues qui ont été importées.
+      expect(report.imported.stops).toBe(4);
+      expect(report.imported.transitLines).toBe(3);
+    });
+
+    it('nettoie les fichiers temporaires après un import réussi', async () => {
+      await service.importFromSource('peu-importe.zip', 'RATP');
+
+      expect(cleanup).toHaveBeenCalledTimes(1);
+    });
+
+    it('nettoie les fichiers temporaires MÊME si l’import échoue', async () => {
+      // Le dossier résolu ne contient aucun fichier GTFS.
+      sourceService.resolve.mockResolvedValue({
+        folder: join(FIXTURES, 'dossier-inexistant'),
+        cleanup,
+      });
+
+      await expect(
+        service.importFromSource('peu-importe.zip'),
+      ).rejects.toThrow();
+
+      // Sans ce nettoyage, chaque import raté laisserait une archive
+      // décompressée sur le disque.
+      expect(cleanup).toHaveBeenCalledTimes(1);
+    });
+
+    it('laisse remonter une erreur de source sans tenter d’importer', async () => {
+      sourceService.resolve.mockRejectedValue(
+        new Error('Protocole non autorisé'),
+      );
+
+      await expect(
+        service.importFromSource('ftp://exemple.fr/x.zip'),
+      ).rejects.toThrow(/Protocole non autorisé/);
+      expect(prisma.stop.upsert).not.toHaveBeenCalled();
     });
   });
 
