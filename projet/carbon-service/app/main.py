@@ -1,15 +1,25 @@
 """Point d'entrée ASGI du microservice carbone.
 
-A ce stade (étape 1 du projet), le service expose uniquement un endpoint de
-santé permettant de vérifier qu'il démarre correctement. La logique métier
-(distance, émissions CO2, EcoScore) sera ajoutée dans une étape ultérieure.
+Le service expose deux endpoints :
+
+  GET  /health     verifie que le service demarre (etape 1) ;
+  POST /calculate  calcule l'empreinte carbone d'un itineraire (etape 4D-1).
+
+Le calcul est SANS ETAT : aucune base de donnees, aucun utilisateur, aucun
+appel reseau sortant. Le microservice recoit une liste de segments et renvoie
+des grammes de CO2. L'enregistrement d'un trajet dans l'historique personnel
+(CarbonRecord) releve de l'etape 4E et du backend NestJS, pas d'ici.
+
+L'EcoScore n'est pas calcule a ce stade : il est reporte.
 """
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app import __version__
+from app.carbon import calculer_empreinte
 from app.config import Settings, get_settings
+from app.models import CalculationIn, CalculationOut
 
 
 class HealthResponse(BaseModel):
@@ -40,6 +50,17 @@ def create_app() -> FastAPI:
             version=__version__,
             environment=settings.environment,
         )
+
+    @app.post("/calculate", response_model=CalculationOut, tags=["carbone"])
+    def calculate(requete: CalculationIn) -> CalculationOut:
+        """Calcule l'empreinte carbone d'un itineraire.
+
+        FastAPI valide le corps de la requete contre CalculationIn AVANT
+        d'entrer dans cette fonction : une liste vide, une distance negative,
+        un mode inconnu ou un mode sans facteur d'emission produisent donc
+        automatiquement une reponse 422, sans qu'aucun calcul ne demarre.
+        """
+        return calculer_empreinte(requete.segments)
 
     return app
 
