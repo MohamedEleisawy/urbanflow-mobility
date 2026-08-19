@@ -146,7 +146,22 @@ model Segment {
   arrivalTime   DateTime
   distanceM     Int
   line          String
-  gtfsTripId    String
+
+  /// Identifiant du trajet dans le flux GTFS (trips.txt, colonne trip_id).
+  ///
+  /// NULLABLE depuis l'étape 4E-1, et c'est une décision de fond.
+  ///
+  /// Un `Trip` GTFS est un PASSAGE PRÉCIS : le bus de 8 h 12, un jour donné.
+  /// Notre `NetworkLink`, lui, est un AGRÉGAT : il résume tous les passages
+  /// d'une ligne entre deux arrêts, et sa durée est leur MÉDIANE (étape
+  /// 4C-4-4). Un itinéraire calculé sur ce réseau ne correspond donc à aucun
+  /// passage en particulier — il n'existe aucun `trip_id` à lui attribuer.
+  ///
+  /// En fabriquer un serait inventer une donnée, exactement ce que nous
+  /// avons refusé de faire pour le facteur d'émission d'ESCOOTER (4D-1).
+  /// Le champ reste renseigné quand la donnée existe vraiment ; il vaut
+  /// NULL quand elle n'existe pas.
+  gtfsTripId String?
 
   route   Route  @relation(fields: [routeId], references: [id], onDelete: Cascade)
   routeId String @db.Uuid
