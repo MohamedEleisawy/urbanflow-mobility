@@ -75,4 +75,7 @@ class CalculationOut(BaseModel):
     car_co2_g: float
     #: Economie realisee par rapport a la voiture, jamais negative.
     saved_g: float
+    #: Score environnemental du trajet, de 0 (voiture) a 100 (mobilite douce).
+    #: Une seule decimale, contre deux pour les grammes : voir app/ecoscore.py.
+    eco_score: float
     breakdown: list[SegmentBreakdown]

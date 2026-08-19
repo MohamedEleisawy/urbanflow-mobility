@@ -22,6 +22,7 @@ levee : un bug silencieux et grossier. D'ou un test dedie, verifiable de tete
 
 from collections.abc import Sequence
 
+from app.ecoscore import calculer_ecoscore
 from app.factors import FACTEUR_VOITURE_G_PAR_KM, facteur_pour
 from app.models import CalculationOut, SegmentBreakdown, SegmentIn
 
@@ -76,10 +77,16 @@ def calculer_empreinte(segments: Sequence[SegmentIn]) -> CalculationOut:
     # l'usager.
     saved_g = max(car_co2_g - total_co2_g, 0.0)
 
+    # L'EcoScore est calcule ICI, a partir des resultats qui precedent : les
+    # emissions ne sont JAMAIS parcourues une seconde fois. Il recoit les
+    # valeurs en PLEINE PRECISION, avant les arrondis ci-dessous.
+    eco_score = calculer_ecoscore(saved_g, car_co2_g)
+
     return CalculationOut(
         total_distance_m=total_distance_m,
         total_co2_g=round(total_co2_g, DECIMALES),
         car_co2_g=round(car_co2_g, DECIMALES),
         saved_g=round(saved_g, DECIMALES),
+        eco_score=eco_score,
         breakdown=breakdown,
     )

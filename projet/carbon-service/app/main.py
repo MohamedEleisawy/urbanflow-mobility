@@ -10,7 +10,9 @@ appel reseau sortant. Le microservice recoit une liste de segments et renvoie
 des grammes de CO2. L'enregistrement d'un trajet dans l'historique personnel
 (CarbonRecord) releve de l'etape 4E et du backend NestJS, pas d'ici.
 
-L'EcoScore n'est pas calcule a ce stade : il est reporte.
+Depuis l'etape 4D-3-1, la reponse porte aussi un EcoScore de 0 a 100. Il est
+calcule ici, et non dans NestJS, pour la meme raison que les emissions : tout
+ce qui touche a l'environnement vit dans un seul service. Voir app/ecoscore.py.
 """
 
 from fastapi import FastAPI

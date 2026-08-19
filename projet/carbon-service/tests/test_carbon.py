@@ -231,6 +231,8 @@ class TestEndpointCalculate:
             "total_co2_g": 361.6,
             "car_co2_g": 828.4,
             "saved_g": 466.8,
+            # Ajoute a l'etape 4D-3-1 : 466,8 / 828,4 = 0,5635...
+            "eco_score": 56.3,
             "breakdown": [
                 {"mode": "WALK", "distance_m": 600, "co2_g": 0.0},
                 {"mode": "BUS", "distance_m": 3200, "co2_g": 361.6},
@@ -285,6 +287,80 @@ class TestEndpointCalculate:
         reponse = client.post("/calculate", json={})
 
         assert reponse.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# EcoScore exposé par l'API (etape 4D-3-1)
+# ---------------------------------------------------------------------------
+class TestEcoScoreDansLApi:
+    def calculer(self, segments: list[dict[str, object]]) -> dict[str, object]:
+        reponse = client.post("/calculate", json={"segments": segments})
+        assert reponse.status_code == 200
+        corps: dict[str, object] = reponse.json()
+        return corps
+
+    def test_la_reponse_contient_un_eco_score(self) -> None:
+        corps = self.calculer([{"mode": "BUS", "distance_m": 1000}])
+
+        assert "eco_score" in corps
+
+    def test_marche_puis_bus_donne_56_3(self) -> None:
+        corps = self.calculer(
+            [
+                {"mode": "WALK", "distance_m": 600},
+                {"mode": "BUS", "distance_m": 3200},
+            ]
+        )
+
+        assert corps["eco_score"] == 56.3
+
+    def test_la_voiture_donne_zero(self) -> None:
+        corps = self.calculer([{"mode": "CAR", "distance_m": 8000}])
+
+        assert corps["eco_score"] == 0.0
+
+    def test_la_marche_donne_cent(self) -> None:
+        corps = self.calculer([{"mode": "WALK", "distance_m": 2000}])
+
+        assert corps["eco_score"] == 100.0
+
+    def test_une_distance_nulle_donne_cent(self) -> None:
+        # Convention documentee dans app/ecoscore.py.
+        corps = self.calculer([{"mode": "BUS", "distance_m": 0}])
+
+        assert corps["eco_score"] == 100.0
+
+    def test_le_score_sort_avec_une_seule_decimale(self) -> None:
+        # Contrairement aux grammes, arrondis a deux decimales (4D-1).
+        corps = self.calculer([{"mode": "BUS", "distance_m": 1000}])
+
+        assert corps["eco_score"] == 48.2
+        assert round(float(str(corps["eco_score"])), 1) == corps["eco_score"]
+
+    def test_les_autres_champs_gardent_leur_format(self) -> None:
+        # L'ajout du score ne doit RIEN changer d'autre dans la reponse.
+        corps = self.calculer(
+            [
+                {"mode": "WALK", "distance_m": 600},
+                {"mode": "BUS", "distance_m": 3200},
+            ]
+        )
+
+        assert corps["total_distance_m"] == 3800
+        assert corps["total_co2_g"] == 361.6
+        assert corps["car_co2_g"] == 828.4
+        assert corps["saved_g"] == 466.8
+
+    def test_escooter_reste_refuse_avant_tout_score(self) -> None:
+        # Le mode est rejete par la validation : aucun EcoScore n'est produit,
+        # et surtout aucune valeur n'est inventee pour un mode sans facteur.
+        reponse = client.post(
+            "/calculate",
+            json={"segments": [{"mode": "ESCOOTER", "distance_m": 1000}]},
+        )
+
+        assert reponse.status_code == 422
+        assert "eco_score" not in reponse.text
 
 
 # ---------------------------------------------------------------------------
