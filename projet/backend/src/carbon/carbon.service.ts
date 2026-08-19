@@ -22,6 +22,7 @@ interface ReponseCalculFastApi {
   total_co2_g: number;
   car_co2_g: number;
   saved_g: number;
+  eco_score: number;
   breakdown: {
     mode: ModeTransport;
     distance_m: number;
@@ -180,6 +181,11 @@ export class CarbonService {
       typeof champs.total_co2_g === 'number' &&
       typeof champs.car_co2_g === 'number' &&
       typeof champs.saved_g === 'number' &&
+      // Ajouté à l'étape 4D-3-2. Sans cette ligne, un microservice trop
+      // ancien renverrait un 200 sans score, et l'API publique répondrait
+      // `"ecoScore": undefined` — donc, une fois sérialisée, un champ
+      // silencieusement ABSENT. Mieux vaut un 503 franc.
+      typeof champs.eco_score === 'number' &&
       Array.isArray(champs.breakdown)
     );
   }
@@ -235,6 +241,11 @@ export class CarbonService {
       totalCo2Grams: reponse.total_co2_g,
       carCo2Grams: reponse.car_co2_g,
       savedVsCarGrams: reponse.saved_g,
+      // Le score est TRANSMIS, jamais recalculé : le refaire ici créerait une
+      // seconde implémentation de la même formule, qui divergerait le jour où
+      // l'une des deux changerait. Le microservice détient les facteurs, donc
+      // il détient le score.
+      ecoScore: reponse.eco_score,
       breakdown: reponse.breakdown.map((detail): CarbonBreakdownItemDto => ({
         mode: detail.mode,
         distanceM: detail.distance_m,

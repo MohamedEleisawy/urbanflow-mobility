@@ -20,12 +20,14 @@ beforeAll(() => {
 const URL_TEST = 'http://microservice-carbone:8000';
 
 // Réponse type du microservice, telle que mesurée à l'étape 4D-1 pour
-// 600 m à pied puis 3200 m en bus.
+// 600 m à pied puis 3200 m en bus. eco_score est venu s'y ajouter en 4D-3-1
+// (466,8 / 828,4 = 0,5635...).
 const REPONSE_FASTAPI = {
   total_distance_m: 3800,
   total_co2_g: 361.6,
   car_co2_g: 828.4,
   saved_g: 466.8,
+  eco_score: 56.3,
   breakdown: [
     { mode: 'WALK', distance_m: 600, co2_g: 0.0 },
     { mode: 'BUS', distance_m: 3200, co2_g: 361.6 },
@@ -171,6 +173,7 @@ describe('CarbonService', () => {
         totalCo2Grams: 361.6,
         carCo2Grams: 828.4,
         savedVsCarGrams: 466.8,
+        ecoScore: 56.3,
         breakdown: [
           { mode: 'WALK', distanceM: 600, co2Grams: 0 },
           { mode: 'BUS', distanceM: 3200, co2Grams: 361.6 },
@@ -204,6 +207,44 @@ describe('CarbonService', () => {
 
       expect(resultat.totalCo2Grams).toBe(112.89);
       expect(resultat.savedVsCarGrams).toBe(466.79);
+    });
+
+    it('traduit eco_score en ecoScore sans toucher à la valeur', async () => {
+      mockerFetch(() => Promise.resolve(reponse(REPONSE_FASTAPI)));
+
+      const resultat = await service.calculate(dtoValide());
+
+      expect(resultat.ecoScore).toBe(56.3);
+    });
+
+    it.each<[string, number]>([
+      ['un trajet sans émission', 100.0],
+      ['un trajet en voiture', 0.0],
+      ['un trajet en tram', 98.2],
+      ['une distance nulle', 100.0],
+    ])('conserve le score de %s : %p', async (_cas, score) => {
+      // Le proxy ne doit ni arrondir, ni borner, ni réinterpréter : les
+      // bornes 0 et 100 comme la décimale appartiennent au microservice.
+      mockerFetch(() =>
+        Promise.resolve(reponse({ ...REPONSE_FASTAPI, eco_score: score })),
+      );
+
+      const resultat = await service.calculate(dtoValide());
+
+      expect(resultat.ecoScore).toBe(score);
+    });
+
+    it('envoie snake_case à FastAPI et renvoie camelCase au client', async () => {
+      const appel = mockerFetch(() =>
+        Promise.resolve(reponse(REPONSE_FASTAPI)),
+      );
+
+      const resultat = await service.calculate(dtoValide());
+
+      // Les deux conventions coexistent, de part et d'autre du proxy.
+      expect(JSON.stringify(resultat)).toContain('ecoScore');
+      expect(JSON.stringify(resultat)).not.toContain('eco_score');
+      expect(appel.mock.calls[0][1]?.body as string).not.toContain('ecoScore');
     });
 
     it('conserve un breakdown vide tel quel', async () => {
@@ -315,6 +356,41 @@ describe('CarbonService', () => {
       // Un champ manquant deviendrait `undefined` dans la réponse publique :
       // l'usager lirait une empreinte vide au lieu d'une erreur.
       mockerFetch(() => Promise.resolve(reponse({ total_co2_g: 12 })));
+
+      await expect(service.calculate(dtoValide())).rejects.toThrow(
+        ServiceUnavailableException,
+      );
+    });
+
+    it('traduit un 200 sans eco_score en 503', async () => {
+      // Cas concret : un microservice resté en version 4D-2. Sans le
+      // contrôle de forme, la réponse publique porterait `ecoScore:
+      // undefined`, que JSON.stringify fait purement DISPARAÎTRE — le client
+      // recevrait donc un contrat amputé, sans la moindre erreur.
+      const { eco_score: _ignore, ...sansScore } = REPONSE_FASTAPI;
+      mockerFetch(() => Promise.resolve(reponse(sansScore)));
+
+      await expect(service.calculate(dtoValide())).rejects.toThrow(
+        ServiceUnavailableException,
+      );
+    });
+
+    it('traduit un eco_score du mauvais type en 503', async () => {
+      mockerFetch(() =>
+        Promise.resolve(reponse({ ...REPONSE_FASTAPI, eco_score: '56.3' })),
+      );
+
+      await expect(service.calculate(dtoValide())).rejects.toThrow(
+        ServiceUnavailableException,
+      );
+    });
+
+    it('traduit un eco_score nul en 503', async () => {
+      // `null` passerait un simple test de présence, mais n'est pas un
+      // nombre : le contrôle porte bien sur le TYPE.
+      mockerFetch(() =>
+        Promise.resolve(reponse({ ...REPONSE_FASTAPI, eco_score: null })),
+      );
 
       await expect(service.calculate(dtoValide())).rejects.toThrow(
         ServiceUnavailableException,

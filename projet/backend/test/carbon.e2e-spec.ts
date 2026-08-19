@@ -20,11 +20,13 @@ describe('POST /api/carbone (e2e)', () => {
   let app: INestApplication<App>;
 
   // Réponse type du microservice, telle que mesurée à l'étape 4D-1.
+  // eco_score est venu s'y ajouter en 4D-3-1 (466,8 / 828,4 = 0,5635...).
   const REPONSE_FASTAPI = {
     total_distance_m: 3800,
     total_co2_g: 361.6,
     car_co2_g: 828.4,
     saved_g: 466.8,
+    eco_score: 56.3,
     breakdown: [
       { mode: 'WALK', distance_m: 600, co2_g: 0.0 },
       { mode: 'BUS', distance_m: 3200, co2_g: 361.6 },
@@ -89,6 +91,8 @@ describe('POST /api/carbone (e2e)', () => {
       totalCo2Grams: 361.6,
       carCo2Grams: 828.4,
       savedVsCarGrams: 466.8,
+      // Ajouté au contrat public à l'étape 4D-3-2.
+      ecoScore: 56.3,
       breakdown: [
         { mode: 'WALK', distanceM: 600, co2Grams: 0 },
         { mode: 'BUS', distanceM: 3200, co2Grams: 361.6 },
@@ -159,6 +163,27 @@ describe('POST /api/carbone (e2e)', () => {
       .expect(422);
 
     expect(JSON.stringify(reponse.body)).toContain('ESCOOTER');
+  });
+
+  it('renvoie 503 si le microservice répond 200 sans eco_score', async () => {
+    // Cas concret : un microservice resté en version 4D-2. Le contrat public
+    // serait alors amputé de son score, SANS aucune erreur — car
+    // JSON.stringify supprime purement les champs `undefined`.
+    const { eco_score: _ignore, ...sansScore } = REPONSE_FASTAPI;
+    jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(
+        new Response(JSON.stringify(sansScore), { status: 200 }),
+      );
+
+    const reponse = await request(app.getHttpServer())
+      .post('/api/carbone')
+      .send(CORPS_VALIDE)
+      .expect(503);
+
+    expect(reponse.body).toMatchObject({
+      message: 'Service de calcul carbone indisponible',
+    });
   });
 
   it('renvoie 503 quand le microservice est injoignable', async () => {

@@ -24,5 +24,19 @@ export interface CarbonResultDto {
   // schema.prisma : quand l'étape 4E enregistrera les trajets, aucune
   // traduction supplémentaire ne sera nécessaire.
   savedVsCarGrams: number;
+  /**
+   * Score environnemental du trajet, de 0 à 100 (étape 4D-3-1).
+   *
+   * 0 = équivalent à la voiture individuelle, 100 = aucune émission. C'est
+   * le pourcentage d'émissions évitées par rapport à la voiture.
+   *
+   * OBLIGATOIRE, et non optionnel : un `ecoScore?: number` laisserait passer
+   * une réponse FastAPI incomplète, et l'usager lirait `undefined` au lieu
+   * d'une erreur. Le contrôle de forme de CarbonService l'exige donc aussi.
+   *
+   * Il porte UNE décimale, là où les grammes en portent deux : c'est le
+   * microservice qui arrondit, le proxy ne fait que transmettre.
+   */
+  ecoScore: number;
   breakdown: CarbonBreakdownItemDto[];
 }
