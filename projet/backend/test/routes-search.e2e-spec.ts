@@ -243,6 +243,91 @@ describe('POST /api/routes/search (e2e)', () => {
     expect(rapide?.segments[0].fromStopName).toBe('E2E Arret A');
   });
 
+  // ---------------------------------------------------------------------------
+  // Étape 4E-2 : nom de ligne et exploitant
+  // ---------------------------------------------------------------------------
+
+  it('renvoie le nom de ligne et l’exploitant EXACTS de chaque segment', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    const itineraires = response.body as {
+      criterion: string;
+      segments: { mode: string; lineName: string; operator: string }[];
+    }[];
+
+    const rapide = itineraires.find((i) => i.criterion === 'FASTEST');
+    const court = itineraires.find((i) => i.criterion === 'SHORTEST');
+
+    // Le trajet rapide emprunte DEUX lignes différentes : la marche puis le
+    // bus 12. Vérifier les valeurs, et pas seulement leur présence, est ce
+    // qui prouve que chaque segment reçoit SA ligne — une interversion ou
+    // une valeur recopiée échouerait ici.
+    expect(
+      rapide?.segments.map((s) => ({
+        mode: s.mode,
+        lineName: s.lineName,
+        operator: s.operator,
+      })),
+    ).toEqual([
+      { mode: 'WALK', lineName: 'À pied E2E', operator: 'E2E' },
+      { mode: 'BUS', lineName: 'Bus 12 E2E', operator: 'E2E' },
+    ]);
+
+    // Le trajet direct emprunte une TROISIÈME ligne, distincte des deux
+    // précédentes bien qu'elle soit du même mode.
+    expect(court?.segments[0].lineName).toBe('Bus 99 E2E');
+    expect(court?.segments[0].mode).toBe('BUS');
+  });
+
+  it('renvoie ces champs AUSSI pour un segment à pied', async () => {
+    // Vérifie l'absence de cas particulier pour WALK : la marche est une
+    // ligne du réseau comme une autre.
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    const marche = (
+      response.body as {
+        criterion: string;
+        segments: { mode: string; lineName: string; operator: string }[];
+      }[]
+    )
+      .flatMap((i) => i.segments)
+      .find((s) => s.mode === 'WALK');
+
+    expect(marche).toBeDefined();
+    expect(marche?.lineName).toBe('À pied E2E');
+    expect(marche?.operator).toBe('E2E');
+  });
+
+  it('conserve la forme exacte du segment, sans champ en trop ni en moins', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    const court = (
+      response.body as { criterion: string; segments: object[] }[]
+    ).find((i) => i.criterion === 'SHORTEST');
+
+    // Non-régression : 4E-2 ne devait qu'AJOUTER deux clés au contrat.
+    expect(Object.keys(court!.segments[0]).sort()).toEqual([
+      'distanceM',
+      'durationMin',
+      'fromStopId',
+      'fromStopName',
+      'lineName',
+      'mode',
+      'operator',
+      'toStopId',
+      'toStopName',
+    ]);
+  });
+
   it('ne divulgue aucune donnée personnelle (routeId, userId, horaires)', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/routes/search')

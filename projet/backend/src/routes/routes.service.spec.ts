@@ -192,22 +192,69 @@ describe('RoutesService', () => {
     const segment = (
       fromStopId: string,
       toStopId: string,
-      mode: 'WALK' | 'BUS',
+      mode: 'WALK' | 'BUS' | 'METRO',
       distanceM: number,
       durationMin: number,
       lineId = 'ligne-1',
+      // Depuis 4E-2, le nom et l'exploitant sont paramétrables, et
+      // VOLONTAIREMENT différents d'une liaison à l'autre ci-dessous.
+      //
+      // Avec « Ligne de test » partout, un test ne pourrait pas distinguer
+      // « la BONNE ligne est transmise » de « UNE ligne est transmise » :
+      // intervertir deux segments passerait inaperçu.
+      nomLigne = 'Ligne de test',
+      exploitant = 'RATP',
     ) => ({
       fromStopId,
       toStopId,
       distanceM,
       durationMin,
       lineId,
-      line: { id: lineId, name: 'Ligne de test', mode, operator: 'RATP' },
+      line: { id: lineId, name: nomLigne, mode, operator: exploitant },
     });
 
-    const aVersB = segment(A.id, B.id, 'WALK', 600, 10);
-    const bVersC = segment(B.id, C.id, 'BUS', 3200, 10);
-    const aVersC = segment(A.id, C.id, 'BUS', 3000, 30);
+    const aVersB = segment(
+      A.id,
+      B.id,
+      'WALK',
+      600,
+      10,
+      'ligne-marche',
+      'À pied',
+      'RATP',
+    );
+    const bVersC = segment(
+      B.id,
+      C.id,
+      'BUS',
+      3200,
+      10,
+      'ligne-bus',
+      '38',
+      'RATP',
+    );
+    // Exploitant différent : prouve que l'opérateur suit bien SA ligne et
+    // n'est pas une constante recopiée d'ailleurs.
+    const aVersC = segment(
+      A.id,
+      C.id,
+      'BUS',
+      3000,
+      30,
+      'ligne-express',
+      '350',
+      'Transdev',
+    );
+    const aVersCMetro = segment(
+      A.id,
+      C.id,
+      'METRO',
+      2800,
+      8,
+      'ligne-metro',
+      '4',
+      'RATP',
+    );
 
     // Coordonnées de recherche : volontairement décalées de quelques mètres
     // pour prouver que le service retrouve bien l'arrêt LE PLUS PROCHE.
@@ -324,6 +371,136 @@ describe('RoutesService', () => {
       expect(json).not.toContain('userId');
       expect(json).not.toContain('departureTime');
       expect(json).not.toContain('arrivalTime');
+    });
+
+    // -------------------------------------------------------------------------
+    // Étape 4E-2 : nom de ligne et exploitant dans la réponse
+    // -------------------------------------------------------------------------
+
+    it('expose le nom et l’exploitant de la ligne pour un BUS', async () => {
+      prisma.stop.findMany.mockResolvedValue([A, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+      const [itineraire] = await service.searchRoutes({
+        ...depuisA,
+        ...versC,
+      });
+
+      expect(itineraire.segments[0].lineName).toBe('350');
+      expect(itineraire.segments[0].operator).toBe('Transdev');
+    });
+
+    it('expose le nom et l’exploitant de la ligne pour un METRO', async () => {
+      prisma.stop.findMany.mockResolvedValue([A, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersCMetro]);
+
+      const [itineraire] = await service.searchRoutes({
+        ...depuisA,
+        ...versC,
+      });
+
+      expect(itineraire.segments[0].mode).toBe('METRO');
+      expect(itineraire.segments[0].lineName).toBe('4');
+      expect(itineraire.segments[0].operator).toBe('RATP');
+    });
+
+    it('expose le nom et l’exploitant AUSSI pour la marche', async () => {
+      // Test important : il vérifie qu'AUCUN cas particulier n'a été écrit
+      // pour WALK. La marche est portée par une ligne du réseau comme les
+      // autres modes (« À pied » dans le seed), donc elle traverse le même
+      // chemin de données sans traitement dédié.
+      prisma.stop.findMany.mockResolvedValue([A, B]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB]);
+
+      const [itineraire] = await service.searchRoutes({
+        ...depuisA,
+        toLat: B.latitude,
+        toLon: B.longitude,
+      });
+
+      expect(itineraire.segments[0].mode).toBe('WALK');
+      expect(itineraire.segments[0].lineName).toBe('À pied');
+      expect(itineraire.segments[0].operator).toBe('RATP');
+    });
+
+    it('associe à CHAQUE segment la ligne qui lui correspond', async () => {
+      // Le test qui compte vraiment : deux segments, deux lignes
+      // différentes. Une interversion, ou une valeur recopiée du premier
+      // segment sur le second, échouerait ici — ce qu'une simple
+      // vérification de présence ne détecterait jamais.
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
+
+      const [itineraire] = await service.searchRoutes({
+        ...depuisA,
+        ...versC,
+      });
+
+      expect(
+        itineraire.segments.map((s) => ({
+          mode: s.mode,
+          lineName: s.lineName,
+          operator: s.operator,
+        })),
+      ).toEqual([
+        { mode: 'WALK', lineName: 'À pied', operator: 'RATP' },
+        { mode: 'BUS', lineName: '38', operator: 'RATP' },
+      ]);
+    });
+
+    it('ne modifie aucune des propriétés déjà renvoyées', async () => {
+      // Garde-fou de non-régression : 4E-2 ne devait qu'AJOUTER deux champs.
+      prisma.stop.findMany.mockResolvedValue([A, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+      const [itineraire] = await service.searchRoutes({
+        ...depuisA,
+        ...versC,
+      });
+
+      expect(itineraire.segments[0]).toEqual({
+        fromStopId: A.id,
+        fromStopName: 'Gare du Nord',
+        toStopId: C.id,
+        toStopName: 'Chatelet',
+        mode: 'BUS',
+        lineName: '350',
+        operator: 'Transdev',
+        distanceM: 3000,
+        durationMin: 30,
+      });
+      expect(itineraire.criterion).toBe('FASTEST');
+      expect(itineraire.totalDistanceM).toBe(3000);
+      expect(itineraire.totalDurationMin).toBe(30);
+    });
+
+    it('reste déterministe : deux recherches identiques, réponse identique', async () => {
+      // Les nouveaux champs ne doivent pas dépendre de l'ordre de parcours.
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC, aVersC]);
+
+      const premier = await service.searchRoutes({ ...depuisA, ...versC });
+      const second = await service.searchRoutes({ ...depuisA, ...versC });
+
+      expect(JSON.stringify(premier)).toBe(JSON.stringify(second));
+    });
+
+    it('interroge la base exactement deux fois, sans requête par segment', async () => {
+      // Les noms de ligne viennent du `include: { line: true }` DÉJÀ présent.
+      // Si quelqu'un les récupérait par une requête supplémentaire, le
+      // nombre d'appels augmenterait avec le nombre de segments (N+1).
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
+
+      await service.searchRoutes({ ...depuisA, ...versC });
+
+      expect(prisma.stop.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.networkLink.findMany).toHaveBeenCalledTimes(1);
+      // La liaison est chargée AVEC sa ligne, en une seule requête.
+      expect(prisma.networkLink.findMany).toHaveBeenCalledWith({
+        orderBy: { id: 'asc' },
+        include: { line: true },
+      });
     });
 
     // -------------------------------------------------------------------------

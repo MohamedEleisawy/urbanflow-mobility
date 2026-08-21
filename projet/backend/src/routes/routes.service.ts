@@ -14,6 +14,12 @@ import { haversineDistanceM } from '../common/geo/distance.util';
 interface GraphEdge {
   toStopId: string;
   mode: ModeTransport;
+  // Nom et exploitant de la ligne, transportés depuis TransitLine (étape
+  // 4E-2). Ils ne servent PAS au calcul du chemin — Dijkstra ne pondère que
+  // durationMin et distanceM — mais l'arête est le seul endroit où
+  // l'information survit entre la requête et la réponse.
+  lineName: string;
+  operator: string;
   distanceM: number;
   durationMin: number;
 }
@@ -242,7 +248,10 @@ export class RoutesService {
       distanceM: number;
       durationMin: number;
       // Depuis 4C-4-1, le mode vient de la ligne qui exploite le tronçon.
-      line: { mode: ModeTransport };
+      // Depuis 4E-2, son nom et son exploitant en viennent aussi : la
+      // requête charge déjà la ligne ENTIÈRE (include: { line: true }), donc
+      // lire trois champs au lieu d'un ne coûte pas une requête de plus.
+      line: { mode: ModeTransport; name: string; operator: string };
     }[],
   ): Graph {
     const graph: Graph = new Map();
@@ -252,6 +261,8 @@ export class RoutesService {
       edges.push({
         toStopId: link.toStopId,
         mode: link.line.mode,
+        lineName: link.line.name,
+        operator: link.line.operator,
         distanceM: link.distanceM,
         durationMin: link.durationMin,
       });
@@ -369,6 +380,12 @@ export class RoutesService {
       toStopId: step.edge.toStopId,
       toStopName: stopsById.get(step.edge.toStopId)?.name ?? '',
       mode: step.edge.mode,
+      // Transmis TELS QUELS depuis TransitLine : aucune valeur par défaut,
+      // aucun repli, aucun traitement particulier selon le mode. La marche
+      // fonctionne comme le reste, parce qu'elle est elle aussi portée par
+      // une ligne du réseau (« À pied », voir le seed).
+      lineName: step.edge.lineName,
+      operator: step.edge.operator,
       distanceM: step.edge.distanceM,
       durationMin: step.edge.durationMin,
     }));

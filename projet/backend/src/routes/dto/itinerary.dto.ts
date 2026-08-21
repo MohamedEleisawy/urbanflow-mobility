@@ -11,6 +11,20 @@ export interface ItinerarySegmentDto {
   toStopId: string;
   toStopName: string;
   mode: ModeTransport;
+
+  // Nom et exploitant de la ligne empruntée (étape 4E-2), par exemple
+  // "38" / "RATP". Sans eux, l'API disait "prenez un BUS" sans dire LEQUEL.
+  //
+  // OBLIGATOIRES, et non optionnels : un NetworkLink porte toujours une
+  // ligne (relation requise), et TransitLine.name comme TransitLine.operator
+  // sont non-nullables. Le modèle garantit ces valeurs, le contrat public
+  // doit donc les garantir aussi.
+  //
+  // Ils seront recopiés tels quels dans Segment.line et Segment.operator au
+  // moment d'enregistrer un trajet (étape 4E-3).
+  lineName: string;
+  operator: string;
+
   distanceM: number;
   durationMin: number;
 }
