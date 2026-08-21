@@ -1,7 +1,15 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { CarbonService } from '../carbon/carbon.service';
+import { CarbonResultDto } from '../carbon/dto/carbon-result.dto';
 import { RoutesService } from './routes.service';
 import { CreateRouteDto } from './dto/create-route.dto';
+
+// Le test du breakdown incohérent provoque VOLONTAIREMENT une erreur
+// journalisée : l'afficher laisserait croire à un échec dans une suite verte.
+beforeAll(() => {
+  Logger.overrideLogger(false);
+});
 
 // Même approche que pour UsersService : PrismaService est simulé, seules
 // les méthodes réellement utilisées sont mockées. Ce sont des tests
@@ -13,59 +21,546 @@ describe('RoutesService', () => {
       create: jest.Mock;
       findMany: jest.Mock;
       findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
       delete: jest.Mock;
     };
     stop: { findMany: jest.Mock };
-    // networkLink = le réseau public, seule source du graphe depuis 4C-3.
+    // networkLink = le réseau public, seule source du graphe depuis 4C-3,
+    // et source des données fiables à l'enregistrement depuis 4E-3B.
     networkLink: { findMany: jest.Mock };
-    // segment reste simulé UNIQUEMENT pour pouvoir prouver, dans les tests
-    // d'isolation, que la recherche ne l'interroge JAMAIS.
-    segment: { findMany: jest.Mock };
+    // segment.findMany reste simulé UNIQUEMENT pour prouver, dans les tests
+    // d'isolation, que la RECHERCHE ne l'interroge JAMAIS.
+    segment: { findMany: jest.Mock; createMany: jest.Mock };
+    carbonRecord: { createMany: jest.Mock };
+    $transaction: jest.Mock;
   };
+  let carbonService: { calculate: jest.Mock };
 
   const MOI = 'user-1';
   const QUELQU_UN_DAUTRE = 'user-2';
 
-  const dto: CreateRouteDto = {
+  // ---------------------------------------------------------------------------
+  // Réseau de test pour l'enregistrement (étape 4E-3B)
+  //
+  //   stop-a ──À pied / 600 m / 10 min──> stop-b ──38 / 3200 m / 12 min──> stop-c
+  //
+  // Les deux lignes ont un NOM et un EXPLOITANT différents : c'est ce qui
+  // permet de prouver que chaque segment reçoit bien les valeurs de SA
+  // liaison, et non celles d'une autre ou une constante.
+  // ---------------------------------------------------------------------------
+  const liaisonAB = {
+    id: 'link-ab',
+    lineId: 'ligne-marche',
+    fromStopId: 'stop-a',
+    toStopId: 'stop-b',
+    distanceM: 600,
+    durationMin: 10,
+    line: {
+      id: 'ligne-marche',
+      name: 'À pied',
+      mode: 'WALK',
+      operator: 'RATP',
+    },
+  };
+  const liaisonBC = {
+    id: 'link-bc',
+    lineId: 'ligne-bus',
+    fromStopId: 'stop-b',
+    toStopId: 'stop-c',
+    distanceM: 3200,
+    durationMin: 12,
+    line: { id: 'ligne-bus', name: '38', mode: 'BUS', operator: 'Transdev' },
+  };
+
+  // Le client ne DÉCRIT pas ses segments, il les DÉSIGNE.
+  const dtoCreation: CreateRouteDto = {
     originLat: 48.8566,
     originLng: 2.3522,
     destinationLat: 48.8738,
     destinationLng: 2.295,
-    totalDurationMin: 25,
-    totalDistanceM: 5400,
-    ecoScore: 82,
-    carbonEstimate: 610,
+    segments: [
+      { lineId: 'ligne-marche', fromStopId: 'stop-a', toStopId: 'stop-b' },
+      { lineId: 'ligne-bus', fromStopId: 'stop-b', toStopId: 'stop-c' },
+    ],
   };
 
-  const maRoute = { id: 'route-1', ...dto, userId: MOI };
+  // Résultat carbone tel que mesuré à l'étape 4D-1 pour 600 m à pied puis
+  // 3200 m en bus. Les valeurs sont vérifiables de tête :
+  //   3,2 km x 113 = 361,6   |   3,8 km x 218 = 828,4   |   466,8 / 828,4 = 56,3 %
+  const RESULTAT_CARBONE: CarbonResultDto = {
+    totalDistanceM: 3800,
+    totalCo2Grams: 361.6,
+    carCo2Grams: 828.4,
+    savedVsCarGrams: 466.8,
+    ecoScore: 56.3,
+    breakdown: [
+      { mode: 'WALK', distanceM: 600, co2Grams: 0 },
+      { mode: 'BUS', distanceM: 3200, co2Grams: 361.6 },
+    ],
+  };
+
+  const routeCreee = { id: 'route-1' };
+  const maRoute = {
+    id: 'route-1',
+    originLat: 48.8566,
+    originLng: 2.3522,
+    destinationLat: 48.8738,
+    destinationLng: 2.295,
+    totalDurationMin: 22,
+    totalDistanceM: 3800,
+    ecoScore: 56.3,
+    carbonEstimate: 361.6,
+    userId: MOI,
+  };
+
+  // Raccourcis de lecture des arguments réellement envoyés à Prisma.
+  //
+  // Ils sont TYPÉS : `mock.calls[0][0]` vaut `any`, et le laisser tel quel
+  // ferait perdre toute vérification dans les assertions — une faute de
+  // frappe sur un nom de champ passerait inaperçue.
+  interface DonneesRoute {
+    requestedAt: Date;
+    totalDistanceM: number;
+    totalDurationMin: number;
+    carbonEstimate: number;
+    ecoScore: number;
+    userId: string;
+  }
+  interface DonneesSegment {
+    mode: string;
+    operator: string;
+    line: string;
+    distanceM: number;
+    fromStopId: string;
+    toStopId: string;
+    departureTime: Date;
+    arrivalTime: Date;
+    routeId: string;
+  }
+  interface DonneesCarbone {
+    date: Date;
+    mode: string;
+    distanceM: number;
+    co2Grams: number;
+    savedVsCarGrams: number;
+    userId: string;
+    routeId: string;
+  }
+
+  // `mock.calls` est un `any[]` : on le type AVANT de l'indexer, sinon
+  // chaque accès resterait non vérifié.
+  const premierAppel = <T>(mock: jest.Mock): T =>
+    (mock.mock.calls as [{ data: T }][])[0][0].data;
+
+  const donneesRoute = () => premierAppel<DonneesRoute>(prisma.route.create);
+  const donneesSegments = () =>
+    premierAppel<DonneesSegment[]>(prisma.segment.createMany);
+  const donneesCarbone = () =>
+    premierAppel<DonneesCarbone[]>(prisma.carbonRecord.createMany);
 
   beforeEach(() => {
     prisma = {
       route: {
-        create: jest.fn(),
+        create: jest.fn().mockResolvedValue(routeCreee),
         findMany: jest.fn(),
         findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(maRoute),
         delete: jest.fn(),
       },
       stop: { findMany: jest.fn() },
       networkLink: { findMany: jest.fn() },
-      segment: { findMany: jest.fn() },
+      segment: { findMany: jest.fn(), createMany: jest.fn() },
+      carbonRecord: { createMany: jest.fn() },
+      // La transaction est simulée en exécutant simplement son contenu : ces
+      // tests vérifient CE QUI est écrit, pas l'atomicité elle-même — qui ne
+      // peut se prouver que sur une vraie base (étape 4E-3C).
+      $transaction: jest.fn((rappel: (tx: unknown) => unknown) =>
+        rappel(prisma),
+      ),
     };
-    service = new RoutesService(prisma as unknown as PrismaService);
+    carbonService = {
+      calculate: jest.fn().mockResolvedValue(RESULTAT_CARBONE),
+    };
+
+    service = new RoutesService(
+      prisma as unknown as PrismaService,
+      carbonService as unknown as CarbonService,
+    );
   });
 
   describe('create', () => {
-    it("enregistre l'itinéraire en l'attachant à l'usager du JWT", async () => {
-      prisma.route.create.mockResolvedValue(maRoute);
+    beforeEach(() => {
+      prisma.networkLink.findMany.mockResolvedValue([liaisonAB, liaisonBC]);
+    });
 
-      const result = await service.create(MOI, dto);
+    // -------------------------------------------------------------------------
+    // Création nominale
+    // -------------------------------------------------------------------------
+    it("attache l'itinéraire à l'usager du JWT", async () => {
+      await service.create(MOI, dtoCreation);
 
-      // Le userId envoyé à Prisma doit être celui passé par le controller
-      // (issu du token), pas une valeur venue du corps de la requête.
-      expect(prisma.route.create).toHaveBeenCalledWith({
-        data: { ...dto, userId: MOI },
+      // userId vient du token, jamais du corps de la requête.
+      expect(donneesRoute().userId).toBe(MOI);
+    });
+
+    it('charge les liaisons demandées en UNE seule requête', async () => {
+      await service.create(MOI, dtoCreation);
+
+      // Une requête par segment serait le N+1 classique.
+      expect(prisma.networkLink.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.networkLink.findMany).toHaveBeenCalledWith({
+        where: {
+          OR: [
+            {
+              lineId: 'ligne-marche',
+              fromStopId: 'stop-a',
+              toStopId: 'stop-b',
+            },
+            { lineId: 'ligne-bus', fromStopId: 'stop-b', toStopId: 'stop-c' },
+          ],
+        },
+        include: { line: true },
       });
-      expect(result).toEqual(maRoute);
+    });
+
+    it('renvoie la route relue AVEC ses segments, dans l’ordre', async () => {
+      const resultat = await service.create(MOI, dtoCreation);
+
+      expect(prisma.route.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 'route-1' },
+        include: { segments: { orderBy: { departureTime: 'asc' } } },
+      });
+      expect(resultat).toEqual(maRoute);
+    });
+
+    // -------------------------------------------------------------------------
+    // Les données viennent du RÉSEAU, jamais du client
+    // -------------------------------------------------------------------------
+    it('reprend mode, exploitant, ligne et distance depuis NetworkLink', async () => {
+      await service.create(MOI, dtoCreation);
+
+      expect(donneesSegments()).toHaveLength(2);
+      expect(donneesSegments()[0]).toMatchObject({
+        mode: 'WALK',
+        operator: 'RATP',
+        line: 'À pied',
+        distanceM: 600,
+        fromStopId: 'stop-a',
+        toStopId: 'stop-b',
+        routeId: 'route-1',
+      });
+      expect(donneesSegments()[1]).toMatchObject({
+        mode: 'BUS',
+        operator: 'Transdev',
+        line: '38',
+        distanceM: 3200,
+        fromStopId: 'stop-b',
+        toStopId: 'stop-c',
+      });
+    });
+
+    it('calcule lui-même les totaux, sans les demander au client', async () => {
+      await service.create(MOI, dtoCreation);
+
+      expect(donneesRoute().totalDistanceM).toBe(3800); // 600 + 3200
+      expect(donneesRoute().totalDurationMin).toBe(22); // 10 + 12
+    });
+
+    it("n'écrit AUCUNE valeur qui viendrait du corps de la requête", async () => {
+      // Le client tente d'imposer ses propres chiffres. Le DTO ne les
+      // déclare pas : à supposer qu'ils franchissent la validation, ils ne
+      // doivent atteindre la base sous aucune forme.
+      const tentative = {
+        ...dtoCreation,
+        distanceM: 99,
+        totalDistanceM: 99,
+        ecoScore: 100,
+        carbonEstimate: 0,
+      } as CreateRouteDto;
+
+      await service.create(MOI, tentative);
+
+      expect(donneesRoute().totalDistanceM).toBe(3800);
+      expect(donneesRoute().ecoScore).toBe(56.3);
+      expect(donneesRoute().carbonEstimate).toBe(361.6);
+      expect(donneesSegments()[0].distanceM).toBe(600);
+    });
+
+    it('ne renseigne PAS gtfsTripId, qui restera donc null', async () => {
+      await service.create(MOI, dtoCreation);
+
+      // Un itinéraire calculé sur des liaisons AGRÉGÉES ne correspond à
+      // aucun passage GTFS précis (étapes 4C-4-4 et 4E-1).
+      expect(donneesSegments()[0]).not.toHaveProperty('gtfsTripId');
+      expect(donneesSegments()[1]).not.toHaveProperty('gtfsTripId');
+    });
+
+    // -------------------------------------------------------------------------
+    // Intégrité du trajet
+    // -------------------------------------------------------------------------
+    it('refuse un segment qui ne correspond à aucune liaison', async () => {
+      prisma.networkLink.findMany.mockResolvedValue([liaisonAB]);
+
+      await expect(service.create(MOI, dtoCreation)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('refuse un trajet interrompu', async () => {
+      const liaisonIsolee = {
+        ...liaisonBC,
+        id: 'link-de',
+        lineId: 'ligne-autre',
+        fromStopId: 'stop-d',
+        toStopId: 'stop-e',
+        line: { ...liaisonBC.line, id: 'ligne-autre' },
+      };
+      prisma.networkLink.findMany.mockResolvedValue([liaisonAB, liaisonIsolee]);
+
+      // A → B puis D → E : on ne se téléporte pas de B à D.
+      await expect(
+        service.create(MOI, {
+          ...dtoCreation,
+          segments: [
+            dtoCreation.segments[0],
+            { lineId: 'ligne-autre', fromStopId: 'stop-d', toStopId: 'stop-e' },
+          ],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("n'appelle PAS le service carbone quand le réseau est invalide", async () => {
+      prisma.networkLink.findMany.mockResolvedValue([]);
+
+      await expect(service.create(MOI, dtoCreation)).rejects.toThrow(
+        BadRequestException,
+      );
+
+      // Une requête invalide ne doit rien coûter au microservice, et
+      // surtout ne rien écrire en base.
+      expect(carbonService.calculate).not.toHaveBeenCalled();
+      expect(prisma.route.create).not.toHaveBeenCalled();
+    });
+
+    it('associe correctement un triplet répété deux fois', async () => {
+      // Un aller-retour A→B→A→B est un trajet valide et cohérent : le même
+      // triplet y apparaît deux fois. L'indexation ne doit pas le perdre.
+      const retourBA = {
+        ...liaisonAB,
+        id: 'link-ba',
+        fromStopId: 'stop-b',
+        toStopId: 'stop-a',
+      };
+      prisma.networkLink.findMany.mockResolvedValue([liaisonAB, retourBA]);
+      // Trois segments demandés, donc trois entrées de breakdown : le
+      // garde-fou de taille l'exige, et il a raison.
+      carbonService.calculate.mockResolvedValue({
+        ...RESULTAT_CARBONE,
+        breakdown: [
+          { mode: 'WALK', distanceM: 600, co2Grams: 0 },
+          { mode: 'WALK', distanceM: 600, co2Grams: 0 },
+          { mode: 'WALK', distanceM: 600, co2Grams: 0 },
+        ],
+      });
+
+      await service.create(MOI, {
+        ...dtoCreation,
+        segments: [
+          { lineId: 'ligne-marche', fromStopId: 'stop-a', toStopId: 'stop-b' },
+          { lineId: 'ligne-marche', fromStopId: 'stop-b', toStopId: 'stop-a' },
+          { lineId: 'ligne-marche', fromStopId: 'stop-a', toStopId: 'stop-b' },
+        ],
+      });
+
+      expect(donneesSegments()).toHaveLength(3);
+      expect(donneesSegments().map((s) => s.toStopId)).toEqual([
+        'stop-b',
+        'stop-a',
+        'stop-b',
+      ]);
+    });
+
+    // -------------------------------------------------------------------------
+    // Horaires estimés
+    // -------------------------------------------------------------------------
+    it('enchaîne les horaires depuis requestedAt', async () => {
+      await service.create(MOI, dtoCreation);
+
+      const depart = donneesRoute().requestedAt;
+      const [premier, second] = donneesSegments();
+
+      // Le premier segment part à l'instant de l'enregistrement...
+      expect(premier.departureTime).toEqual(depart);
+      // ...arrive 10 minutes plus tard (durée du réseau)...
+      expect(
+        premier.arrivalTime.getTime() - premier.departureTime.getTime(),
+      ).toBe(10 * 60_000);
+      // ...et le suivant repart EXACTEMENT à cette arrivée.
+      expect(second.departureTime).toEqual(premier.arrivalTime);
+      expect(
+        second.arrivalTime.getTime() - second.departureTime.getTime(),
+      ).toBe(12 * 60_000);
+      // Durée totale du trajet = somme des durées du réseau.
+      expect(second.arrivalTime.getTime() - depart.getTime()).toBe(22 * 60_000);
+    });
+
+    // -------------------------------------------------------------------------
+    // Calcul carbone
+    // -------------------------------------------------------------------------
+    it("n'envoie au service carbone que le mode et la distance du RÉSEAU", async () => {
+      await service.create(MOI, dtoCreation);
+
+      expect(carbonService.calculate).toHaveBeenCalledTimes(1);
+      expect(carbonService.calculate).toHaveBeenCalledWith({
+        segments: [
+          { mode: 'WALK', distanceM: 600 },
+          { mode: 'BUS', distanceM: 3200 },
+        ],
+      });
+    });
+
+    it('écrit les valeurs carbone renvoyées par le service', async () => {
+      await service.create(MOI, dtoCreation);
+
+      expect(donneesRoute().carbonEstimate).toBe(361.6);
+      expect(donneesRoute().ecoScore).toBe(56.3);
+    });
+
+    // -------------------------------------------------------------------------
+    // CarbonRecord
+    // -------------------------------------------------------------------------
+    it('crée un enregistrement carbone PAR segment', async () => {
+      await service.create(MOI, dtoCreation);
+
+      expect(donneesCarbone()).toHaveLength(2);
+      expect(donneesCarbone().map((c) => [c.routeId, c.userId])).toEqual([
+        ['route-1', MOI],
+        ['route-1', MOI],
+      ]);
+    });
+
+    it('respecte l’ordre breakdown[i] ↔ segment[i]', async () => {
+      await service.create(MOI, dtoCreation);
+
+      // Une inversion associerait les 361,6 g du bus au segment à pied.
+      expect(donneesCarbone()[0]).toMatchObject({
+        mode: 'WALK',
+        distanceM: 600,
+        co2Grams: 0,
+      });
+      expect(donneesCarbone()[1]).toMatchObject({
+        mode: 'BUS',
+        distanceM: 3200,
+        co2Grams: 361.6,
+      });
+    });
+
+    it('refuse un breakdown de taille incohérente', async () => {
+      // L'appariement est positionnel : si le microservice renvoyait un
+      // nombre d'entrées différent, associer au hasard serait pire que
+      // s'arrêter.
+      carbonService.calculate.mockResolvedValue({
+        ...RESULTAT_CARBONE,
+        breakdown: [RESULTAT_CARBONE.breakdown[0]],
+      });
+
+      await expect(service.create(MOI, dtoCreation)).rejects.toThrow(
+        /indisponible/,
+      );
+      expect(prisma.route.create).not.toHaveBeenCalled();
+    });
+
+    // -------------------------------------------------------------------------
+    // Répartition de l'économie
+    // -------------------------------------------------------------------------
+    it('répartit savedVsCarGrams proportionnellement à la distance', async () => {
+      await service.create(MOI, dtoCreation);
+
+      // Référence voiture du segment = 828,4 x (distance / 3800).
+      //   à pied : 828,4 x 600/3800  = 130,8  →  130,8 - 0     = 130,8
+      //   bus    : 828,4 x 3200/3800 = 697,6  →  697,6 - 361,6 = 336,0
+      expect(donneesCarbone()[0].savedVsCarGrams).toBeCloseTo(130.8, 2);
+      expect(donneesCarbone()[1].savedVsCarGrams).toBeCloseTo(336.0, 2);
+    });
+
+    it('la somme des économies retrouve le total du service carbone', async () => {
+      await service.create(MOI, dtoCreation);
+
+      const somme = donneesCarbone().reduce(
+        (total, c) => total + c.savedVsCarGrams,
+        0,
+      );
+
+      // Tolérance : les co2Grams du breakdown sont déjà arrondis à deux
+      // décimales par le microservice, la somme peut donc s'écarter du
+      // total de quelques centièmes.
+      expect(somme).toBeCloseTo(RESULTAT_CARBONE.savedVsCarGrams, 1);
+    });
+
+    it('donne une économie nulle quand la distance totale est nulle', async () => {
+      // Évite surtout la division par zéro : sans distance, aucune voiture
+      // à comparer, donc aucune économie.
+      const liaisonNulle = { ...liaisonAB, distanceM: 0, durationMin: 0 };
+      prisma.networkLink.findMany.mockResolvedValue([liaisonNulle]);
+      carbonService.calculate.mockResolvedValue({
+        totalDistanceM: 0,
+        totalCo2Grams: 0,
+        carCo2Grams: 0,
+        savedVsCarGrams: 0,
+        ecoScore: 100,
+        breakdown: [{ mode: 'WALK', distanceM: 0, co2Grams: 0 }],
+      });
+
+      await service.create(MOI, {
+        ...dtoCreation,
+        segments: [dtoCreation.segments[0]],
+      });
+
+      expect(donneesCarbone()[0].savedVsCarGrams).toBe(0);
+    });
+
+    // -------------------------------------------------------------------------
+    // Un seul instant pour tout l'enregistrement
+    // -------------------------------------------------------------------------
+    it('horodate la route et son carbone au MÊME instant', async () => {
+      await service.create(MOI, dtoCreation);
+
+      const requestedAt = donneesRoute().requestedAt;
+
+      for (const enregistrement of donneesCarbone()) {
+        // Égalité d'instant ET d'objet : les @default(now()) de Prisma
+        // auraient produit des dates distinctes de quelques millisecondes.
+        expect(enregistrement.date).toBe(requestedAt);
+      }
+    });
+
+    // -------------------------------------------------------------------------
+    // Atomicité
+    // -------------------------------------------------------------------------
+    it('écrit route, segments et carbone dans UNE transaction', async () => {
+      await service.create(MOI, dtoCreation);
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('appelle le service carbone AVANT d’ouvrir la transaction', async () => {
+      const ordre: string[] = [];
+      carbonService.calculate.mockImplementation(() => {
+        ordre.push('carbone');
+        return Promise.resolve(RESULTAT_CARBONE);
+      });
+      prisma.$transaction.mockImplementation(
+        (rappel: (tx: unknown) => unknown) => {
+          ordre.push('transaction');
+          return rappel(prisma);
+        },
+      );
+
+      await service.create(MOI, dtoCreation);
+
+      // Un appel HTTP dans une transaction tiendrait des verrous PostgreSQL
+      // ouverts pendant toute sa durée.
+      expect(ordre).toEqual(['carbone', 'transaction']);
     });
   });
 

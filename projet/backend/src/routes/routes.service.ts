@@ -1,7 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ModeTransport, Stop } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateRouteDto } from './dto/create-route.dto';
+import { CarbonService } from '../carbon/carbon.service';
+import { CarbonResultDto } from '../carbon/dto/carbon-result.dto';
+import { CreateRouteDto, RouteSegmentDto } from './dto/create-route.dto';
 import { SearchRouteDto } from './dto/search-route.dto';
 import {
   ItineraryCriterion,
@@ -47,15 +55,303 @@ interface PathStep {
 // on considère qu'aucun arrêt ne dessert le point demandé.
 const RAYON_RECHERCHE_MAX_M = 2000;
 
+// Le réseau exprime des durées en minutes, JavaScript des instants en
+// millisecondes : la conversion est isolée pour qu'elle soit visible.
+const MILLISECONDES_PAR_MINUTE = 60_000;
+
+/// Deux décimales, comme partout ailleurs pour les grammes de CO2
+/// (convention posée à l'étape 4D-1).
+const arrondir = (grammes: number) => Math.round(grammes * 100) / 100;
+
 @Injectable()
 export class RoutesService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(RoutesService.name);
 
-  // userId vient TOUJOURS du JWT (jamais du corps de la requête).
-  create(userId: string, dto: CreateRouteDto) {
-    return this.prisma.route.create({
-      data: { ...dto, userId },
+  constructor(
+    private readonly prisma: PrismaService,
+    // Injecté à l'étape 4E-3B, rendu possible par le câblage de 4E-3A.
+    //
+    // ⚠️ Cette dépendance ne concerne QUE create(). searchRoutes() ne doit
+    // JAMAIS appeler le microservice : une panne du calcul carbone rendrait
+    // sinon la recherche d'itinéraire indisponible, ce que toute l'étape
+    // 4D-2 s'est employée à éviter. Un test verrouille cette propriété.
+    private readonly carbonService: CarbonService,
+  ) {}
+
+  /**
+   * Enregistre un itinéraire choisi par l'usager (étape 4E-3B).
+   *
+   * PRINCIPE : le client DÉSIGNE des liaisons, il ne les DÉCRIT pas.
+   *
+   * Jusqu'à cette étape, il fournissait lui-même `ecoScore` et
+   * `carbonEstimate`. Le serveur reconstruit désormais TOUTES les valeurs
+   * significatives à partir du réseau public, puis fait calculer le carbone
+   * par le microservice. Le client ne décide plus que de deux choses : d'où
+   * il part et quelles liaisons il a empruntées.
+   *
+   * CE N'EST PAS UN SECOND MOTEUR D'ITINÉRAIRE. Aucun Dijkstra, aucun plus
+   * court chemin : on vérifie seulement que chaque tronçon revendiqué est une
+   * arête réelle du réseau, et que ces arêtes s'enchaînent.
+   *
+   * userId vient TOUJOURS du JWT, jamais du corps de la requête.
+   */
+  async create(userId: string, dto: CreateRouteDto) {
+    // UN SEUL instant pour toute l'opération : il horodate la route ET
+    // chacun de ses enregistrements carbone. Laisser les @default(now())
+    // de Prisma s'en charger produirait des instants distincts de quelques
+    // millisecondes — de quoi ranger un trajet et son carbone dans deux
+    // journées différentes à minuit, dans un futur tableau de bord.
+    const requestedAt = new Date();
+
+    const liaisons = await this.resoudreLiaisons(dto.segments);
+    this.verifierChainage(liaisons);
+
+    const totalDistanceM = liaisons.reduce(
+      (somme, l) => somme + l.distanceM,
+      0,
+    );
+    const totalDurationMin = liaisons.reduce(
+      (somme, l) => somme + l.durationMin,
+      0,
+    );
+
+    // APPEL RÉSEAU AVANT LA TRANSACTION, et c'est délibéré : une requête HTTP
+    // à l'intérieur d'une transaction PostgreSQL tiendrait des verrous
+    // ouverts pendant tout son délai (5 s au maximum ici), et entrerait en
+    // concurrence avec le délai propre à la transaction Prisma.
+    //
+    // Le mode et la distance envoyés sont ceux du RÉSEAU, jamais ceux du
+    // client : c'est ce qui rend le résultat infalsifiable.
+    const carbone = await this.carbonService.calculate({
+      segments: liaisons.map((l) => ({
+        mode: l.line.mode,
+        distanceM: l.distanceM,
+      })),
     });
+
+    // Le breakdown est apparié POSITIONNELLEMENT aux segments envoyés. Cette
+    // propriété appartient au microservice ; on refuse de deviner si elle
+    // n'est pas tenue, plutôt que d'associer un CO2 au mauvais segment.
+    if (carbone.breakdown.length !== liaisons.length) {
+      this.logger.error(
+        `Breakdown carbone incohérent : ${carbone.breakdown.length} entrées ` +
+          `pour ${liaisons.length} segments`,
+      );
+      throw new ServiceUnavailableException(
+        'Service de calcul carbone indisponible',
+      );
+    }
+
+    const segments = this.estimerHoraires(liaisons, requestedAt);
+
+    const routeId = await this.prisma.$transaction(async (tx) => {
+      const route = await tx.route.create({
+        data: {
+          originLat: dto.originLat,
+          originLng: dto.originLng,
+          destinationLat: dto.destinationLat,
+          destinationLng: dto.destinationLng,
+          requestedAt,
+          totalDistanceM,
+          totalDurationMin,
+          // Les deux valeurs autrefois déclarées par le client.
+          carbonEstimate: carbone.totalCo2Grams,
+          ecoScore: carbone.ecoScore,
+          userId,
+        },
+      });
+
+      await tx.segment.createMany({
+        data: segments.map((segment) => ({ ...segment, routeId: route.id })),
+      });
+
+      // Un CarbonRecord par SEGMENT (décision 4E) : c'est la seule
+      // granularité où `mode` et `distanceM` ont un sens exact.
+      await tx.carbonRecord.createMany({
+        data: liaisons.map((liaison, index) => ({
+          date: requestedAt,
+          mode: liaison.line.mode,
+          distanceM: liaison.distanceM,
+          co2Grams: carbone.breakdown[index].co2Grams,
+          savedVsCarGrams: this.economieDuSegment(
+            liaison.distanceM,
+            totalDistanceM,
+            carbone,
+            index,
+          ),
+          userId,
+          routeId: route.id,
+        })),
+      });
+
+      return route.id;
+    });
+
+    // Relecture APRÈS commit : la transaction n'a plus rien à garantir ici.
+    // orderBy explicite (leçon 4C-2) : sans lui, PostgreSQL ne promet aucun
+    // ordre de lignes, et les segments pourraient revenir mélangés.
+    return this.prisma.route.findUniqueOrThrow({
+      where: { id: routeId },
+      include: { segments: { orderBy: { departureTime: 'asc' } } },
+    });
+  }
+
+  /**
+   * Retrouve, pour chaque segment demandé, la liaison réelle du réseau.
+   *
+   * UNE seule requête, quel que soit le nombre de segments : charger les
+   * liaisons une par une serait le N+1 classique. Les résultats sont ensuite
+   * indexés en mémoire par leur clé métier `(lineId, fromStopId, toStopId)`,
+   * celle-là même que Prisma déclare unique.
+   *
+   * L'indexation traite naturellement le cas d'un même triplet répété par le
+   * client : chaque occurrence retrouve la même liaison, et l'ordre demandé
+   * est conservé.
+   */
+  private async resoudreLiaisons(demandes: RouteSegmentDto[]) {
+    const liaisons = await this.prisma.networkLink.findMany({
+      where: {
+        OR: demandes.map(({ lineId, fromStopId, toStopId }) => ({
+          lineId,
+          fromStopId,
+          toStopId,
+        })),
+      },
+      include: { line: true },
+    });
+
+    const parCle = new Map(
+      liaisons.map((liaison) => [
+        this.cleLiaison(liaison.lineId, liaison.fromStopId, liaison.toStopId),
+        liaison,
+      ]),
+    );
+
+    return demandes.map((demande, index) => {
+      const liaison = parCle.get(
+        this.cleLiaison(demande.lineId, demande.fromStopId, demande.toStopId),
+      );
+
+      if (!liaison) {
+        // 400 et non 404 : c'est le corps de la requête qui est invalide,
+        // pas une ressource identifiée par l'URL qui manquerait.
+        throw new BadRequestException(
+          `Segment ${index + 1} : aucune liaison du réseau ne relie ces deux ` +
+            'arrêts sur cette ligne',
+        );
+      }
+
+      return liaison;
+    });
+  }
+
+  private cleLiaison(lineId: string, fromStopId: string, toStopId: string) {
+    return `${lineId}|${fromStopId}|${toStopId}`;
+  }
+
+  /**
+   * Un itinéraire doit être CONTINU : on ne se téléporte pas entre deux
+   * segments. Vérifié avant toute écriture, pour ne jamais laisser en base
+   * un historique manifestement incohérent.
+   */
+  private verifierChainage(
+    liaisons: { fromStopId: string; toStopId: string }[],
+  ) {
+    for (let i = 0; i < liaisons.length - 1; i++) {
+      if (liaisons[i].toStopId !== liaisons[i + 1].fromStopId) {
+        throw new BadRequestException(
+          `Segments ${i + 1} et ${i + 2} : le trajet est interrompu, ` +
+            "l'arrivée de l'un doit être le départ du suivant",
+        );
+      }
+    }
+  }
+
+  /**
+   * Fabrique les horaires de chaque segment par cumul des durées du réseau.
+   *
+   * ⚠️ CE SONT DES HORAIRES ESTIMÉS, ET NON DES HORAIRES GTFS RÉELS.
+   *
+   * `Segment` exige un départ et une arrivée (sa durée est leur différence,
+   * il n'a pas de champ `durationMin`), alors que le réseau ne connaît que
+   * des durées de parcours MÉDIANES (étape 4C-4-4). On les reconstruit donc
+   * en chaîne à partir de l'instant d'enregistrement :
+   *
+   *     départ(1) = requestedAt
+   *     arrivée(i) = départ(i) + durée(i)
+   *     départ(i+1) = arrivée(i)
+   *
+   * C'est exactement la même raison qui fait rester `gtfsTripId` à NULL
+   * (étape 4E-1) : aucun passage réel ne correspond à ce trajet.
+   */
+  private estimerHoraires(
+    liaisons: {
+      distanceM: number;
+      durationMin: number;
+      fromStopId: string;
+      toStopId: string;
+      line: { mode: ModeTransport; name: string; operator: string };
+    }[],
+    requestedAt: Date,
+  ) {
+    let curseur = requestedAt;
+
+    return liaisons.map((liaison) => {
+      const departureTime = curseur;
+      const arrivalTime = new Date(
+        departureTime.getTime() +
+          liaison.durationMin * MILLISECONDES_PAR_MINUTE,
+      );
+      curseur = arrivalTime;
+
+      return {
+        // Tout vient du RÉSEAU, rien du client.
+        mode: liaison.line.mode,
+        operator: liaison.line.operator,
+        line: liaison.line.name,
+        distanceM: liaison.distanceM,
+        fromStopId: liaison.fromStopId,
+        toStopId: liaison.toStopId,
+        departureTime,
+        arrivalTime,
+        // `gtfsTripId` n'est VOLONTAIREMENT pas mentionné : il restera NULL.
+      };
+    });
+  }
+
+  /**
+   * Économie de CO2 d'un segment, par rapport à la voiture.
+   *
+   * Le microservice ne fournit `savedVsCarGrams` que pour le TOTAL. On le
+   * répartit ici proportionnellement à la distance :
+   *
+   *     économie(i) = carCo2Grams × distance(i) / distanceTotale − co2(i)
+   *
+   * Ce n'est pas une approximation : les émissions d'une voiture étant
+   * strictement proportionnelles à la distance, cette part EST la référence
+   * voiture du segment.
+   *
+   * POURQUOI PAS `(218 − facteur) × km` ? Parce que 218 est un facteur
+   * d'émission, et que les facteurs vivent dans le microservice. Le coder ici
+   * créerait une seconde source de vérité, exactement ce que nous avons
+   * refusé pour ESCOOTER (4D-1) et pour la formule d'EcoScore (4D-3-2).
+   * La formule ci-dessus n'utilise QUE des valeurs renvoyées par FastAPI.
+   */
+  private economieDuSegment(
+    distanceM: number,
+    totalDistanceM: number,
+    carbone: CarbonResultDto,
+    index: number,
+  ): number {
+    // Trajet de distance nulle : aucune voiture à comparer, donc aucune
+    // économie. Convention explicite, qui évite surtout la division par zéro.
+    if (totalDistanceM === 0) {
+      return 0;
+    }
+
+    const referenceVoiture = carbone.carCo2Grams * (distanceM / totalDistanceM);
+
+    return arrondir(referenceVoiture - carbone.breakdown[index].co2Grams);
   }
 
   // Ne renvoie que les itinéraires de cet usager : le filtre "where" est la
