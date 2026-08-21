@@ -25,6 +25,27 @@ export interface ItinerarySegmentDto {
   lineName: string;
   operator: string;
 
+  /**
+   * Identifiant de la LIAISON choisie, via sa ligne (étape 4E-3A).
+   *
+   * Pourquoi ce champ alors que `lineName` existe déjà ? Parce qu'un nom ne
+   * suffit pas à désigner une liaison sans ambiguïté : deux lignes peuvent
+   * relier les mêmes arrêts, et rien n'interdit qu'elles portent le même
+   * nom d'affichage (« Express » chez deux exploitants, un « 4 » de bus et
+   * un « 4 » de métro...).
+   *
+   * `NetworkLink` est d'ailleurs unique sur `(lineId, fromStopId, toStopId)`
+   * — et non sur le nom. Ce triplet est donc la SEULE façon de retrouver
+   * exactement la liaison que l'usager a retenue.
+   *
+   * Il servira à l'étape 4E-3B : le client renverra ce triplet pour
+   * enregistrer son trajet, et le serveur relira distance, durée, mode et
+   * ligne depuis le réseau plutôt que de croire le client sur parole.
+   *
+   * `lineName` reste destiné à l'AFFICHAGE, `lineId` à l'IDENTIFICATION.
+   */
+  lineId: string;
+
   distanceM: number;
   durationMin: number;
 }

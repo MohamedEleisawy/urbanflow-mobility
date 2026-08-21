@@ -20,6 +20,11 @@ interface GraphEdge {
   // l'information survit entre la requête et la réponse.
   lineName: string;
   operator: string;
+  // Identifiant de la ligne (étape 4E-3A). Comme les deux champs
+  // ci-dessus, il n'entre PAS dans le calcul : Dijkstra ne pondère que
+  // durationMin et distanceM. Il est seulement transporté, pour que le
+  // client puisse désigner sans ambiguïté la liaison qu'il a retenue.
+  lineId: string;
   distanceM: number;
   durationMin: number;
 }
@@ -252,6 +257,9 @@ export class RoutesService {
       // requête charge déjà la ligne ENTIÈRE (include: { line: true }), donc
       // lire trois champs au lieu d'un ne coûte pas une requête de plus.
       line: { mode: ModeTransport; name: string; operator: string };
+      // Clé étrangère brute de la liaison (étape 4E-3A) : déjà présente
+      // dans le résultat de findMany, aucune requête ni jointure de plus.
+      lineId: string;
     }[],
   ): Graph {
     const graph: Graph = new Map();
@@ -263,6 +271,7 @@ export class RoutesService {
         mode: link.line.mode,
         lineName: link.line.name,
         operator: link.line.operator,
+        lineId: link.lineId,
         distanceM: link.distanceM,
         durationMin: link.durationMin,
       });
@@ -386,6 +395,7 @@ export class RoutesService {
       // une ligne du réseau (« À pied », voir le seed).
       lineName: step.edge.lineName,
       operator: step.edge.operator,
+      lineId: step.edge.lineId,
       distanceM: step.edge.distanceM,
       durationMin: step.edge.durationMin,
     }));

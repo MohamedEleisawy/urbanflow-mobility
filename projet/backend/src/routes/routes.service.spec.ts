@@ -374,6 +374,124 @@ describe('RoutesService', () => {
     });
 
     // -------------------------------------------------------------------------
+    // Étape 4E-3A : identifiant de la liaison choisie
+    // -------------------------------------------------------------------------
+
+    it('expose le lineId de la ligne empruntée', async () => {
+      prisma.stop.findMany.mockResolvedValue([A, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+      const [itineraire] = await service.searchRoutes({
+        ...depuisA,
+        ...versC,
+      });
+
+      expect(itineraire.segments[0].lineId).toBe('ligne-express');
+    });
+
+    it('expose un lineId AUSSI pour la marche', async () => {
+      prisma.stop.findMany.mockResolvedValue([A, B]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB]);
+
+      const [itineraire] = await service.searchRoutes({
+        ...depuisA,
+        toLat: B.latitude,
+        toLon: B.longitude,
+      });
+
+      expect(itineraire.segments[0].mode).toBe('WALK');
+      expect(itineraire.segments[0].lineId).toBe('ligne-marche');
+    });
+
+    it('distingue deux lignes CONCURRENTES portant le MÊME nom', async () => {
+      // LE test qui justifie l'existence de lineId.
+      //
+      // Deux liaisons relient A à C, avec le même mode ET le même nom
+      // d'affichage : seul l'identifiant permet de savoir laquelle a été
+      // retenue. Si l'on n'avait que `lineName`, la réponse serait
+      // strictement identique dans les deux cas — donc inutilisable pour
+      // enregistrer le trajet à l'étape 4E-3B.
+      const lente = segment(
+        A.id,
+        C.id,
+        'BUS',
+        3000,
+        30,
+        'ligne-express-lente',
+        'Express',
+        'RATP',
+      );
+      const rapide = segment(
+        A.id,
+        C.id,
+        'BUS',
+        2000,
+        10,
+        'ligne-express-rapide',
+        'Express',
+        'RATP',
+      );
+
+      prisma.stop.findMany.mockResolvedValue([A, C]);
+      prisma.networkLink.findMany.mockResolvedValue([lente, rapide]);
+
+      const [itineraire] = await service.searchRoutes({
+        ...depuisA,
+        ...versC,
+      });
+
+      // La liaison rapide gagne sur les DEUX critères (10 min, 2000 m).
+      expect(itineraire.segments[0].lineId).toBe('ligne-express-rapide');
+      // ...alors que le nom, lui, ne distingue rien.
+      expect(itineraire.segments[0].lineName).toBe('Express');
+      expect(itineraire.segments[0].distanceM).toBe(2000);
+    });
+
+    it('associe à chaque segment le lineId de SA propre liaison', async () => {
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
+
+      const [itineraire] = await service.searchRoutes({
+        ...depuisA,
+        ...versC,
+      });
+
+      expect(itineraire.segments.map((s) => s.lineId)).toEqual([
+        'ligne-marche',
+        'ligne-bus',
+      ]);
+    });
+
+    it('ne se sert PAS du lineId pour choisir le chemin', async () => {
+      // Dijkstra ne pondère que la durée et la distance. Changer le seul
+      // identifiant d'une liaison ne doit donc rien changer au trajet élu.
+      const memeLiaisonAutreId = segment(
+        A.id,
+        C.id,
+        'BUS',
+        3000,
+        30,
+        'zzz-identifiant-different',
+        '350',
+        'Transdev',
+      );
+
+      prisma.stop.findMany.mockResolvedValue([A, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+      const avant = await service.searchRoutes({ ...depuisA, ...versC });
+
+      prisma.stop.findMany.mockResolvedValue([A, C]);
+      prisma.networkLink.findMany.mockResolvedValue([memeLiaisonAutreId]);
+      const apres = await service.searchRoutes({ ...depuisA, ...versC });
+
+      // Même trajet, mêmes totaux : seul l'identifiant diffère.
+      expect(apres[0].totalDistanceM).toBe(avant[0].totalDistanceM);
+      expect(apres[0].totalDurationMin).toBe(avant[0].totalDurationMin);
+      expect(apres[0].segments[0].toStopId).toBe(avant[0].segments[0].toStopId);
+      expect(apres[0].segments[0].lineId).not.toBe(avant[0].segments[0].lineId);
+    });
+
+    // -------------------------------------------------------------------------
     // Étape 4E-2 : nom de ligne et exploitant dans la réponse
     // -------------------------------------------------------------------------
 
@@ -466,6 +584,8 @@ describe('RoutesService', () => {
         mode: 'BUS',
         lineName: '350',
         operator: 'Transdev',
+        // Ajouté à l'étape 4E-3A.
+        lineId: 'ligne-express',
         distanceM: 3000,
         durationMin: 30,
       });

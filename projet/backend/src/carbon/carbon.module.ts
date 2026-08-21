@@ -11,5 +11,15 @@ import { CarbonService } from './carbon.service';
 @Module({
   controllers: [CarbonController],
   providers: [CarbonService],
+  // Exporté à l'étape 4E-3A pour que RoutesService puisse s'en servir en
+  // 4E-3B, au moment d'enregistrer un trajet : le serveur calculera alors
+  // lui-même le CO2 et l'EcoScore au lieu de croire le client sur parole.
+  //
+  // Une SEULE implémentation de l'appel au microservice, réutilisée — le
+  // même principe que RoutesService.findOneForUser(), exporté pour que
+  // SegmentsService ne redéfinisse pas la vérification de propriété.
+  //
+  // Aucun cycle possible : ce module n'importe rien.
+  exports: [CarbonService],
 })
 export class CarbonModule {}

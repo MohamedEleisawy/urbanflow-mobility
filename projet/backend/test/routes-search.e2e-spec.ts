@@ -20,6 +20,13 @@ describe('POST /api/routes/search (e2e)', () => {
   // QUE celles-ci à la fin (et pas les données de développement).
   const stopIds: string[] = [];
   const lineIds: string[] = [];
+  // Identifiants nommés des lignes (étape 4E-3A) : les tests doivent
+  // pouvoir vérifier que le `lineId` renvoyé est EXACTEMENT celui de la
+  // liaison retenue, ce qu'un simple tableau ne permettrait pas.
+  let ligneMarcheId: string;
+  let ligneBus12Id: string;
+  let ligneBus99Id: string;
+  let ligneBus99BisId: string;
   // Données PERSONNELLES d'un usager, créées volontairement pour prouver
   // qu'elles n'influencent JAMAIS la recherche publique (étape 4C-3).
   let routeId: string;
@@ -88,7 +95,21 @@ describe('POST /api/routes/search (e2e)', () => {
     const ligneBus99 = await prisma.transitLine.create({
       data: { name: 'Bus 99 E2E', mode: 'BUS', operator: 'E2E' },
     });
-    lineIds.push(ligneMarche.id, ligneBus12.id, ligneBus99.id);
+    // Ligne CONCURRENTE de la 99 : même mode, mêmes arrêts (A → C), et
+    // volontairement le MÊME nom d'affichage. Elle est plus lente ET plus
+    // longue, donc elle ne gagne jamais — elle ne change donc rien aux
+    // itinéraires attendus. Elle sert uniquement à prouver, à l'étape
+    // 4E-3A, que `lineId` désigne bien la liaison RETENUE, là où `lineName`
+    // serait incapable de les distinguer.
+    const ligneBus99Bis = await prisma.transitLine.create({
+      data: { name: 'Bus 99 E2E', mode: 'BUS', operator: 'E2E' },
+    });
+    lineIds.push(
+      ligneMarche.id,
+      ligneBus12.id,
+      ligneBus99.id,
+      ligneBus99Bis.id,
+    );
 
     // --- Le RÉSEAU PUBLIC : c'est lui, et lui seul, qui doit alimenter la
     // recherche depuis l'étape 4C-3.
@@ -118,8 +139,22 @@ describe('POST /api/routes/search (e2e)', () => {
           distanceM: 3000,
           durationMin: 30,
         },
+        // A → C par la ligne concurrente : perdante sur les DEUX critères,
+        // donc jamais retenue. Elle ne modifie aucun résultat attendu.
+        {
+          lineId: ligneBus99Bis.id,
+          fromStopId: a.id,
+          toStopId: c.id,
+          distanceM: 5000,
+          durationMin: 40,
+        },
       ],
     });
+
+    ligneMarcheId = ligneMarche.id;
+    ligneBus12Id = ligneBus12.id;
+    ligneBus99Id = ligneBus99.id;
+    ligneBus99BisId = ligneBus99Bis.id;
 
     // --- Des données PERSONNELLES, créées exprès comme piège.
     // Un usager enregistre un trajet A→C ultra-rapide (1 min, 100 m).
@@ -314,18 +349,68 @@ describe('POST /api/routes/search (e2e)', () => {
       response.body as { criterion: string; segments: object[] }[]
     ).find((i) => i.criterion === 'SHORTEST');
 
-    // Non-régression : 4E-2 ne devait qu'AJOUTER deux clés au contrat.
+    // Non-régression : 4E-2 puis 4E-3A n'ont fait qu'AJOUTER des clés.
     expect(Object.keys(court!.segments[0]).sort()).toEqual([
       'distanceM',
       'durationMin',
       'fromStopId',
       'fromStopName',
+      'lineId',
       'lineName',
       'mode',
       'operator',
       'toStopId',
       'toStopName',
     ]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Étape 4E-3A : identifiant de la liaison choisie
+  // ---------------------------------------------------------------------------
+
+  it('renvoie le lineId EXACT de chaque segment', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    const itineraires = response.body as {
+      criterion: string;
+      segments: { lineId: string }[];
+    }[];
+
+    const rapide = itineraires.find((i) => i.criterion === 'FASTEST');
+    const court = itineraires.find((i) => i.criterion === 'SHORTEST');
+
+    expect(rapide?.segments.map((s) => s.lineId)).toEqual([
+      ligneMarcheId,
+      ligneBus12Id,
+    ]);
+    expect(court?.segments[0].lineId).toBe(ligneBus99Id);
+  });
+
+  it('distingue deux lignes concurrentes de MÊME nom par leur lineId', async () => {
+    // Deux liaisons relient A à C, du même mode et du même nom d'affichage
+    // (« Bus 99 E2E »). Seul l'identifiant dit laquelle a été retenue —
+    // c'est précisément ce que `lineName` ne peut pas faire.
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    const court = (
+      response.body as {
+        criterion: string;
+        segments: { lineId: string; lineName: string; distanceM: number }[];
+      }[]
+    ).find((i) => i.criterion === 'SHORTEST');
+
+    // La liaison retenue est la plus courte (3000 m), pas la concurrente.
+    expect(court?.segments[0].lineId).toBe(ligneBus99Id);
+    expect(court?.segments[0].lineId).not.toBe(ligneBus99BisId);
+    expect(court?.segments[0].distanceM).toBe(3000);
+    // Le nom, lui, aurait été identique dans les deux cas.
+    expect(court?.segments[0].lineName).toBe('Bus 99 E2E');
   });
 
   it('ne divulgue aucune donnée personnelle (routeId, userId, horaires)', async () => {
