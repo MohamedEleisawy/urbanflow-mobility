@@ -4,6 +4,7 @@ import { CarbonService } from '../carbon/carbon.service';
 import { CarbonResultDto } from '../carbon/dto/carbon-result.dto';
 import { RoutesService } from './routes.service';
 import { CreateRouteDto } from './dto/create-route.dto';
+import { PaginationQueryDto } from './dto/pagination-query.dto';
 
 // Le test du breakdown incohérent provoque VOLONTAIREMENT une erreur
 // journalisée : l'afficher laisserait croire à un échec dans une suite verte.
@@ -22,6 +23,7 @@ describe('RoutesService', () => {
       findMany: jest.Mock;
       findUnique: jest.Mock;
       findUniqueOrThrow: jest.Mock;
+      count: jest.Mock;
       delete: jest.Mock;
     };
     stop: { findMany: jest.Mock };
@@ -165,6 +167,7 @@ describe('RoutesService', () => {
         findMany: jest.fn(),
         findUnique: jest.fn(),
         findUniqueOrThrow: jest.fn().mockResolvedValue(maRoute),
+        count: jest.fn(),
         delete: jest.fn(),
       },
       stop: { findMany: jest.fn() },
@@ -565,16 +568,95 @@ describe('RoutesService', () => {
   });
 
   describe('findAllForUser', () => {
-    it("ne demande à Prisma que les itinéraires de l'usager", async () => {
+    // Reproduit ce que le ValidationPipe fabrique quand le client n'envoie
+    // aucun paramètre : les valeurs par défaut du DTO.
+    const paginationParDefaut = () => new PaginationQueryDto();
+
+    beforeEach(() => {
       prisma.route.findMany.mockResolvedValue([maRoute]);
+      prisma.route.count.mockResolvedValue(1);
+    });
 
-      const result = await service.findAllForUser(MOI);
+    it("ne demande à Prisma que les itinéraires de l'usager", async () => {
+      await service.findAllForUser(MOI, paginationParDefaut());
 
-      expect(prisma.route.findMany).toHaveBeenCalledWith({
+      // Le filtre est fait EN BASE. Récupérer puis filtrer en mémoire
+      // ramènerait les données des autres usagers sur le serveur.
+      expect(prisma.route.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: MOI } }),
+      );
+      expect(prisma.route.count).toHaveBeenCalledWith({
         where: { userId: MOI },
-        orderBy: { requestedAt: 'desc' },
       });
-      expect(result).toEqual([maRoute]);
+    });
+
+    it('applique page=1 et limit=20 par défaut', async () => {
+      const resultat = await service.findAllForUser(MOI, paginationParDefaut());
+
+      expect(prisma.route.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 0, take: 20 }),
+      );
+      expect(resultat.page).toBe(1);
+      expect(resultat.limit).toBe(20);
+    });
+
+    it('traduit page et limit en skip et take', async () => {
+      // Page 3 avec 10 par page : on saute les 20 premiers.
+      await service.findAllForUser(MOI, { page: 3, limit: 10 });
+
+      expect(prisma.route.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 20, take: 10 }),
+      );
+    });
+
+    it('trie par date décroissante PUIS par identifiant', async () => {
+      await service.findAllForUser(MOI, paginationParDefaut());
+
+      // La seconde clé n'est pas décorative : sans ordre total, skip/take
+      // peut sauter ou dupliquer des lignes entre deux pages.
+      expect(prisma.route.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [{ requestedAt: 'desc' }, { id: 'desc' }],
+        }),
+      );
+    });
+
+    it('ne charge AUCUNE relation : une liste est un résumé', async () => {
+      await service.findAllForUser(MOI, paginationParDefaut());
+
+      // `mock.calls` est un `any[]` : on le type AVANT de l'indexer.
+      const appels = prisma.route.findMany.mock.calls as [
+        Record<string, unknown>,
+      ][];
+      const options = appels[0][0];
+      expect(options).not.toHaveProperty('include');
+      expect(options).not.toHaveProperty('select');
+    });
+
+    it('enveloppe le résultat avec le total', async () => {
+      prisma.route.count.mockResolvedValue(42);
+
+      const resultat = await service.findAllForUser(MOI, paginationParDefaut());
+
+      expect(resultat).toEqual({
+        items: [maRoute],
+        page: 1,
+        limit: 20,
+        total: 42,
+      });
+    });
+
+    it('renvoie une liste vide sans erreur quand la page dépasse le total', async () => {
+      prisma.route.findMany.mockResolvedValue([]);
+      prisma.route.count.mockResolvedValue(3);
+
+      const resultat = await service.findAllForUser(MOI, {
+        page: 99,
+        limit: 20,
+      });
+
+      expect(resultat.items).toEqual([]);
+      expect(resultat.total).toBe(3);
     });
   });
 

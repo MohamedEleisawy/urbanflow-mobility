@@ -8,10 +8,12 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { RoutesService } from './routes.service';
 import { CreateRouteDto } from './dto/create-route.dto';
+import { PaginationQueryDto } from './dto/pagination-query.dto';
 import { SearchRouteDto } from './dto/search-route.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -49,10 +51,19 @@ export class RoutesController {
     return this.routesService.create(user.sub, dto);
   }
 
+  // Historique paginé de l'usager (étape 4E-4A).
+  //
+  // `userId` ne peut venir QUE du jeton. Un `?userId=` glissé dans l'URL est
+  // d'ailleurs rejeté en 400 par le ValidationPipe global : il n'est pas
+  // déclaré dans PaginationQueryDto, et forbidNonWhitelisted s'applique aussi
+  // aux paramètres d'URL.
   @Get()
   @UseGuards(JwtAuthGuard)
-  findAll(@CurrentUser() user: JwtPayload) {
-    return this.routesService.findAllForUser(user.sub);
+  findAll(
+    @CurrentUser() user: JwtPayload,
+    @Query() pagination: PaginationQueryDto,
+  ) {
+    return this.routesService.findAllForUser(user.sub, pagination);
   }
 
   @Get(':id')

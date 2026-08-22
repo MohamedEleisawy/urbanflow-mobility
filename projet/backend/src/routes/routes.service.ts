@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CarbonService } from '../carbon/carbon.service';
 import { CarbonResultDto } from '../carbon/dto/carbon-result.dto';
 import { CreateRouteDto, RouteSegmentDto } from './dto/create-route.dto';
+import { PaginationQueryDto } from './dto/pagination-query.dto';
 import { SearchRouteDto } from './dto/search-route.dto';
 import {
   ItineraryCriterion,
@@ -356,12 +357,46 @@ export class RoutesService {
 
   // Ne renvoie que les itinéraires de cet usager : le filtre "where" est la
   // garantie qu'aucune donnée d'un autre usager ne peut apparaître ici.
-  findAllForUser(userId: string) {
-    return this.prisma.route.findMany({
-      where: { userId },
-      // Le plus récent en premier : c'est l'ordre attendu d'un historique.
-      orderBy: { requestedAt: 'desc' },
-    });
+  /**
+   * Historique paginé d'un usager (étape 4E-4A).
+   *
+   * POURQUOI UNE PAGINATION. Sans elle, la requête n'était bornée par rien
+   * et grossissait indéfiniment avec l'usage. À noter pour la soutenance :
+   * le dossier de conception ne la mentionne pas — « pagination » n'y
+   * apparaît pas une seule fois. C'est une décision de conception.
+   *
+   * POURQUOI DEUX CLÉS DE TRI, et pas seulement `requestedAt`. Ce n'est pas
+   * une question de confort : sans ORDRE TOTAL, PostgreSQL ne garantit rien
+   * pour deux itinéraires enregistrés au même instant. Combiné à
+   * skip/take, cela ne rend pas seulement l'ordre instable — la page 2 peut
+   * RÉAFFICHER une ligne de la page 1, ou en SAUTER une. La pagination
+   * deviendrait fausse.
+   *
+   * L'identifiant est un UUID : son ordre n'a aucun sens métier, mais il est
+   * total et stable, et c'est tout ce qu'un départage demande. Même
+   * raisonnement qu'à l'étape 4C-2, où Dijkstra départage ses égalités par
+   * le plus petit identifiant.
+   *
+   * AUCUNE RELATION N'EST CHARGÉE : une liste est un RÉSUMÉ. Charger les
+   * segments d'une page de 20 trajets ramènerait des dizaines de lignes que
+   * cette vue n'affiche pas. Le détail est le travail de GET /api/routes/:id.
+   */
+  async findAllForUser(userId: string, pagination: PaginationQueryDto) {
+    const { page, limit } = pagination;
+
+    // Les deux requêtes sont indépendantes : les lancer en parallèle évite
+    // d'attendre deux allers-retours successifs vers PostgreSQL.
+    const [total, items] = await Promise.all([
+      this.prisma.route.count({ where: { userId } }),
+      this.prisma.route.findMany({
+        where: { userId },
+        orderBy: [{ requestedAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+
+    return { items, page, limit, total };
   }
 
   async findOneForUser(id: string, userId: string) {
