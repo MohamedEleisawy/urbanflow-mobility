@@ -9,6 +9,7 @@ import { StopsModule } from './stops/stops.module';
 import { SegmentsModule } from './segments/segments.module';
 import { GtfsModule } from './gtfs/gtfs.module';
 import { CarbonModule } from './carbon/carbon.module';
+import { CarbonTrackingModule } from './carbon-tracking/carbon-tracking.module';
 
 @Module({
   imports: [
@@ -25,6 +26,10 @@ import { CarbonModule } from './carbon/carbon.module';
     // RoutesModule : la recherche d'itinéraire n'appelle jamais le calcul
     // carbone, et reste donc utilisable si le microservice est en panne.
     CarbonModule,
+    // Consultation du suivi carbone personnel (étape 4E-5A). Distinct de
+    // CarbonModule : celui-ci calcule sans état, celui-là lit l'historique
+    // d'un usager authentifié.
+    CarbonTrackingModule,
   ],
   controllers: [AppController],
   providers: [AppService],
