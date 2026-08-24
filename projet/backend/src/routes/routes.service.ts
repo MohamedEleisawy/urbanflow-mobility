@@ -415,6 +415,48 @@ export class RoutesService {
     return route;
   }
 
+  /**
+   * Détail complet d'un trajet enregistré (étape 4E-4B).
+   *
+   * POURQUOI UNE MÉTHODE SÉPARÉE, plutôt qu'enrichir findOneForUser().
+   * Celle-ci sert de GARDE DE PROPRIÉTÉ à quatre appelants : ce détail,
+   * remove(), et trois méthodes de SegmentsService. Y ajouter des `include`
+   * ferait charger à tous des relations dont ils n'ont que faire — le
+   * `remove()` chargerait les segments juste avant de les supprimer.
+   *
+   * Le contrôle de propriété reste donc écrit à UN SEUL endroit, et c'est
+   * lui qu'on appelle en premier : la relecture enrichie n'a lieu qu'après.
+   * Un usager qui demande le trajet d'un autre reçoit son 404 sans qu'aucune
+   * donnée n'ait été chargée.
+   */
+  async findOneDetailedForUser(id: string, userId: string) {
+    // 1) La règle de propriété, inchangée depuis l'étape 4A. Lève 404 si
+    //    l'itinéraire n'existe pas OU appartient à quelqu'un d'autre.
+    await this.findOneForUser(id, userId);
+
+    // 2) Seulement ensuite, la relecture avec les relations.
+    return this.prisma.route.findUniqueOrThrow({
+      where: { id },
+      include: {
+        // Ordre CHRONOLOGIQUE : c'est celui dans lequel on parcourt
+        // réellement le trajet. Sans orderBy explicite, PostgreSQL ne
+        // promet aucun ordre de lignes (leçon 4C-2) et l'itinéraire
+        // pourrait revenir mélangé — illisible.
+        segments: { orderBy: { departureTime: 'asc' } },
+        // Les enregistrements carbone n'ont AUCUN ordre naturel : ils
+        // partagent tous la même `date` (étape 4E-3B). On en impose donc
+        // un, arbitraire mais TOTAL : le plus gros contributeur d'abord,
+        // départagé par identifiant.
+        //
+        // ⚠️ Cet ordre ne prétend PAS correspondre à celui des segments.
+        // `CarbonRecord` n'a pas de `segmentId` : rapprocher les deux
+        // tableaux position par position serait une association inventée.
+        // L'usage fiable est l'agrégation par mode.
+        carbonRecords: { orderBy: [{ distanceM: 'desc' }, { id: 'asc' }] },
+      },
+    });
+  }
+
   async remove(id: string, userId: string) {
     // Réutilise la vérification ci-dessus : impossible de supprimer
     // l'itinéraire d'un autre usager (404 avant d'atteindre le delete).

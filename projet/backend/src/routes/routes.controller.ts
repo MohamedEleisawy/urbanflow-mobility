@@ -66,13 +66,18 @@ export class RoutesController {
     return this.routesService.findAllForUser(user.sub, pagination);
   }
 
+  // Détail d'un trajet enregistré : la route, ses segments dans l'ordre
+  // chronologique, et ses enregistrements carbone (étape 4E-4B).
+  //
+  // La règle de propriété est inchangée : 404 aussi bien pour un itinéraire
+  // inexistant que pour celui d'un autre usager, et avec le même message.
   @Get(':id')
   @UseGuards(JwtAuthGuard)
   findOne(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: JwtPayload,
   ) {
-    return this.routesService.findOneForUser(id, user.sub);
+    return this.routesService.findOneDetailedForUser(id, user.sub);
   }
 
   @Delete(':id')

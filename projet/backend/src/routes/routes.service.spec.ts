@@ -660,6 +660,93 @@ describe('RoutesService', () => {
     });
   });
 
+  describe('findOneDetailedForUser', () => {
+    const routeDetaillee = {
+      ...maRoute,
+      segments: [{ id: 'segment-1' }],
+      carbonRecords: [{ id: 'carbone-1' }],
+    };
+
+    beforeEach(() => {
+      prisma.route.findUnique.mockResolvedValue(maRoute);
+      prisma.route.findUniqueOrThrow.mockResolvedValue(routeDetaillee);
+    });
+
+    it('renvoie la route AVEC ses segments et ses enregistrements carbone', async () => {
+      const resultat = await service.findOneDetailedForUser('route-1', MOI);
+
+      expect(resultat).toEqual(routeDetaillee);
+    });
+
+    it('demande les segments dans l’ordre CHRONOLOGIQUE', async () => {
+      await service.findOneDetailedForUser('route-1', MOI);
+
+      // Sans orderBy explicite, PostgreSQL ne promet aucun ordre et
+      // l'itinéraire pourrait revenir mélangé.
+      expect(prisma.route.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 'route-1' },
+        include: {
+          segments: { orderBy: { departureTime: 'asc' } },
+          carbonRecords: { orderBy: [{ distanceM: 'desc' }, { id: 'asc' }] },
+        },
+      });
+    });
+
+    it('impose un ordre TOTAL aux enregistrements carbone', async () => {
+      await service.findOneDetailedForUser('route-1', MOI);
+
+      // Ils partagent tous la même `date` : sans clé de départage, leur
+      // ordre serait laissé à PostgreSQL.
+      const appels = prisma.route.findUniqueOrThrow.mock.calls as [
+        { include: { carbonRecords: { orderBy: unknown } } },
+      ][];
+      expect(appels[0][0].include.carbonRecords.orderBy).toEqual([
+        { distanceM: 'desc' },
+        { id: 'asc' },
+      ]);
+    });
+
+    it('contrôle la propriété AVANT de charger quoi que ce soit', async () => {
+      const ordre: string[] = [];
+      prisma.route.findUnique.mockImplementation(() => {
+        ordre.push('proprietaire');
+        return Promise.resolve(maRoute);
+      });
+      prisma.route.findUniqueOrThrow.mockImplementation(() => {
+        ordre.push('detail');
+        return Promise.resolve(routeDetaillee);
+      });
+
+      await service.findOneDetailedForUser('route-1', MOI);
+
+      expect(ordre).toEqual(['proprietaire', 'detail']);
+    });
+
+    it("lève 404 et NE CHARGE RIEN si l'itinéraire appartient à un autre", async () => {
+      prisma.route.findUnique.mockResolvedValue({
+        ...maRoute,
+        userId: QUELQU_UN_DAUTRE,
+      });
+
+      await expect(
+        service.findOneDetailedForUser('route-1', MOI),
+      ).rejects.toThrow(NotFoundException);
+
+      // Le point important : aucune donnée de l'autre usager n'a été lue.
+      expect(prisma.route.findUniqueOrThrow).not.toHaveBeenCalled();
+    });
+
+    it("lève 404 et NE CHARGE RIEN si l'itinéraire n'existe pas", async () => {
+      prisma.route.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.findOneDetailedForUser('route-inexistante', MOI),
+      ).rejects.toThrow(NotFoundException);
+
+      expect(prisma.route.findUniqueOrThrow).not.toHaveBeenCalled();
+    });
+  });
+
   describe('findOneForUser', () => {
     it("renvoie l'itinéraire quand il appartient à l'usager", async () => {
       prisma.route.findUnique.mockResolvedValue(maRoute);
