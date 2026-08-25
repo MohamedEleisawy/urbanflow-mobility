@@ -366,7 +366,26 @@ model Alert {
   cause        String
   effect       String
   startTime    DateTime
-  endTime      DateTime
+
+  /// Fin de la période d'activité de l'alerte.
+  ///
+  /// NULLABLE depuis l'étape 4F-1A, et c'est une nécessité, pas un confort.
+  ///
+  /// GTFS-Realtime décrit la validité d'une alerte par un `active_period`
+  /// dont le champ `end` est FACULTATIF :
+  ///
+  ///     active_period { start: 1735689600 }        ← aucune fin annoncée
+  ///
+  /// C'est le cas courant d'une perturbation dont on ignore la durée : une
+  /// panne, une grève, des travaux sans date de reprise. Exiger une fin
+  /// obligerait à en inventer une — une date lointaine arbitraire — que rien
+  /// ne distinguerait ensuite d'une vraie échéance annoncée par l'opérateur.
+  ///
+  /// C'est le même refus qu'aux étapes 4D-1 (aucun facteur d'émission inventé
+  /// pour ESCOOTER) et 4E-1 (aucun `gtfsTripId` fabriqué) : NULL dit la
+  /// vérité — « cette information n'existe pas » — là où une valeur par
+  /// défaut mentirait.
+  endTime      DateTime?
   gtfsAlertId  String        @unique
 
   @@map("alerts")
