@@ -8,6 +8,7 @@ import { RoutesModule } from './routes/routes.module';
 import { StopsModule } from './stops/stops.module';
 import { SegmentsModule } from './segments/segments.module';
 import { GtfsModule } from './gtfs/gtfs.module';
+import { GtfsRtModule } from './gtfs-rt/gtfs-rt.module';
 import { CarbonModule } from './carbon/carbon.module';
 import { CarbonTrackingModule } from './carbon-tracking/carbon-tracking.module';
 
@@ -22,6 +23,10 @@ import { CarbonTrackingModule } from './carbon-tracking/carbon-tracking.module';
     // Aucun endpoint HTTP : le module sert le script d'import en ligne de
     // commande (npm run gtfs:import).
     GtfsModule,
+    // Lecture des flux GTFS-Realtime (étape 4F-1B). Distinct de GtfsModule :
+    // celui-ci lit un réseau statique livré en archive, celui-là un flux
+    // binaire rafraîchi en continu. Aucun endpoint non plus à ce stade.
+    GtfsRtModule,
     // Proxy vers le microservice FastAPI. Aucune dépendance vers
     // RoutesModule : la recherche d'itinéraire n'appelle jamais le calcul
     // carbone, et reste donc utilisable si le microservice est en panne.

@@ -34,6 +34,7 @@
     "class-validator": "^0.15.1",
     "csv-parse": "^7.0.2",
     "dotenv": "^17.4.2",
+    "gtfs-realtime-bindings": "^2.2.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "yauzl": "^3.4.0"
