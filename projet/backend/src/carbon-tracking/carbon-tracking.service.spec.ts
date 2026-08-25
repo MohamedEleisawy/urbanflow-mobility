@@ -1,12 +1,16 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { CarbonTrackingService } from './carbon-tracking.service';
 import { WeeklyTrackingQueryDto } from './dto/weekly-tracking-query.dto';
+import { semaineIso } from '../common/date/iso-week.util';
 
 // Même approche que les autres services : PrismaService est simulé, seules
 // les méthodes réellement utilisées sont mockées.
 describe('CarbonTrackingService', () => {
   let service: CarbonTrackingService;
-  let prisma: { carbonRecord: { findMany: jest.Mock } };
+  let prisma: {
+    carbonRecord: { findMany: jest.Mock };
+    userPreferences: { findUnique: jest.Mock };
+  };
 
   const MOI = 'user-1';
 
@@ -26,7 +30,10 @@ describe('CarbonTrackingService', () => {
   const parDefaut = () => new WeeklyTrackingQueryDto();
 
   beforeEach(() => {
-    prisma = { carbonRecord: { findMany: jest.fn().mockResolvedValue([]) } };
+    prisma = {
+      carbonRecord: { findMany: jest.fn().mockResolvedValue([]) },
+      userPreferences: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
     service = new CarbonTrackingService(prisma as unknown as PrismaService);
   });
 
@@ -242,6 +249,258 @@ describe('CarbonTrackingService', () => {
       const resultat = await service.findWeeklyForUser(MOI, parDefaut());
 
       expect(resultat.weeks.map((s) => s.week)).toEqual([35, 32]);
+    });
+  });
+});
+
+// =============================================================================
+// Budget hebdomadaire (étape 4E-5B)
+// =============================================================================
+describe('CarbonTrackingService — budget', () => {
+  let service: CarbonTrackingService;
+  let prisma: {
+    carbonRecord: { findMany: jest.Mock };
+    userPreferences: { findUnique: jest.Mock };
+  };
+
+  const MOI = 'user-1';
+  const SEMAINE_35 = { year: 2026, week: 35 };
+
+  /** Fixe un plafond hebdomadaire pour l'usager. */
+  const avecBudget = (co2BudgetWeekly: number) =>
+    prisma.userPreferences.findUnique.mockResolvedValue({ co2BudgetWeekly });
+
+  /** Fixe la consommation de la semaine. */
+  const avecTrajets = (lignes: { co2Grams: number; routeId: string }[]) =>
+    prisma.carbonRecord.findMany.mockResolvedValue(lignes);
+
+  beforeEach(() => {
+    prisma = {
+      carbonRecord: { findMany: jest.fn().mockResolvedValue([]) },
+      userPreferences: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
+    service = new CarbonTrackingService(prisma as unknown as PrismaService);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Requêtes
+  // ---------------------------------------------------------------------------
+  describe('requêtes', () => {
+    it('borne la lecture au lundi et au lundi suivant', async () => {
+      await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      const options = (
+        prisma.carbonRecord.findMany.mock.calls as [
+          { where: { userId: string; date: { gte: Date; lt: Date } } },
+        ][]
+      )[0][0];
+
+      expect(options.where.userId).toBe(MOI);
+      // Semaine 35 de 2026 : du lundi 24 au lundi 31 août (fin EXCLUE).
+      expect(options.where.date.gte.toISOString()).toBe(
+        '2026-08-24T00:00:00.000Z',
+      );
+      expect(options.where.date.lt.toISOString()).toBe(
+        '2026-08-31T00:00:00.000Z',
+      );
+    });
+
+    it('lit les préférences du seul usager courant', async () => {
+      await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(prisma.userPreferences.findUnique).toHaveBeenCalledWith({
+        where: { userId: MOI },
+        select: { co2BudgetWeekly: true },
+      });
+    });
+
+    it('utilise la semaine EN COURS quand aucune n’est demandée', async () => {
+      await service.findBudgetForUser(MOI, {});
+
+      const resultat = await service.findBudgetForUser(MOI, {});
+      const attendue = semaineIso(new Date());
+
+      expect(resultat.year).toBe(attendue.year);
+      expect(resultat.week).toBe(attendue.week);
+    });
+
+    it('ne consulte JAMAIS CarbonBudget', async () => {
+      // Décision de conception : la consommation se calcule, elle ne se
+      // recopie pas. Une seconde source serait à synchroniser.
+      await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(prisma).not.toHaveProperty('carbonBudget');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Comparaison budget / consommation
+  // ---------------------------------------------------------------------------
+  describe('comparaison', () => {
+    it('décompte ce qu’il reste sous le plafond', async () => {
+      avecBudget(5000);
+      avecTrajets([
+        { co2Grams: 1000, routeId: 'r1' },
+        { co2Grams: 800, routeId: 'r2' },
+      ]);
+
+      const resultat = await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(resultat).toEqual({
+        year: 2026,
+        week: 35,
+        weeklyBudgetGrams: 5000,
+        consumedGrams: 1800,
+        remainingGrams: 3200,
+        exceeded: false,
+        tripCount: 2,
+      });
+    });
+
+    it('ne considère PAS un budget exactement atteint comme dépassé', async () => {
+      // Le cas frontière : consommer exactement son budget, c'est le
+      // respecter. `>` et non `>=`.
+      avecBudget(5000);
+      avecTrajets([{ co2Grams: 5000, routeId: 'r1' }]);
+
+      const resultat = await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(resultat.exceeded).toBe(false);
+      expect(resultat.remainingGrams).toBe(0);
+    });
+
+    it('signale un dépassement', async () => {
+      avecBudget(5000);
+      avecTrajets([{ co2Grams: 6200, routeId: 'r1' }]);
+
+      const resultat = await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(resultat.exceeded).toBe(true);
+      expect(resultat.consumedGrams).toBe(6200);
+    });
+
+    it('ne renvoie JAMAIS un reste négatif', async () => {
+      // On ne « doit » pas du carbone : le reste est borné à 0, comme
+      // savedVsCarGrams l'est à l'étape 4D-1.
+      avecBudget(1000);
+      avecTrajets([{ co2Grams: 9999, routeId: 'r1' }]);
+
+      const resultat = await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(resultat.remainingGrams).toBe(0);
+    });
+
+    it('arrondit la consommation à deux décimales', async () => {
+      avecBudget(1000);
+      avecTrajets([
+        { co2Grams: 0.1, routeId: 'r1' },
+        { co2Grams: 0.2, routeId: 'r1' },
+      ]);
+
+      const resultat = await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(resultat.consumedGrams).toBe(0.3);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // tripCount : un trajet = une Route
+  // ---------------------------------------------------------------------------
+  describe('comptage des trajets', () => {
+    it('compte UN trajet pour trois enregistrements de la même route', async () => {
+      avecBudget(5000);
+      avecTrajets([
+        { co2Grams: 0, routeId: 'route-1' },
+        { co2Grams: 361.6, routeId: 'route-1' },
+        { co2Grams: 0, routeId: 'route-1' },
+      ]);
+
+      const resultat = await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(resultat.tripCount).toBe(1);
+      // Les sommes, elles, portent bien sur les TROIS lignes.
+      expect(resultat.consumedGrams).toBe(361.6);
+    });
+
+    it('compte des routes distinctes séparément', async () => {
+      avecBudget(5000);
+      avecTrajets([
+        { co2Grams: 10, routeId: 'r1' },
+        { co2Grams: 10, routeId: 'r1' },
+        { co2Grams: 10, routeId: 'r2' },
+        { co2Grams: 10, routeId: 'r3' },
+      ]);
+
+      const resultat = await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(resultat.tripCount).toBe(3);
+      expect(resultat.consumedGrams).toBe(40);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cas limites
+  // ---------------------------------------------------------------------------
+  describe('cas limites', () => {
+    it('renvoie un budget intact quand la semaine est vide', async () => {
+      avecBudget(5000);
+
+      const resultat = await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(resultat).toMatchObject({
+        weeklyBudgetGrams: 5000,
+        consumedGrams: 0,
+        remainingGrams: 5000,
+        exceeded: false,
+        tripCount: 0,
+      });
+    });
+
+    it('renvoie des nulls quand l’usager n’a AUCUNE préférence', async () => {
+      // La relation User → UserPreferences est optionnelle. On n'invente
+      // aucun plafond par défaut : juger un usager sur un objectif qu'il
+      // n'a pas choisi serait faux.
+      avecTrajets([{ co2Grams: 1800, routeId: 'r1' }]);
+
+      const resultat = await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(resultat.weeklyBudgetGrams).toBeNull();
+      expect(resultat.remainingGrams).toBeNull();
+      // `false` signifierait « non dépassé » : une affirmation fausse ici.
+      expect(resultat.exceeded).toBeNull();
+      // La consommation, elle, reste une information valable.
+      expect(resultat.consumedGrams).toBe(1800);
+      expect(resultat.tripCount).toBe(1);
+    });
+
+    it('accepte un budget à zéro sans le confondre avec une absence', async () => {
+      // Piège classique du `??` mal placé : 0 est une valeur, pas un vide.
+      avecBudget(0);
+      avecTrajets([{ co2Grams: 10, routeId: 'r1' }]);
+
+      const resultat = await service.findBudgetForUser(MOI, SEMAINE_35);
+
+      expect(resultat.weeklyBudgetGrams).toBe(0);
+      expect(resultat.exceeded).toBe(true);
+      expect(resultat.remainingGrams).toBe(0);
+    });
+
+    it('lit correctement une semaine à cheval sur deux années', async () => {
+      // La semaine 1 de 2026 commence le 29 décembre 2025.
+      await service.findBudgetForUser(MOI, { year: 2026, week: 1 });
+
+      const options = (
+        prisma.carbonRecord.findMany.mock.calls as [
+          { where: { date: { gte: Date; lt: Date } } },
+        ][]
+      )[0][0];
+
+      expect(options.where.date.gte.toISOString()).toBe(
+        '2025-12-29T00:00:00.000Z',
+      );
+      expect(options.where.date.lt.toISOString()).toBe(
+        '2026-01-05T00:00:00.000Z',
+      );
     });
   });
 });

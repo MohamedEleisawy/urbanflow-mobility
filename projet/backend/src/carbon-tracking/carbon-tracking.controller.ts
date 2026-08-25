@@ -1,6 +1,7 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { CarbonTrackingService } from './carbon-tracking.service';
 import { WeeklyTrackingQueryDto } from './dto/weekly-tracking-query.dto';
+import { WeekQueryDto } from './dto/week-query.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { JwtPayload } from '../auth/jwt-payload.type';
@@ -30,5 +31,17 @@ export class CarbonTrackingController {
     @Query() query: WeeklyTrackingQueryDto,
   ) {
     return this.carbonTrackingService.findWeeklyForUser(user.sub, query);
+  }
+
+  // Budget d'une semaine et son état de consommation (étape 4E-5B).
+  //
+  // Sans `?year=&week=`, la semaine EN COURS est utilisée : c'est ce qu'un
+  // usager consulte le plus souvent, et cela évite au client de calculer
+  // lui-même une semaine ISO — un calcul dont l'étape 4E-5A a montré les
+  // pièges (l'année d'une semaine n'est pas toujours celle de la date).
+  @Get('budget')
+  @UseGuards(JwtAuthGuard)
+  findBudget(@CurrentUser() user: JwtPayload, @Query() query: WeekQueryDto) {
+    return this.carbonTrackingService.findBudgetForUser(user.sub, query);
   }
 }

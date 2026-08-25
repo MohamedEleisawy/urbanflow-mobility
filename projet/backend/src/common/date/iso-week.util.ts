@@ -104,3 +104,38 @@ export function debutFenetreSemaines(reference: Date, semaines: number): Date {
   debut.setUTCDate(debut.getUTCDate() - (semaines - 1) * JOURS_PAR_SEMAINE);
   return debut;
 }
+
+/**
+ * Bornes d'une semaine ISO désignée par son couple `(year, week)`
+ * — l'opération INVERSE de `semaineIso()` (étape 4E-5B).
+ *
+ * `debut` est inclus, `fin` est EXCLUE : c'est le lundi de la semaine
+ * suivante. Une borne de fin inclusive obligerait à choisir une « dernière
+ * milliseconde », qui laisserait passer ou perdrait les enregistrements
+ * situés pile à la frontière selon la précision du stockage.
+ *
+ * Le point d'appui du calcul : **le 4 janvier appartient TOUJOURS à la
+ * semaine 1**. C'est une conséquence directe de la règle ISO (la semaine 1
+ * contient le premier jeudi) et cela évite d'énumérer les cas : le lundi de
+ * la semaine 1 se déduit du 4 janvier, les autres s'en comptent.
+ *
+ * Conséquence à connaître : le lundi d'une semaine 1 tombe souvent dans
+ * l'année civile PRÉCÉDENTE — la semaine 1 de 2026 commence le
+ * 29 décembre 2025.
+ */
+export function bornesSemaineIso(
+  year: number,
+  week: number,
+): { debut: Date; fin: Date } {
+  const lundiSemaine1 = lundiDeLaSemaineIso(new Date(Date.UTC(year, 0, 4)));
+
+  const debut = new Date(
+    lundiSemaine1.getTime() +
+      (week - 1) * JOURS_PAR_SEMAINE * MILLISECONDES_PAR_JOUR,
+  );
+  const fin = new Date(
+    debut.getTime() + JOURS_PAR_SEMAINE * MILLISECONDES_PAR_JOUR,
+  );
+
+  return { debut, fin };
+}

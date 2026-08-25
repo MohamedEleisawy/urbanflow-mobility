@@ -1,8 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { debutFenetreSemaines, semaineIso } from '../common/date/iso-week.util';
+import {
+  bornesSemaineIso,
+  debutFenetreSemaines,
+  semaineIso,
+} from '../common/date/iso-week.util';
 import { WeeklyTrackingQueryDto } from './dto/weekly-tracking-query.dto';
 import { CarbonTrackingDto, WeeklyCarbonDto } from './dto/weekly-tracking.dto';
+import { WeekQueryDto } from './dto/week-query.dto';
+import { WeeklyBudgetDto } from './dto/weekly-budget.dto';
 
 /// Deux décimales, comme partout ailleurs pour les grammes de CO2
 /// (convention posée à l'étape 4D-1).
@@ -72,6 +78,90 @@ export class CarbonTrackingService {
     return {
       weeks: this.regrouperParSemaine(enregistrements),
       weeksRequested: weeks,
+    };
+  }
+
+  /**
+   * Budget d'une semaine et son état de consommation (étape 4E-5B).
+   *
+   * DEUX SOURCES, ET PAS DE TROISIÈME :
+   *
+   *   UserPreferences.co2BudgetWeekly  →  le plafond que l'usager se fixe
+   *   CarbonRecord                     →  ce qu'il a réellement émis
+   *
+   * `CarbonBudget` existe dans le schéma mais n'est VOLONTAIREMENT pas
+   * utilisé ici. Y recopier la consommation créerait une seconde vérité à
+   * synchroniser avec `CarbonRecord` : à la moindre suppression de trajet,
+   * les deux divergeraient sans que rien ne le signale. Une valeur calculée
+   * ne se stocke que lorsqu'on a besoin d'en figer l'historique — ce n'est
+   * pas le cas d'un état courant.
+   *
+   * Sans semaine demandée, on répond pour la semaine EN COURS.
+   */
+  async findBudgetForUser(
+    userId: string,
+    query: WeekQueryDto,
+  ): Promise<WeeklyBudgetDto> {
+    const { year, week } =
+      query.year !== undefined && query.week !== undefined
+        ? { year: query.year, week: query.week }
+        : semaineIso(new Date());
+
+    // Bornes [lundi, lundi suivant[ — la fin est EXCLUE, ce qui évite d'avoir
+    // à choisir une « dernière milliseconde » du dimanche.
+    const { debut, fin } = bornesSemaineIso(year, week);
+
+    // Deux requêtes indépendantes, donc lancées en parallèle.
+    const [preferences, enregistrements] = await Promise.all([
+      // `userId` est @unique sur UserPreferences : findUnique convient.
+      this.prisma.userPreferences.findUnique({
+        where: { userId },
+        select: { co2BudgetWeekly: true },
+      }),
+      this.prisma.carbonRecord.findMany({
+        // Filtre EN BASE, jamais en mémoire.
+        where: { userId, date: { gte: debut, lt: fin } },
+        select: { co2Grams: true, routeId: true },
+      }),
+    ]);
+
+    const consumedGrams = arrondir(
+      enregistrements.reduce((somme, e) => somme + e.co2Grams, 0),
+    );
+    // Un trajet en trois segments compte pour UN : le Set s'en charge.
+    const tripCount = new Set(enregistrements.map((e) => e.routeId)).size;
+
+    // `?? null` et non `?.` seul : l'absence de préférences doit produire un
+    // null explicite, pas un undefined que JSON.stringify effacerait.
+    const weeklyBudgetGrams = preferences?.co2BudgetWeekly ?? null;
+
+    if (weeklyBudgetGrams === null) {
+      // Aucun plafond fixé : on ne juge pas, on n'invente pas de valeur par
+      // défaut. La consommation, elle, reste une information valable.
+      return {
+        year,
+        week,
+        weeklyBudgetGrams: null,
+        consumedGrams,
+        remainingGrams: null,
+        exceeded: null,
+        tripCount,
+      };
+    }
+
+    return {
+      year,
+      week,
+      weeklyBudgetGrams,
+      consumedGrams,
+      // Borné à 0 : on ne « doit » pas du carbone, on a simplement dépassé.
+      // Une valeur négative n'aurait aucun sens pour l'usager — même
+      // raisonnement que `savedVsCarGrams` à l'étape 4D-1.
+      remainingGrams: arrondir(Math.max(weeklyBudgetGrams - consumedGrams, 0)),
+      // STRICTEMENT supérieur : consommer exactement son budget, c'est le
+      // respecter, pas le dépasser.
+      exceeded: consumedGrams > weeklyBudgetGrams,
+      tripCount,
     };
   }
 

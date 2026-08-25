@@ -1,4 +1,5 @@
 import {
+  bornesSemaineIso,
   debutFenetreSemaines,
   lundiDeLaSemaineIso,
   semaineIso,
@@ -161,5 +162,71 @@ describe('debutFenetreSemaines', () => {
 
     expect(semaineIso(debut)).toEqual({ year: 2026, week: 32 });
     expect(semaineIso(reference)).toEqual({ year: 2026, week: 35 });
+  });
+});
+
+describe('bornesSemaineIso', () => {
+  it('renvoie le lundi et le lundi suivant', () => {
+    const { debut, fin } = bornesSemaineIso(2026, 35);
+
+    expect(debut.toISOString()).toBe('2026-08-24T00:00:00.000Z');
+    // Borne de FIN EXCLUE : le lundi de la semaine suivante.
+    expect(fin.toISOString()).toBe('2026-08-31T00:00:00.000Z');
+  });
+
+  it('couvre exactement sept jours', () => {
+    const { debut, fin } = bornesSemaineIso(2026, 12);
+
+    expect(fin.getTime() - debut.getTime()).toBe(7 * 86_400_000);
+  });
+
+  it('fait commencer la semaine 1 dans l’année civile PRÉCÉDENTE', () => {
+    // Conséquence de la règle ISO, et le piège de cette fonction : le lundi
+    // de la semaine 1 de 2026 tombe le 29 décembre 2025.
+    expect(bornesSemaineIso(2026, 1).debut.toISOString()).toBe(
+      '2025-12-29T00:00:00.000Z',
+    );
+    expect(bornesSemaineIso(2025, 1).debut.toISOString()).toBe(
+      '2024-12-30T00:00:00.000Z',
+    );
+  });
+
+  it('gère la semaine 53 des années qui en comptent 53', () => {
+    expect(bornesSemaineIso(2026, 53).debut.toISOString()).toBe(
+      '2026-12-28T00:00:00.000Z',
+    );
+    // Sa borne de fin ouvre la semaine 1 de 2027.
+    expect(bornesSemaineIso(2026, 53).fin.toISOString()).toBe(
+      bornesSemaineIso(2027, 1).debut.toISOString(),
+    );
+  });
+
+  it('est exactement l’inverse de semaineIso', () => {
+    // Aller-retour : (year, week) → lundi → (year, week). Les cas limites
+    // sont ceux où l'année civile et l'année ISO divergent.
+    const cas = [
+      { year: 2026, week: 35 },
+      { year: 2026, week: 1 },
+      { year: 2026, week: 53 },
+      { year: 2027, week: 1 },
+      { year: 2025, week: 1 },
+      { year: 2020, week: 53 },
+      { year: 2021, week: 1 },
+    ];
+
+    for (const attendu of cas) {
+      const { debut } = bornesSemaineIso(attendu.year, attendu.week);
+      expect(semaineIso(debut)).toEqual(attendu);
+    }
+  });
+
+  it('enchaîne les semaines sans trou ni recouvrement', () => {
+    // La fin d'une semaine EST le début de la suivante : aucun
+    // enregistrement ne peut tomber entre les deux, ni compter deux fois.
+    for (let week = 1; week < 53; week++) {
+      expect(bornesSemaineIso(2026, week).fin.toISOString()).toBe(
+        bornesSemaineIso(2026, week + 1).debut.toISOString(),
+      );
+    }
   });
 });
