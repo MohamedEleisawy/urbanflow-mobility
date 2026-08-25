@@ -116,10 +116,16 @@ describe('Alert.endTime optionnel (e2e)', () => {
   // ===========================================================================
   // Périmètre : rien d'autre n'a été assoupli
   // ===========================================================================
-  it('endTime est la SEULE colonne rendue nullable', async () => {
-    // Garde-fou de périmètre : la migration ne devait toucher qu'elle. Si
-    // `cause`, `effect` ou `startTime` étaient devenus nullables au
-    // passage, ce test le dirait.
+  it('aucune colonne n’est devenue nullable par accident', async () => {
+    // Garde-fou de périmètre. Il s'appelait « endTime est la SEULE colonne
+    // rendue nullable » jusqu'à l'étape 4F-2A, qui a délibérément ajouté
+    // `headerText` et `descriptionText` — nullables l'un et l'autre, faute
+    // de quoi une alerte sans texte publié serait impossible à enregistrer.
+    //
+    // Le rôle du test n'a pas changé : il liste EXHAUSTIVEMENT les colonnes
+    // nullables, si bien qu'aucune ne peut apparaître sans une décision
+    // écrite ici. Si `cause`, `effect` ou `startTime` s'assouplissaient au
+    // passage d'une migration, ce test le dirait.
     const colonnes = await prisma.$queryRaw<
       { column_name: string; is_nullable: string }[]
     >`
@@ -136,7 +142,13 @@ describe('Alert.endTime optionnel (e2e)', () => {
 
     // stopIds et lineIds sont des tableaux : PostgreSQL les déclare
     // nullables depuis la migration initiale, ce n'est pas notre fait.
-    expect(nullables).toEqual(['endTime', 'lineIds', 'stopIds']);
+    expect(nullables).toEqual([
+      'descriptionText', // 4F-2A — aucun texte publié
+      'endTime', // 4F-1A — aucune fin annoncée
+      'headerText', // 4F-2A — aucun texte publié
+      'lineIds',
+      'stopIds',
+    ]);
   });
 
   it('les autres champs restent OBLIGATOIRES en base', async () => {

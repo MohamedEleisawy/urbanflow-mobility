@@ -9,6 +9,7 @@ import { StopsModule } from './stops/stops.module';
 import { SegmentsModule } from './segments/segments.module';
 import { GtfsModule } from './gtfs/gtfs.module';
 import { GtfsRtModule } from './gtfs-rt/gtfs-rt.module';
+import { AlertsModule } from './alerts/alerts.module';
 import { CarbonModule } from './carbon/carbon.module';
 import { CarbonTrackingModule } from './carbon-tracking/carbon-tracking.module';
 
@@ -27,6 +28,10 @@ import { CarbonTrackingModule } from './carbon-tracking/carbon-tracking.module';
     // celui-ci lit un réseau statique livré en archive, celui-là un flux
     // binaire rafraîchi en continu. Aucun endpoint non plus à ce stade.
     GtfsRtModule,
+    // Lecture publique des perturbations (UC02, étape 4F-2B). Distinct de
+    // GtfsRtModule : celui-ci importe un flux binaire, celui-là sert une
+    // liste à un voyageur. Aucune dépendance entre les deux.
+    AlertsModule,
     // Proxy vers le microservice FastAPI. Aucune dépendance vers
     // RoutesModule : la recherche d'itinéraire n'appelle jamais le calcul
     // carbone, et reste donc utilisable si le microservice est en panne.

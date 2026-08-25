@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Logger } from '@nestjs/common';
+import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import { GtfsRtSourceService } from './gtfs-rt-source.service';
 
 beforeAll(() => {
@@ -249,6 +249,41 @@ describe('GtfsRtSourceService', () => {
       await expect(
         service.fetchFeed('https://exemple.fr/alertes.pb'),
       ).resolves.toBeInstanceOf(Uint8Array);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Type d'erreur (étape 4F-1D)
+  // ---------------------------------------------------------------------------
+  describe("type d'erreur", () => {
+    it.each([
+      ['URL malformée', 'pas-une-url'],
+      ['protocole refusé', 'ftp://exemple.fr/alertes.pb'],
+    ])('lève une ServiceUnavailableException — %s', async (_cas, url) => {
+      await expect(service.fetchFeed(url)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+    });
+
+    it('lève une ServiceUnavailableException sur réponse HTTP en erreur', async () => {
+      simulerReponse(new Uint8Array(0), { status: 404 });
+
+      // Un appelant doit pouvoir distinguer « le serveur de l'opérateur n'a
+      // pas répondu » de « le flux reçu est illisible » SANS lire le texte du
+      // message — voir le décodeur, qui lève une UnprocessableEntityException.
+      await expect(
+        service.fetchFeed('https://exemple.fr/absent.pb'),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+
+    it('lève une ServiceUnavailableException sur panne réseau', async () => {
+      jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValue(new Error('getaddrinfo ENOTFOUND'));
+
+      await expect(
+        service.fetchFeed('https://injoignable.invalid/alertes.pb'),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
     });
   });
 

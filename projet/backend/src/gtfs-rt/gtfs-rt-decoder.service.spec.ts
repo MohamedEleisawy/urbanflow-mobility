@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { UnprocessableEntityException } from '@nestjs/common';
 import { transit_realtime } from 'gtfs-realtime-bindings';
 import { GtfsRtDecoderService } from './gtfs-rt-decoder.service';
 
@@ -142,6 +143,25 @@ describe('GtfsRtDecoderService', () => {
       // rouvrir le code pour savoir ce qui a été reçu.
       expect(() => service.decode(lireFixture('version-inconnue.pb'))).toThrow(
         /2\.0 attendue/,
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Type d'erreur (étape 4F-1D)
+  // ---------------------------------------------------------------------------
+  describe("type d'erreur", () => {
+    it('lève une UnprocessableEntityException sur flux illisible', () => {
+      // Le téléchargement a réussi : c'est le CONTENU qui est inexploitable.
+      // GtfsRtSourceService, lui, lève une ServiceUnavailableException.
+      expect(() => service.decode(lireFixture('flux-tronque.pb'))).toThrow(
+        UnprocessableEntityException,
+      );
+    });
+
+    it('lève une UnprocessableEntityException sur version non supportée', () => {
+      expect(() => service.decode(lireFixture('version-inconnue.pb'))).toThrow(
+        UnprocessableEntityException,
       );
     });
   });

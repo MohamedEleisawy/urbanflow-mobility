@@ -1,4 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 
 /// Délai maximal accordé au serveur de l'opérateur.
 ///
@@ -40,6 +44,17 @@ const TAILLE_MAX_OCTETS = 25 * 1024 * 1024;
  * Les règles de sécurité reprennent celles de GtfsSourceService (4C-4-5) :
  * http(s) uniquement, délai maximal, réponse vérifiée. La limite de taille,
  * elle, est spécifique — voir TAILLE_MAX_OCTETS.
+ *
+ * TYPE D'ERREUR (étape 4F-1D). Tout échec est une ServiceUnavailableException,
+ * jamais une Error nue. Ce n'est pas de la décoration : c'est ce qui permet à
+ * un appelant de distinguer « le serveur de l'opérateur n'a pas répondu » de
+ * « le flux reçu est illisible » (UnprocessableEntityException, côté
+ * décodeur) SANS lire le texte du message.
+ *
+ * Le choix reprend la convention de CarbonService (4D-2), qui répond déjà 503
+ * quand le microservice FastAPI est injoignable et 422 quand il refuse le
+ * calcul. La distinction est la même, et une future route d'administration
+ * héritera des bons codes HTTP sans une ligne de traduction.
  */
 @Injectable()
 export class GtfsRtSourceService {
@@ -57,7 +72,7 @@ export class GtfsRtSourceService {
     const reponse = await this.telecharger(adresse);
 
     if (!reponse.ok) {
-      throw new Error(
+      throw new ServiceUnavailableException(
         `Flux GTFS-RT refusé par le serveur : HTTP ${reponse.status} (${url})`,
       );
     }
@@ -69,7 +84,7 @@ export class GtfsRtSourceService {
     // Un serveur peut mentir sur Content-Length, ou ne pas l'envoyer du
     // tout : on revérifie sur les octets réellement reçus.
     if (octets.byteLength > TAILLE_MAX_OCTETS) {
-      throw new Error(
+      throw new ServiceUnavailableException(
         `Flux GTFS-RT trop volumineux : ${octets.byteLength} octets reçus ` +
           `(maximum ${TAILLE_MAX_OCTETS})`,
       );
@@ -78,7 +93,9 @@ export class GtfsRtSourceService {
     if (octets.byteLength === 0) {
       // Un FeedMessage vide serait décodable, mais un corps de longueur nulle
       // signale une erreur côté serveur, pas un réseau sans perturbation.
-      throw new Error(`Flux GTFS-RT vide reçu depuis "${url}"`);
+      throw new ServiceUnavailableException(
+        `Flux GTFS-RT vide reçu depuis "${url}"`,
+      );
     }
 
     this.logger.log(`Flux GTFS-RT reçu (${octets.byteLength} octets) : ${url}`);
@@ -99,11 +116,13 @@ export class GtfsRtSourceService {
     try {
       adresse = new URL(url);
     } catch {
-      throw new Error(`URL de flux GTFS-RT invalide : "${url}"`);
+      throw new ServiceUnavailableException(
+        `URL de flux GTFS-RT invalide : "${url}"`,
+      );
     }
 
     if (adresse.protocol !== 'http:' && adresse.protocol !== 'https:') {
-      throw new Error(
+      throw new ServiceUnavailableException(
         `Protocole non autorisé : "${adresse.protocol}" (http ou https attendu)`,
       );
     }
@@ -124,7 +143,7 @@ export class GtfsRtSourceService {
     } catch (error) {
       // Connexion refusée, DNS introuvable, coupure réseau ou dépassement du
       // délai : quatre causes, une seule conséquence pour l'appelant.
-      throw new Error(
+      throw new ServiceUnavailableException(
         `Flux GTFS-RT injoignable (${adresse.href}) : ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
@@ -142,7 +161,7 @@ export class GtfsRtSourceService {
     const annoncee = Number(reponse.headers.get('content-length'));
 
     if (Number.isFinite(annoncee) && annoncee > TAILLE_MAX_OCTETS) {
-      throw new Error(
+      throw new ServiceUnavailableException(
         `Flux GTFS-RT trop volumineux : ${annoncee} octets annoncés ` +
           `(maximum ${TAILLE_MAX_OCTETS}) — ${url}`,
       );

@@ -17,10 +17,15 @@ import { GtfsRtDecoderService } from '../src/gtfs-rt/gtfs-rt-decoder.service';
  * VRAI fichier binaire, et les deux services sont résolus par l'injection de
  * dépendances de NestJS.
  *
- * AUCUNE BASE DE DONNÉES. Cette étape n'écrit rien : le module de test
- * n'importe ni PrismaModule ni AppModule, et le fichier ne crée aucune
- * application HTTP Nest. C'est aussi la preuve que GtfsRtModule ne dépend de
- * rien d'autre.
+ * AUCUNE BASE DE DONNÉES, AUCUNE ÉCRITURE. Ce fichier ne crée aucune
+ * application HTTP Nest et n'appelle jamais Prisma.
+ *
+ * Il affirmait aussi, en 4F-1B, que GtfsRtModule ne dépendait de rien.
+ * Ce n'est plus vrai depuis 4F-1C : le module y a gagné GtfsRtImportService,
+ * qui écrit en base et importe donc PrismaModule. Ce que ce test continue de
+ * prouver est plus précis, et suffit : la source et le décodeur, eux, ne
+ * touchent toujours pas à la base — `.compile()` n'ouvre aucune connexion,
+ * et les deux services s'utilisent ici sans qu'aucune ne soit nécessaire.
  *
  * AUCUN ACCÈS À INTERNET : le serveur écoute sur la boucle locale, sur un
  * port attribué par le système (port 0), afin de ne jamais entrer en conflit

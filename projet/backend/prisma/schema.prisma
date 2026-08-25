@@ -385,8 +385,36 @@ model Alert {
   /// pour ESCOOTER) et 4E-1 (aucun `gtfsTripId` fabriqué) : NULL dit la
   /// vérité — « cette information n'existe pas » — là où une valeur par
   /// défaut mentirait.
-  endTime      DateTime?
-  gtfsAlertId  String        @unique
+  endTime DateTime?
+
+  /// Titre de la perturbation, tel que publié par l'opérateur.
+  ///
+  /// AJOUTÉ À L'ÉTAPE 4F-2A, et pour une raison fonctionnelle précise. Le
+  /// dossier décrit UC02 comme « affiche la liste des alertes en cours sur le
+  /// réseau (retards, pannes, travaux) POUR INFORMER LES VOYAGEURS ».
+  ///
+  /// Or le modèle ne portait jusqu'ici que des valeurs techniques : cause,
+  /// effect, severity, identifiants GTFS. Une alerte s'y résumait à
+  /// « MAINTENANCE / REDUCED_SERVICE » — exploitable par une machine,
+  /// illisible pour un voyageur. GTFS-Realtime transporte pourtant le texte
+  /// rédigé par l'opérateur (`header_text`), que l'import décodait sans
+  /// pouvoir l'écrire, faute de colonne.
+  ///
+  /// NULLABLE : un flux peut ne publier aucun texte, ou n'en publier que
+  /// dans une langue qu'on ne sait pas choisir. NULL dit alors « aucun texte
+  /// n'a été fourni » — la même réponse honnête qu'`endTime` (4F-1A),
+  /// `gtfsTripId` (4E-1) ou le facteur d'`ESCOOTER` (4D-1). Le contraire
+  /// reviendrait à fabriquer une phrase à partir de `cause` et `effect`, donc
+  /// à faire passer notre interprétation pour la parole de l'opérateur.
+  headerText String?
+
+  /// Description détaillée de la perturbation (`description_text`).
+  ///
+  /// Nullable pour les mêmes raisons que `headerText`, et indépendamment de
+  /// lui : un opérateur publie couramment un titre sans description.
+  descriptionText String?
+
+  gtfsAlertId String @unique
 
   @@map("alerts")
 }

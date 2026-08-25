@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnprocessableEntityException } from '@nestjs/common';
 import { transit_realtime } from 'gtfs-realtime-bindings';
 
 /// Version du format que nous savons interpréter.
@@ -27,6 +27,14 @@ const VERSION_SUPPORTEE = '2.0';
  *
  * Cette séparation rend le décodage testable SANS réseau, et les pannes
  * réseau testables SANS fabriquer de protobuf valide.
+ *
+ * TYPE D'ERREUR (étape 4F-1D). Un flux illisible lève une
+ * UnprocessableEntityException : le téléchargement a réussi, c'est le CONTENU
+ * qui est inexploitable. GtfsRtSourceService, lui, lève une
+ * ServiceUnavailableException — deux causes distinctes, deux types distincts,
+ * et un appelant qui n'a jamais à interpréter un message d'erreur.
+ *
+ * Même partage que CarbonService (4D-2) entre 503 et 422.
  */
 @Injectable()
 export class GtfsRtDecoderService {
@@ -43,7 +51,7 @@ export class GtfsRtDecoderService {
     try {
       message = transit_realtime.FeedMessage.decode(octets);
     } catch (error) {
-      throw new Error(
+      throw new UnprocessableEntityException(
         `Flux GTFS-RT illisible : ${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -55,7 +63,7 @@ export class GtfsRtDecoderService {
     //
     // L'en-tête est le garde-fou : un vrai flux annonce toujours sa version.
     if (!message.header?.gtfsRealtimeVersion) {
-      throw new Error(
+      throw new UnprocessableEntityException(
         'Flux GTFS-RT invalide : en-tête absent ou sans version. Les données ' +
           'ont été décodées, mais ne décrivent pas un flux GTFS-Realtime.',
       );
@@ -66,7 +74,7 @@ export class GtfsRtDecoderService {
     if (!version.startsWith(VERSION_SUPPORTEE.split('.')[0])) {
       // On refuse plutôt que d'interpréter au hasard un format inconnu —
       // même principe qu'au mode ESCOOTER sans facteur d'émission (4D-1).
-      throw new Error(
+      throw new UnprocessableEntityException(
         `Version GTFS-RT non supportée : "${version}" ` +
           `(version ${VERSION_SUPPORTEE} attendue)`,
       );
