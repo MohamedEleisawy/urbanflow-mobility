@@ -1,65 +1,94 @@
-import Image from "next/image";
+import { ButtonLink } from "@/components/Button";
+import { Card } from "@/components/Card";
+import { Container } from "@/components/Container";
 
-export default function Home() {
+// Page d'accueil (étape 5A-2).
+//
+// Composant SERVEUR : aucun état, aucun effet, aucune interactivité. Elle ne
+// fait — et ne doit faire — AUCUN appel au backend à cette étape.
+
+/// Ce que le backend sait déjà faire, et que les écrans suivants exposeront.
+const ATOUTS = [
+  {
+    titre: "Itinéraires multimodaux",
+    texte:
+      "Bus, tramway, métro, vélo et marche combinés sur un même trajet, avec le détail de chaque correspondance.",
+  },
+  {
+    titre: "Perturbations en direct",
+    texte:
+      "Les alertes publiées par les opérateurs au standard GTFS-Realtime, triées de la plus grave à la plus anodine.",
+  },
+  {
+    titre: "Empreinte carbone",
+    texte:
+      "Les grammes de CO₂ de chaque trajet, ce qu'ils économisent face à la voiture, et un suivi hebdomadaire.",
+  },
+] as const;
+
+export default function Accueil() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <Container>
+      {/* --- Proposition de valeur ------------------------------------- */}
+      <section className="py-12 sm:py-16">
+        {/* Un seul <h1> par page : c'est le repère qu'un lecteur d'écran
+            utilise pour savoir de quoi la page parle. */}
+        <h1 className="text-ink max-w-2xl text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+          Vos trajets urbains, sans détour et sans surprise
+        </h1>
+
+        <p className="mt-4 max-w-2xl text-base leading-relaxed text-neutral-700 sm:text-lg">
+          UrbanFlow Mobility réunit les transports en commun, le vélo et la marche dans un seul
+          itinéraire. Vous voyez les perturbations en cours avant de partir, et l&apos;empreinte
+          carbone de chaque option avant de choisir.
+        </p>
+
+        {/* flex-col sur mobile : deux boutons côte à côte y deviendraient
+            trop étroits pour être visés du pouce. */}
+        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+          <ButtonLink href="/recherche">Rechercher un itinéraire</ButtonLink>
+          <ButtonLink href="/alertes" variant="secondary">
+            Voir les perturbations
+          </ButtonLink>
+        </div>
+      </section>
+
+      {/* --- Ce que l'application apporte ------------------------------ */}
+      <section aria-labelledby="atouts" className="pb-12 sm:pb-16">
+        <h2 id="atouts" className="text-ink text-xl font-semibold">
+          Ce que vous pouvez faire
+        </h2>
+
+        {/* Une colonne sur mobile, trois sur grand écran. Rien entre les
+            deux : à deux colonnes, la troisième carte resterait seule. */}
+        <ul className="mt-5 grid gap-4 sm:grid-cols-3">
+          {ATOUTS.map(({ titre, texte }) => (
+            <li key={titre}>
+              <Card>
+                <h3 className="text-ink font-medium">{titre}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-neutral-600">{texte}</p>
+              </Card>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {/* --- Mobilité durable ------------------------------------------ */}
+      <section aria-labelledby="carbone" className="pb-16">
+        <div className="border-eco/30 rounded-lg border bg-white p-6 sm:p-8">
+          {/* Le vert est réservé au carbone dans tout le projet : le voir ici
+              et nulle part ailleurs sur cette page est intentionnel. */}
+          <h2 id="carbone" className="text-eco text-xl font-semibold">
+            Chaque trajet compte
+          </h2>
+          <p className="mt-3 max-w-2xl text-sm leading-relaxed text-neutral-700 sm:text-base">
+            Les émissions sont calculées à partir des facteurs d&apos;émission de l&apos;ADEME, mode
+            par mode et distance par distance. Aucun chiffre n&apos;est estimé au jugé :
+            lorsqu&apos;un facteur d&apos;émission n&apos;existe pas pour un mode,
+            l&apos;application le dit plutôt que d&apos;inventer une valeur.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      </section>
+    </Container>
   );
 }

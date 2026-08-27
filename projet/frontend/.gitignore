@@ -32,6 +32,11 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...SAUF le modèle, qui ne contient aucun secret et documente les variables
+# attendues. Le .gitignore de la racine fait déjà cette exception ; celui-ci,
+# généré par create-next-app, ne la faisait pas — .env.example serait donc
+# resté invisible pour Git, et la documentation perdue.
+!.env.example
 
 # vercel
 .vercel

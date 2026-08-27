@@ -1,26 +1,55 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ==========================================================================
+   Identité visuelle UrbanFlow Mobility (étape 5A-2)
+   ==========================================================================
+   Les quatre couleurs viennent du moodboard du dossier de conception (§2.8.2),
+   avec les ratios de contraste qu'il annonce (§2.8.3) :
+
+     #1E3A5F sur #F5F5F5 → 10.55  AAA    navigation, actions principales
+     #2D7D46 sur #FFFFFF →  5.08  AA     carbone, éco-score, validations
+     #1A1A2E sur #F5F5F5 → 15.65  AAA    titres
+
+   AUCUNE AUTRE COULEUR n'est introduite, hormis les gris neutres de Tailwind
+   pour les textes secondaires et les bordures, et un rouge réservé aux
+   messages d'erreur — un état qu'aucune des quatre ne peut exprimer sans
+   ambiguïté (le vert signifie « validé », le bleu « action »).
+
+   Déclarées dans `@theme` : Tailwind 4 en dérive les utilitaires `bg-brand`,
+   `text-eco`, `border-ink`… Les écrans suivants n'auront donc jamais à écrire
+   un code hexadécimal en dur.
+   ========================================================================== */
+@theme {
+  /* Bleu — confiance, stabilité : navigation et appels à l'action. */
+  --color-brand: #1e3a5f;
+  /* Variante foncée pour les états survolé / actif d'un bouton bleu. */
+  --color-brand-dark: #162c47;
+
+  /* Vert — mobilités durables : empreinte carbone, éco-score, validations. */
+  --color-eco: #2d7d46;
+  --color-eco-dark: #226138;
+
+  /* Gris clair — fond principal, choisi pour limiter la fatigue visuelle. */
+  --color-surface: #f5f5f5;
+
+  /* Bleu nuit — titres, contraste maximal. */
+  --color-ink: #1a1a2e;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+/* Le mode sombre est prévu par le dossier (le bleu nuit y est destiné) mais
+   n'est PAS traité à cette étape : un thème sombre à moitié appliqué est plus
+   déroutant que pas de thème sombre du tout. À reprendre avec les préférences
+   d'affichage (UC06), qui portent déjà un champ `theme`. */
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+}
+
+/* Focus visible sur TOUT élément interactif atteint au clavier.
+   `:focus-visible` — et non `:focus` — n'affiche l'anneau que pour une
+   navigation clavier, sans le faire clignoter à chaque clic souris. */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
 }
