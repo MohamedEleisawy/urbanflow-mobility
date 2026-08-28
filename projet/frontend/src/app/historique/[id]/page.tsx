@@ -1,21 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
-import { ButtonLink } from "@/components/Button";
+import { Button, ButtonLink } from "@/components/Button";
 import { Card } from "@/components/Card";
+import { Carte } from "@/components/Carte";
 import { Container } from "@/components/Container";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorMessage } from "@/components/ErrorMessage";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Spinner } from "@/components/Spinner";
 import { ApiError, messageDErreur } from "@/lib/api";
+import { indexerArrets, pointDepuisArret, traceDepuisSegments } from "@/lib/carte";
 import { detailTrajet } from "@/lib/espace-api";
-import { listerArrets } from "@/lib/itineraires-api";
+import { listerArrets, supprimerTrajet } from "@/lib/itineraires-api";
 import { formaterCo2, formaterDate, formaterDistance, formaterDuree } from "@/lib/format";
-import type { RouteDetail, TransportMode } from "@/lib/types";
+import type { RouteDetail, Stop, TransportMode } from "@/lib/types";
 
 // =============================================================================
 // Détail d'un trajet enregistré (étape 5A-8)
@@ -32,6 +34,23 @@ import type { RouteDetail, TransportMode } from "@/lib/types";
 // page étant entièrement cliente — elle a besoin du jeton, donc du
 // navigateur — c'est la forme adaptée.
 // =============================================================================
+
+/**
+ * Où en est la suppression (étape 5A-9).
+ *
+ * QUATRE ÉTATS, ET LE DEUXIÈME EST TOUT L'INTÉRÊT. « confirmation » n'a
+ * déclenché AUCUN appel réseau : c'est un simple état d'interface, réversible
+ * tant que l'usager n'a pas confirmé. Une action destructive ne doit jamais
+ * partir sur un seul clic.
+ *
+ * « echec » conserve le message ET laisse les deux boutons : un échec doit
+ * pouvoir se réessayer.
+ */
+type EtatSuppression =
+  | { statut: "repos" }
+  | { statut: "confirmation" }
+  | { statut: "suppression" }
+  | { statut: "echec"; message: string };
 
 /// Libellés français des modes : « WALK » ne se montre pas à un usager.
 const MODES: Record<TransportMode, string> = {
@@ -64,7 +83,15 @@ function ContenuDetail({ id }: { id: string }) {
   const [trajet, setTrajet] = useState<RouteDetail | null>(null);
   /// Identifiant interne d'arrêt → son nom, pour rendre les segments
   /// lisibles : ceux-ci ne portent que des identifiants.
-  const [arrets, setArrets] = useState<Map<string, string>>(new Map());
+  /**
+   * Arrêts du réseau, CONSERVÉS ENTIERS depuis le bloc 5B.
+   *
+   * Avant, seul le nom était retenu (`Map<id, nom>`). La carte a besoin des
+   * coordonnées, présentes dans la MÊME réponse : les garder évite un second
+   * appel — et surtout un appel par étape, soit le N+1 que le dossier
+   * proscrit.
+   */
+  const [arrets, setArrets] = useState<Stop[]>([]);
   const [erreur, setErreur] = useState<string | null>(null);
   const [introuvable, setIntrouvable] = useState(false);
 
@@ -100,11 +127,7 @@ function ContenuDetail({ id }: { id: string }) {
         }
 
         if (sortArrets.status === "fulfilled") {
-          // Indexé par `id` INTERNE, car c'est lui que portent les segments
-          // (`fromStopId`, `toStopId`). Surtout PAS par `gtfsStopId` : celui-ci
-          // est nul pour tout arrêt saisi à la main, qui perdrait alors son
-          // nom sans raison.
-          setArrets(new Map(sortArrets.value.map((arret) => [arret.id, arret.name])));
+          setArrets(sortArrets.value);
         }
       },
     );
@@ -113,6 +136,14 @@ function ContenuDetail({ id }: { id: string }) {
       abandonne = true;
     };
   }, [jeton, id]);
+
+  // Indexé par `id` INTERNE, car c'est lui que portent les segments
+  // (`fromStopId`, `toStopId`). Surtout PAS par `gtfsStopId` : celui-ci est
+  // nul pour tout arrêt saisi à la main, qui perdrait alors son nom.
+  const index = useMemo(() => indexerArrets(arrets), [arrets]);
+  const noms = useMemo(() => new Map(arrets.map((arret) => [arret.id, arret.name])), [arrets]);
+  const pointsReseau = useMemo(() => arrets.map(pointDepuisArret), [arrets]);
+  const trace = trajet ? traceDepuisSegments(trajet.segments, index) : null;
 
   return (
     <Container>
@@ -141,9 +172,16 @@ function ContenuDetail({ id }: { id: string }) {
           </div>
         ) : (
           <div className="mt-6 space-y-8">
-            <Resume trajet={trajet} arrets={arrets} />
-            <Segments trajet={trajet} arrets={arrets} />
+            <Resume trajet={trajet} arrets={noms} />
+            <Carte
+              titre="Ce trajet sur la carte"
+              description={descriptionCarte(trajet, trace !== null)}
+              arrets={pointsReseau}
+              trace={trace}
+            />
+            <Segments trajet={trajet} arrets={noms} />
             <Carbone trajet={trajet} />
+            <Suppression id={id} />
           </div>
         )}
       </section>
@@ -330,4 +368,160 @@ function Carbone({ trajet }: { trajet: RouteDetail }) {
       </Card>
     </section>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Suppression du trajet (étape 5A-9)
+// ---------------------------------------------------------------------------
+
+/**
+ * Supprime le trajet, après une confirmation explicite.
+ *
+ * POURQUOI UNE CONFIRMATION EN LIGNE, ET NON UNE FENÊTRE MODALE. Une modale
+ * accessible demande de piéger le focus, de gérer la touche Échap, de rendre
+ * inerte le reste de la page — soit une bibliothèque, soit beaucoup de code
+ * délicat. Une confirmation en ligne obtient la garantie recherchée — deux
+ * gestes distincts au lieu d'un — avec les primitives déjà présentes.
+ *
+ * LE PREMIER CLIC NE SUPPRIME RIEN. Il ouvre l'état de confirmation, dans
+ * lequel aucun appel réseau n'a encore eu lieu et d'où l'on peut revenir.
+ */
+function Suppression({ id }: { id: string }) {
+  const { jeton } = useAuth();
+  const router = useRouter();
+
+  const [etat, setEtat] = useState<EtatSuppression>({ statut: "repos" });
+  const annulerRef = useRef<HTMLButtonElement>(null);
+
+  const enConfirmation = etat.statut === "confirmation" || etat.statut === "echec";
+  const enCours = etat.statut === "suppression";
+
+  useEffect(() => {
+    // Le focus va sur ANNULER, jamais sur Confirmer : sur une action
+    // destructive, le geste par défaut doit être celui qui ne détruit rien.
+    // Sans cela, un usager au clavier confirmerait en appuyant sur Entrée.
+    if (etat.statut === "confirmation") {
+      annulerRef.current?.focus();
+    }
+  }, [etat.statut]);
+
+  const confirmer = async () => {
+    if (!jeton) {
+      return;
+    }
+
+    setEtat({ statut: "suppression" });
+
+    try {
+      await supprimerTrajet(jeton, id);
+
+      // On ne quitte la page QU'APRÈS la confirmation du serveur. `replace`
+      // et non `push` : revenir en arrière ramènerait sur le détail d'un
+      // trajet qui n'existe plus, donc sur un 404.
+      router.replace("/historique");
+    } catch (echec) {
+      // Le trajet reste affiché : rien n'a été retiré localement, et il n'y
+      // avait rien à remettre. L'usager peut réessayer ou renoncer.
+      setEtat({ statut: "echec", message: messageDErreur(echec) });
+    }
+  };
+
+  if (!enConfirmation && !enCours) {
+    return (
+      <section aria-labelledby="suppression">
+        <h2 id="suppression" className="text-ink text-lg font-semibold">
+          Supprimer ce trajet
+        </h2>
+        <p className="mt-1 text-sm text-neutral-600">
+          Le trajet sera retiré de votre historique et de votre suivi carbone.
+        </p>
+        <div className="mt-3">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => setEtat({ statut: "confirmation" })}
+            className="w-full sm:w-auto"
+          >
+            Supprimer ce trajet
+          </Button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section aria-labelledby="suppression">
+      <h2 id="suppression" className="text-ink text-lg font-semibold">
+        Supprimer ce trajet
+      </h2>
+
+      <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-5 py-4">
+        {/* Le TEXTE porte l'avertissement, pas seulement le cadre rouge :
+            un usager qui ne perçoit pas la couleur doit comprendre la même
+            chose (WCAG 1.4.1). */}
+        <p className="font-medium text-red-900">Confirmer la suppression de ce trajet ?</p>
+        <p className="mt-1 text-sm text-red-800">
+          Cette action est définitive. Le trajet et son empreinte carbone seront retirés de votre
+          espace.
+        </p>
+
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+          <button
+            ref={annulerRef}
+            type="button"
+            // Désactivé pendant l'envoi : annuler une suppression déjà partie
+            // n'annulerait rien, et laisserait croire le contraire.
+            disabled={enCours}
+            onClick={() => setEtat({ statut: "repos" })}
+            className="text-ink rounded-md border border-neutral-300 bg-white px-5 py-2.5 text-sm font-medium transition-colors hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Annuler
+          </button>
+
+          <button
+            type="button"
+            // Empêche la double soumission : deux DELETE concurrents
+            // feraient répondre 404 au second, et afficheraient une erreur
+            // pour une suppression pourtant réussie.
+            disabled={enCours}
+            onClick={() => void confirmer()}
+            className="rounded-md bg-red-700 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {enCours ? "Suppression en cours…" : "Confirmer la suppression"}
+          </button>
+        </div>
+
+        {etat.statut === "echec" && (
+          <p role="alert" className="mt-4 text-sm text-red-900">
+            <span className="font-medium">Le trajet n&apos;a pas pu être supprimé.</span>{" "}
+            {etat.message}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Équivalent textuel de la carte (bloc 5B)
+// ---------------------------------------------------------------------------
+
+/**
+ * Décrit en toutes lettres ce que la carte montre.
+ *
+ * Le backend ne stocke AUCUNE géométrie de voie — seulement la position des
+ * arrêts. Le tracé relie donc les arrêts en segments droits : le texte le dit
+ * clairement plutôt que de laisser prendre un schéma pour un relevé.
+ */
+function descriptionCarte(trajet: RouteDetail, traceDessine: boolean): string {
+  const etapes = trajet.segments.length;
+  const entete = `${etapes} ${etapes === 1 ? "étape" : "étapes"}, ${formaterDistance(
+    trajet.totalDistanceM,
+  )} en ${formaterDuree(trajet.totalDurationMin)}.`;
+
+  if (!traceDessine) {
+    return `${entete} Le tracé ne peut pas être dessiné : la position d'au moins un arrêt de ce trajet est inconnue. Les étapes restent listées ci-dessous.`;
+  }
+
+  return `${entete} Le tracé relie les arrêts desservis en ligne droite : c'est un schéma du trajet, pas le chemin exact suivi par le véhicule. Le détail des étapes est listé ci-dessous.`;
 }

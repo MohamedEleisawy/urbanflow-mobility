@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
+import { Carte } from "@/components/Carte";
 import { Container } from "@/components/Container";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorMessage } from "@/components/ErrorMessage";
 import { Spinner } from "@/components/Spinner";
 import { messageDErreur } from "@/lib/api";
+import { indexerArrets, pointDepuisArret, traceDepuisSegments } from "@/lib/carte";
 import {
   enregistrerItineraire,
   listerArrets,
@@ -66,6 +68,16 @@ export default function RecherchePage() {
   const [arrivee, setArrivee] = useState<Choix>("");
 
   const [resultats, setResultats] = useState<Itinerary[] | null>(null);
+
+  /**
+   * Itinéraire mis en avant sur la carte (bloc 5B).
+   *
+   * `null` NE VEUT PAS DIRE « aucun » : il veut dire « l'usager n'a pas encore
+   * choisi », auquel cas on retient le premier résultat. Sans cela, la carte
+   * resterait vide après une recherche réussie, ce qui donnerait l'impression
+   * qu'elle est cassée.
+   */
+  const [selection, setSelection] = useState<ItineraryCriterion | null>(null);
   const [recherche, setRecherche] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
 
@@ -92,6 +104,23 @@ export default function RecherchePage() {
   } | null>(null);
 
   const { statut: statutAuth, jeton } = useAuth();
+
+  // --- Données géographiques (bloc 5B) --------------------------------------
+  //
+  // TOUT VIENT DE `arrets`, DÉJÀ CHARGÉ. La carte ne déclenche aucun appel :
+  // ni pour les positions, ni pour les noms. Résoudre chaque étape par un
+  // `GET /api/stops/:id` produirait exactement le N+1 réseau que le dossier
+  // demande d'éviter.
+  const pointsReseau = useMemo(() => (arrets ?? []).map(pointDepuisArret), [arrets]);
+  const indexArrets = useMemo(() => indexerArrets(arrets ?? []), [arrets]);
+
+  // Dérivée, jamais stockée : un état « sélection » et un état « résultats »
+  // qui se contrediraient laisseraient la carte afficher un trajet absent de
+  // la liste.
+  const selectionne =
+    resultats?.find((itineraire) => itineraire.criterion === selection) ?? resultats?.[0] ?? null;
+
+  const trace = selectionne ? traceDepuisSegments(selectionne.segments, indexArrets) : null;
 
   const idDepart = useId();
   const idArrivee = useId();
@@ -196,6 +225,10 @@ export default function RecherchePage() {
       // produits. C'est ce couple qui sera enregistré.
       setPointsRecherches({ origine, destination });
       setResultats(trouves);
+      // La sélection repart de zéro : garder « SHORTEST » d'une recherche
+      // précédente mettrait en avant un critère que la nouvelle réponse ne
+      // contient peut-être pas.
+      setSelection(null);
     } catch (echec) {
       setErreur(messageDErreur(echec));
       // Les anciens résultats sont effacés : les laisser à l'écran sous un
@@ -319,8 +352,21 @@ export default function RecherchePage() {
             </Card>
           )}
 
+          {/* La carte vient APRÈS le formulaire et AVANT les résultats :
+              elle situe le réseau avant toute recherche, puis le trajet
+              retenu. Elle reste un complément — les étapes détaillées, en
+              dessous, se lisent sans elle. */}
+          <Carte
+            titre={selectionne ? "Le trajet retenu sur la carte" : "Les arrêts du réseau"}
+            description={descriptionCarte(selectionne, trace !== null, pointsReseau.length)}
+            arrets={pointsReseau}
+            trace={trace}
+          />
+
           <Resultats
             resultats={resultats}
+            selection={selectionne?.criterion ?? null}
+            onSelectionner={setSelection}
             recherche={recherche}
             erreur={erreur}
             carbone={carbone}
@@ -404,6 +450,8 @@ function Resultats({
   enregistrements,
   peutEnregistrer,
   onEnregistrer,
+  selection,
+  onSelectionner,
 }: {
   resultats: Itinerary[] | null;
   recherche: boolean;
@@ -412,6 +460,8 @@ function Resultats({
   enregistrements: Partial<Record<ItineraryCriterion, EtatEnregistrement>>;
   peutEnregistrer: boolean;
   onEnregistrer: (itineraire: Itinerary) => void;
+  selection: ItineraryCriterion | null;
+  onSelectionner: (critere: ItineraryCriterion) => void;
 }) {
   if (recherche) {
     return <Spinner label="Recherche d'itinéraires…" />;
@@ -456,6 +506,10 @@ function Resultats({
               enregistrement={enregistrements[itineraire.criterion]}
               peutEnregistrer={peutEnregistrer}
               onEnregistrer={onEnregistrer}
+              // Un seul itinéraire porte la carte à la fois : la comparaison
+              // n'aurait plus de sens si les deux tracés se superposaient.
+              selectionne={itineraire.criterion === selection}
+              onSelectionner={onSelectionner}
             />
           </li>
         ))}
@@ -487,12 +541,16 @@ function ItineraireCarte({
   enregistrement,
   peutEnregistrer,
   onEnregistrer,
+  selectionne,
+  onSelectionner,
 }: {
   itineraire: Itinerary;
   carbone?: EtatCarbone;
   enregistrement?: EtatEnregistrement;
   peutEnregistrer: boolean;
   onEnregistrer: (itineraire: Itinerary) => void;
+  selectionne: boolean;
+  onSelectionner: (critere: ItineraryCriterion) => void;
 }) {
   return (
     <Card>
@@ -532,6 +590,25 @@ function ItineraireCarte({
           </li>
         ))}
       </ol>
+
+      {/* UN VRAI BOUTON, avec `aria-pressed` : c'est un interrupteur, pas
+          une navigation. Un lecteur d'écran annonce donc « activé » sur
+          l'itinéraire porté par la carte — l'information ne repose pas que
+          sur la couleur du tracé. */}
+      <div className="mt-4">
+        <button
+          type="button"
+          aria-pressed={selectionne}
+          onClick={() => onSelectionner(itineraire.criterion)}
+          className={`rounded-md border px-4 py-2 text-sm font-medium transition-colors ${
+            selectionne
+              ? "border-eco bg-eco text-white"
+              : "text-ink border-neutral-300 bg-white hover:bg-neutral-50"
+          }`}
+        >
+          {selectionne ? "Affiché sur la carte" : "Afficher sur la carte"}
+        </button>
+      </div>
 
       {/*
         L'empreinte vient d'un SECOND appel : `POST /api/routes/search` ne
@@ -696,4 +773,44 @@ function Enregistrement({
       )}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Équivalent textuel de la carte (bloc 5B)
+// ---------------------------------------------------------------------------
+
+/**
+ * Décrit en toutes lettres ce que la carte montre.
+ *
+ * DIT LA VÉRITÉ SUR LE TRACÉ. Le backend ne stocke aucune géométrie de voie —
+ * seulement la position des arrêts. La ligne dessinée relie donc les arrêts
+ * en segments droits : c'est un schéma, pas le chemin du véhicule, et le
+ * texte le dit plutôt que de laisser croire le contraire.
+ *
+ * Signale aussi le cas où AUCUN tracé n'a pu être dessiné — un arrêt sans
+ * position connue, par exemple — au lieu de laisser une carte muette.
+ */
+function descriptionCarte(
+  selectionne: Itinerary | null,
+  traceDessine: boolean,
+  nombreArrets: number,
+): string {
+  if (!selectionne) {
+    return nombreArrets === 1
+      ? "1 arrêt du réseau est localisé sur la carte. Lancez une recherche pour y voir un trajet."
+      : `${nombreArrets} arrêts du réseau sont localisés sur la carte. Lancez une recherche pour y voir un trajet.`;
+  }
+
+  const etapes = selectionne.segments.length;
+  const entete = `${CRITERES[selectionne.criterion]} : ${etapes} ${
+    etapes === 1 ? "étape" : "étapes"
+  }, ${formaterDistance(selectionne.totalDistanceM)} en ${formaterDuree(
+    selectionne.totalDurationMin,
+  )}.`;
+
+  if (!traceDessine) {
+    return `${entete} Le tracé ne peut pas être dessiné : la position d'au moins un arrêt de ce trajet est inconnue. Les étapes restent listées ci-dessous.`;
+  }
+
+  return `${entete} Le tracé relie les arrêts desservis en ligne droite : c'est un schéma du trajet, pas le chemin exact suivi par le véhicule. Le détail des étapes est listé ci-dessous.`;
 }

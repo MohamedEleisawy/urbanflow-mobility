@@ -165,3 +165,30 @@ export function enregistrerItineraire(
     token: jeton,
   });
 }
+
+/**
+ * Supprime un trajet enregistré (étape 5A-9).
+ *
+ * Répond **204 No Content** : la suppression a réussi, il n'y a rien à
+ * renvoyer. `apiFetch` le sait déjà et n'essaie pas de lire un corps vide.
+ *
+ * `userId` vient du jeton : le backend vérifie la propriété avant de
+ * supprimer, et rien n'est à transmettre de ce côté.
+ *
+ * Erreurs attendues :
+ *   400  identifiant qui n'est pas un UUID (`ParseUUIDPipe`)
+ *   401  jeton absent, expiré ou invalide
+ *   404  trajet inexistant **OU appartenant à quelqu'un d'autre** — le
+ *        backend répond volontairement la MÊME chose dans les deux cas, « pour
+ *        ne pas révéler l'existence d'un itinéraire qui ne nous appartient
+ *        pas ». L'interface ne doit donc pas non plus faire la différence.
+ *
+ * ⚠️ AUCUN 403 n'est jamais renvoyé : le distinguer reviendrait à confirmer
+ * que le trajet existe.
+ */
+export function supprimerTrajet(jeton: string, id: string): Promise<void> {
+  return apiFetch<void>(`/routes/${id}`, {
+    method: "DELETE",
+    token: jeton,
+  });
+}

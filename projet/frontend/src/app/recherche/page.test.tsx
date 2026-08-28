@@ -19,6 +19,26 @@ vi.mock("@/lib/itineraires-api", async (original) => ({
   enregistrerItineraire: vi.fn(),
 }));
 
+// LEAFLET EST LA SEULE CHOSE SIMULÉE DU BLOC 5B. La vraie bibliothèque exige
+// un vrai navigateur : jsdom n'a ni `ResizeObserver`, ni disposition calculée,
+// ni canvas. On remplace donc UNIQUEMENT le fichier qui la contient — le cadre
+// `Carte`, l'équivalent textuel et le calcul du tracé restent les vrais, et
+// c'est bien eux qu'on veut éprouver.
+//
+// Le remplaçant EXPOSE ses propriétés dans le DOM : c'est ainsi qu'on vérifie
+// ce que la page transmet réellement à la carte.
+vi.mock("@/components/CarteLeaflet", () => ({
+  default: ({ arrets, trace }: { arrets: unknown[]; trace: unknown[] | null }) => (
+    <div
+      data-testid="carte-leaflet"
+      data-arrets={arrets.length}
+      data-trace={
+        trace === null ? "aucun" : trace.map((p) => (p as { nom: string }).nom).join(" > ")
+      }
+    />
+  ),
+}));
+
 // Le VRAI AuthProvider est utilisé, avec le VRAI localStorage : c'est lui qui
 // décide si l'enregistrement est proposé.
 vi.mock("@/lib/auth-api", () => ({
@@ -362,10 +382,14 @@ describe("/recherche", () => {
       await chercher();
 
       expect(await screen.findByText("Le plus rapide")).toBeDefined();
+      // Portée à la LISTE des résultats : depuis le bloc 5B, l'équivalent
+      // textuel de la carte reprend volontairement les mêmes chiffres, et une
+      // recherche sur toute la page en trouverait donc deux.
+      const liste = within(screen.getByRole("region", { name: /itinéraire/i }));
       // 24 min, 4300 m → « 4,3 km », 2 étapes.
-      expect(screen.getByText(/24 min/)).toBeDefined();
-      expect(screen.getByText(/4,3 km/)).toBeDefined();
-      expect(screen.getByText(/2 étapes/)).toBeDefined();
+      expect(liste.getByText(/24 min/)).toBeDefined();
+      expect(liste.getByText(/4,3 km/)).toBeDefined();
+      expect(liste.getByText(/2 étapes/)).toBeDefined();
     });
 
     it("détaille chaque étape avec son mode et sa ligne", async () => {
@@ -410,6 +434,181 @@ describe("/recherche", () => {
       await screen.findByText("Le plus rapide");
       // <ol> et non <ul> : l'ordre des étapes est celui du trajet.
       expect(document.querySelector("ol")).not.toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Carte interactive (bloc 5B)
+  // ---------------------------------------------------------------------------
+  describe("carte", () => {
+    /// Le remplaçant de Leaflet expose ses propriétés : c'est ainsi qu'on lit
+    /// ce que la page lui a réellement transmis.
+    const carte = () => screen.getByTestId("carte-leaflet");
+    const traceAffiche = () => carte().getAttribute("data-trace");
+
+    it("est présente dès le chargement, avant toute recherche", async () => {
+      rendre();
+
+      expect(await screen.findByRole("heading", { name: /arrêts du réseau/i })).toBeDefined();
+      expect(carte()).toBeDefined();
+    });
+
+    it("reçoit les arrêts DÉJÀ chargés, sans appel supplémentaire", async () => {
+      rendre();
+
+      await waitFor(() => expect(carte().getAttribute("data-arrets")).toBe("3"));
+      // Un seul GET /api/stops pour toute la page : ni la carte ni les étapes
+      // ne résolvent un arrêt par un appel individuel (pas de N+1).
+      expect(listerArrets).toHaveBeenCalledTimes(1);
+    });
+
+    it("ne trace RIEN tant qu'aucune recherche n'a eu lieu", async () => {
+      rendre();
+
+      await waitFor(() => expect(traceAffiche()).toBe("aucun"));
+      expect(screen.getByText(/3 arrêts du réseau sont localisés/i)).toBeDefined();
+    });
+
+    it("trace l'itinéraire retenu après une recherche", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      // Trois points pour deux étapes, dans l'ordre du trajet.
+      await waitFor(() => expect(traceAffiche()).toBe("Gare du Nord > Châtelet > Bastille"));
+    });
+
+    it("met en avant le PREMIER résultat sans attendre un clic", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, COURT]);
+      rendre();
+
+      await chercher();
+
+      await waitFor(() =>
+        expect(screen.getByRole("heading", { name: /trajet retenu sur la carte/i })).toBeDefined(),
+      );
+      const boutons = screen.getAllByRole("button", { name: /sur la carte/i });
+      expect(boutons[0].getAttribute("aria-pressed")).toBe("true");
+      expect(boutons[1].getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("change de tracé quand on sélectionne l'autre itinéraire", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, COURT]);
+      rendre();
+      const utilisateur = await chercher();
+      await waitFor(() => expect(traceAffiche()).toBe("Gare du Nord > Châtelet > Bastille"));
+
+      await utilisateur.click(screen.getAllByRole("button", { name: /afficher sur la carte/i })[0]);
+
+      // Le second itinéraire ne passe pas par les mêmes arrêts : le tracé
+      // change réellement, il n'est pas simplement redessiné.
+      await waitFor(() => expect(traceAffiche()).not.toBe("Gare du Nord > Châtelet > Bastille"));
+      const boutons = screen.getAllByRole("button", { name: /sur la carte/i });
+      expect(boutons[1].getAttribute("aria-pressed")).toBe("true");
+    });
+
+    it("repart d'une sélection neuve à chaque nouvelle recherche", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, COURT]);
+      rendre();
+      const utilisateur = await chercher();
+      await utilisateur.click(screen.getAllByRole("button", { name: /afficher sur la carte/i })[0]);
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole("button", { name: /sur la carte/i })[1].getAttribute("aria-pressed"),
+        ).toBe("true"),
+      );
+
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      await chercher();
+
+      // Garder « SHORTEST » mettrait en avant un critère absent de la
+      // nouvelle réponse.
+      await waitFor(() => expect(traceAffiche()).toBe("Gare du Nord > Châtelet > Bastille"));
+    });
+
+    it("ne trace RIEN quand un arrêt du trajet est inconnu", async () => {
+      // Un itinéraire dont une étape désigne un arrêt absent de GET /api/stops.
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        {
+          ...RAPIDE,
+          segments: [
+            { ...RAPIDE.segments[0], toStopId: "arret-absent-du-referentiel" },
+            { ...RAPIDE.segments[1], fromStopId: "arret-absent-du-referentiel" },
+          ],
+        },
+      ]);
+      rendre();
+
+      await chercher();
+
+      // Relier directement les arrêts connus sauterait une étape réelle :
+      // mieux vaut ne rien tracer, et le DIRE.
+      await waitFor(() => expect(traceAffiche()).toBe("aucun"));
+      expect(screen.getByText(/le tracé ne peut pas être dessiné/i)).toBeDefined();
+    });
+
+    it("annonce que le tracé est un SCHÉMA, pas le chemin réel", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      // Le backend ne stocke aucune géométrie de voie : le dire est la seule
+      // façon honnête d'afficher une ligne droite entre deux arrêts.
+      expect(await screen.findByText(/schéma du trajet, pas le chemin exact/i)).toBeDefined();
+    });
+
+    it("garde les étapes lisibles EN TEXTE, carte ou pas", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      // L'information essentielle ne dépend jamais de la carte : chaque étape
+      // reste écrite, avec son mode et sa ligne.
+      const liste = within(screen.getByRole("region", { name: /itinéraire/i }));
+      expect(await liste.findByText("Gare du Nord → Châtelet")).toBeDefined();
+      expect(liste.getByText(/Métro 4/)).toBeDefined();
+      expect(liste.getByText("Châtelet → Bastille")).toBeDefined();
+    });
+
+    it("reste sans effet sur l'enregistrement du trajet", async () => {
+      // La sélection sert la CARTE, pas l'enregistrement : celui-ci reçoit
+      // toujours l'itinéraire de sa propre fiche (étape 5A-7).
+      authentifier();
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, COURT]);
+      vi.mocked(enregistrerItineraire).mockResolvedValue({
+        id: "route-1",
+        originLat: 48.88,
+        originLng: 2.355,
+        destinationLat: 48.853,
+        destinationLng: 2.369,
+        requestedAt: "2026-08-25T09:30:00.000Z",
+        totalDurationMin: 31,
+        totalDistanceM: 3900,
+        ecoScore: 90,
+        carbonEstimate: 12,
+        userId: PROFIL.id,
+        segments: [],
+      });
+      rendre();
+      const utilisateur = await chercher();
+
+      // On met le SECOND itineraire sur la carte, puis on enregistre le
+      // PREMIER : les deux gestes ne doivent pas se confondre.
+      await utilisateur.click(screen.getAllByRole("button", { name: /afficher sur la carte/i })[0]);
+      await utilisateur.click(
+        await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+      );
+
+      await waitFor(() => expect(enregistrerItineraire).toHaveBeenCalled());
+      const [envoye] = vi.mocked(enregistrerItineraire).mock.calls[0];
+      // Les segments envoyés sont ceux de l'itinéraire RAPIDE, dont la fiche
+      // portait le bouton — pas ceux de l'itinéraire affiché sur la carte.
+      expect(envoye.segments.map((segment) => segment.lineId)).toEqual(
+        RAPIDE.segments.map((segment) => segment.lineId),
+      );
     });
   });
 
@@ -460,7 +659,9 @@ describe("/recherche", () => {
       // Deux niveaux de données : l'itinéraire est déjà connu, il n'a aucune
       // raison d'attendre le carbone pour s'afficher.
       expect(await screen.findByText("Le plus rapide")).toBeDefined();
-      expect(screen.getByText(/24 min/)).toBeDefined();
+      expect(
+        within(screen.getByRole("region", { name: /itinéraire/i })).getByText(/24 min/),
+      ).toBeDefined();
     });
 
     it("garde l'itinéraire visible quand l'estimation ÉCHOUE", async () => {

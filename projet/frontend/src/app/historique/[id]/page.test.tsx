@@ -1,4 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import DetailTrajetPage from "./page";
 import { AuthProvider } from "@/components/AuthProvider";
@@ -12,6 +13,22 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: remplacer, push: vi.fn() }),
   // Le segment dynamique tel que Next le fournirait à la page.
   useParams: () => ({ id: ID_TRAJET }),
+}));
+
+// LEAFLET EST LA SEULE CHOSE SIMULÉE DU BLOC 5B. La vraie bibliothèque exige
+// un vrai navigateur : jsdom n'a ni `ResizeObserver`, ni disposition calculée.
+// On remplace donc UNIQUEMENT le fichier qui la contient — le cadre `Carte`,
+// l'équivalent textuel et le calcul du tracé restent les vrais.
+vi.mock("@/components/CarteLeaflet", () => ({
+  default: ({ arrets, trace }: { arrets: unknown[]; trace: unknown[] | null }) => (
+    <div
+      data-testid="carte-leaflet"
+      data-arrets={arrets.length}
+      data-trace={
+        trace === null ? "aucun" : trace.map((p) => (p as { nom: string }).nom).join(" > ")
+      }
+    />
+  ),
 }));
 
 vi.mock("@/lib/auth-api", () => ({
@@ -32,11 +49,12 @@ vi.mock("@/lib/itineraires-api", () => ({
   rechercherItineraires: vi.fn(),
   enregistrerItineraire: vi.fn(),
   versRequeteEnregistrement: vi.fn(),
+  supprimerTrajet: vi.fn(),
 }));
 
 const { utilisateurCourant } = await import("@/lib/auth-api");
 const { detailTrajet } = await import("@/lib/espace-api");
-const { listerArrets } = await import("@/lib/itineraires-api");
+const { listerArrets, supprimerTrajet } = await import("@/lib/itineraires-api");
 
 const PROFIL: User = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -160,6 +178,7 @@ describe("/historique/[id]", () => {
     vi.mocked(utilisateurCourant).mockReset();
     vi.mocked(detailTrajet).mockReset();
     vi.mocked(listerArrets).mockReset();
+    vi.mocked(supprimerTrajet).mockReset();
     vi.mocked(listerArrets).mockResolvedValue(ARRETS);
   });
 
@@ -354,6 +373,355 @@ describe("/historique/[id]", () => {
       expect(within(tableau).getByText("0 g")).toBeDefined();
       expect(within(tableau).getByText("6 g")).toBeDefined();
       expect(within(tableau).getByText("610 g")).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Carte interactive (bloc 5B)
+  // ---------------------------------------------------------------------------
+  describe("carte", () => {
+    const carte = () => screen.getByTestId("carte-leaflet");
+    const traceAffiche = () => carte().getAttribute("data-trace");
+
+    beforeEach(() => {
+      authentifier();
+    });
+
+    it("affiche le trajet enregistré sur la carte", async () => {
+      vi.mocked(detailTrajet).mockResolvedValue(TRAJET);
+
+      rendre();
+
+      expect(await screen.findByRole("heading", { name: /ce trajet sur la carte/i })).toBeDefined();
+      // Trois points pour deux segments, dans l'ordre CHRONOLOGIQUE — celui
+      // des segments, jamais celui des `carbonRecords`.
+      await waitFor(() => expect(traceAffiche()).toBe("Gare du Nord > Châtelet > Bastille"));
+    });
+
+    it("réutilise les arrêts déjà chargés, sans appel par étape", async () => {
+      vi.mocked(detailTrajet).mockResolvedValue(TRAJET);
+
+      rendre();
+
+      await waitFor(() => expect(carte().getAttribute("data-arrets")).toBe("3"));
+      // Un seul GET /api/stops : la carte ne résout pas chaque arrêt
+      // individuellement (pas de N+1 réseau).
+      expect(listerArrets).toHaveBeenCalledTimes(1);
+    });
+
+    it("ne trace RIEN si le référentiel des arrêts est indisponible", async () => {
+      vi.mocked(detailTrajet).mockResolvedValue(TRAJET);
+      vi.mocked(listerArrets).mockRejectedValue(new NetworkError("Le serveur est injoignable."));
+
+      rendre();
+
+      // Sans positions, aucune ligne ne peut être honnête. Leaflet n'est même
+      // pas chargé : il n'y a rien à dessiner, et la carte le dit.
+      expect(await screen.findByText(/aucun arrêt à afficher/i)).toBeDefined();
+      expect(screen.queryByTestId("carte-leaflet")).toBeNull();
+      expect(screen.getByText(/le tracé ne peut pas être dessiné/i)).toBeDefined();
+      // Le trajet, lui, reste entièrement affiché.
+      expect(screen.getByText("24 min")).toBeDefined();
+    });
+
+    it("annonce que le tracé est un SCHÉMA, pas le chemin réel", async () => {
+      vi.mocked(detailTrajet).mockResolvedValue(TRAJET);
+
+      rendre();
+
+      expect(await screen.findByText(/schéma du trajet, pas le chemin exact/i)).toBeDefined();
+    });
+
+    it("garde les étapes lisibles EN TEXTE à côté de la carte", async () => {
+      vi.mocked(detailTrajet).mockResolvedValue(TRAJET);
+
+      rendre();
+
+      // La carte est un complément : la retirer ne ferait perdre aucune
+      // information sur le trajet.
+      const etapes = within(await screen.findByRole("region", { name: /étapes/i }));
+      expect(etapes.getByText("Gare du Nord → Châtelet")).toBeDefined();
+      expect(etapes.getByText("Châtelet → Bastille")).toBeDefined();
+    });
+
+    it("n'apparaît pas tant que le trajet n'est pas chargé", async () => {
+      vi.mocked(detailTrajet).mockReturnValue(new Promise(() => {}));
+
+      rendre();
+
+      await screen.findByText(/chargement du trajet/i);
+      // Une carte vide sous un indicateur de chargement laisserait croire que
+      // le trajet n'a pas d'étapes.
+      expect(screen.queryByTestId("carte-leaflet")).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Suppression (étape 5A-9)
+  // ---------------------------------------------------------------------------
+  describe("suppression", () => {
+    const ouvrir = () => screen.getByRole("button", { name: /^supprimer ce trajet$/i });
+    const confirmer = () => screen.getByRole("button", { name: /confirmer la suppression/i });
+    const annuler = () => screen.getByRole("button", { name: /annuler/i });
+
+    /// Affiche le trajet, puis ouvre l'état de confirmation.
+    const demanderSuppression = async () => {
+      const utilisateur = userEvent.setup();
+      await utilisateur.click(
+        await screen.findByRole("button", {
+          name: /^supprimer ce trajet$/i,
+        }),
+      );
+      return utilisateur;
+    };
+
+    beforeEach(() => {
+      authentifier();
+      vi.mocked(detailTrajet).mockResolvedValue(TRAJET);
+    });
+
+    describe("confirmation", () => {
+      it("propose la suppression sans rien déclencher", async () => {
+        rendre();
+
+        expect(
+          await screen.findByRole("button", {
+            name: /^supprimer ce trajet$/i,
+          }),
+        ).toBeDefined();
+        expect(supprimerTrajet).not.toHaveBeenCalled();
+      });
+
+      it("le PREMIER clic n'appelle AUCUN DELETE", async () => {
+        rendre();
+
+        await demanderSuppression();
+
+        // Une action destructive ne part jamais sur un seul geste.
+        expect(supprimerTrajet).not.toHaveBeenCalled();
+      });
+
+      it("affiche une demande de confirmation explicite", async () => {
+        rendre();
+
+        await demanderSuppression();
+
+        expect(screen.getByText(/confirmer la suppression de ce trajet/i)).toBeDefined();
+        expect(screen.getByText(/cette action est définitive/i)).toBeDefined();
+      });
+
+      it("propose Annuler ET Confirmer", async () => {
+        rendre();
+
+        await demanderSuppression();
+
+        expect(annuler()).toBeDefined();
+        expect(confirmer()).toBeDefined();
+      });
+
+      it("place le focus sur Annuler, pas sur Confirmer", async () => {
+        rendre();
+
+        await demanderSuppression();
+
+        // Sur une action destructive, le geste par défaut doit être celui qui
+        // ne détruit rien : appuyer sur Entrée ne doit pas supprimer.
+        await waitFor(() => expect(document.activeElement).toBe(annuler()));
+      });
+
+      it("annule sans aucun appel API", async () => {
+        rendre();
+        const utilisateur = await demanderSuppression();
+
+        await utilisateur.click(annuler());
+
+        expect(supprimerTrajet).not.toHaveBeenCalled();
+        // On revient à l'état initial : l'action reste proposée.
+        expect(ouvrir()).toBeDefined();
+        expect(screen.queryByText(/confirmer la suppression de ce trajet/i)).toBeNull();
+      });
+
+      it("laisse le trajet entièrement visible pendant la confirmation", async () => {
+        rendre();
+
+        await demanderSuppression();
+
+        expect(screen.getByText("Gare du Nord → Châtelet")).toBeDefined();
+        expect(screen.getByText("24 min")).toBeDefined();
+      });
+    });
+
+    describe("appel API", () => {
+      it("transmet le jeton et l'identifiant du trajet", async () => {
+        vi.mocked(supprimerTrajet).mockResolvedValue(undefined);
+        rendre();
+        const utilisateur = await demanderSuppression();
+
+        await utilisateur.click(confirmer());
+
+        // Le jeton vient d'AuthProvider — aucune lecture directe de
+        // localStorage dans la page.
+        await waitFor(() =>
+          expect(supprimerTrajet).toHaveBeenCalledWith("jeton-valide", ID_TRAJET),
+        );
+      });
+
+      it("n'appelle DELETE qu'une seule fois", async () => {
+        vi.mocked(supprimerTrajet).mockResolvedValue(undefined);
+        rendre();
+        const utilisateur = await demanderSuppression();
+
+        await utilisateur.click(confirmer());
+
+        await waitFor(() => expect(supprimerTrajet).toHaveBeenCalledTimes(1));
+      });
+    });
+
+    describe("suppression en cours", () => {
+      it("annonce que la suppression est en cours", async () => {
+        vi.mocked(supprimerTrajet).mockReturnValue(new Promise(() => {}));
+        rendre();
+        const utilisateur = await demanderSuppression();
+
+        await utilisateur.click(confirmer());
+
+        expect(await screen.findByRole("button", { name: /suppression en cours/i })).toBeDefined();
+      });
+
+      it("désactive les DEUX boutons pendant l'envoi", async () => {
+        vi.mocked(supprimerTrajet).mockReturnValue(new Promise(() => {}));
+        rendre();
+        const utilisateur = await demanderSuppression();
+
+        await utilisateur.click(confirmer());
+
+        // Confirmer : empêche un second DELETE, qui répondrait 404 et
+        // afficherait une erreur pour une suppression pourtant réussie.
+        // Annuler : n'annulerait rien d'une requête déjà partie.
+        await waitFor(() => {
+          expect(
+            screen.getByRole("button", { name: /suppression en cours/i }).hasAttribute("disabled"),
+          ).toBe(true);
+          expect(annuler().hasAttribute("disabled")).toBe(true);
+        });
+      });
+
+      it("ne redirige PAS avant la réponse du serveur", async () => {
+        vi.mocked(supprimerTrajet).mockReturnValue(new Promise(() => {}));
+        rendre();
+        const utilisateur = await demanderSuppression();
+
+        await utilisateur.click(confirmer());
+        await screen.findByRole("button", { name: /suppression en cours/i });
+
+        expect(remplacer).not.toHaveBeenCalledWith("/historique");
+      });
+    });
+
+    describe("succès", () => {
+      it("redirige vers l'historique APRÈS la réponse", async () => {
+        vi.mocked(supprimerTrajet).mockResolvedValue(undefined);
+        rendre();
+        const utilisateur = await demanderSuppression();
+
+        await utilisateur.click(confirmer());
+
+        // `replace` : revenir en arrière ramènerait sur un trajet supprimé.
+        await waitFor(() => expect(remplacer).toHaveBeenCalledWith("/historique"));
+      });
+    });
+
+    describe("échecs", () => {
+      const echouerAvec = async (erreur: unknown) => {
+        vi.mocked(supprimerTrajet).mockRejectedValue(erreur);
+        rendre();
+        const utilisateur = await demanderSuppression();
+        await utilisateur.click(confirmer());
+        await screen.findByText(/n'a pas pu être supprimé/i);
+        return utilisateur;
+      };
+
+      it("signale une erreur serveur", async () => {
+        await echouerAvec(new ApiError(500, "Erreur interne"));
+
+        expect(screen.getByRole("alert").textContent).toContain("Erreur interne");
+      });
+
+      it("signale un trajet introuvable (404)", async () => {
+        await echouerAvec(new ApiError(404, "Itinéraire introuvable"));
+
+        expect(screen.getByRole("alert").textContent).toContain("introuvable");
+      });
+
+      it("signale une session expirée (401)", async () => {
+        await echouerAvec(new ApiError(401, "Token invalide ou expiré"));
+
+        expect(screen.getByRole("alert").textContent).toContain("expiré");
+      });
+
+      it("signale une panne réseau", async () => {
+        await echouerAvec(new NetworkError("Le serveur est injoignable."));
+
+        expect(screen.getByRole("alert").textContent).toContain("injoignable");
+      });
+
+      it("garde le trajet VISIBLE après un échec", async () => {
+        await echouerAvec(new ApiError(500, "Panne"));
+
+        // Rien n'a été retiré localement : il n'y avait rien à remettre.
+        expect(screen.getByText("Gare du Nord → Châtelet")).toBeDefined();
+        expect(screen.getByText("24 min")).toBeDefined();
+      });
+
+      it("n'annonce JAMAIS un succès après un échec", async () => {
+        await echouerAvec(new ApiError(500, "Panne"));
+
+        expect(remplacer).not.toHaveBeenCalledWith("/historique");
+        expect(screen.queryByText(/trajet supprimé/i)).toBeNull();
+      });
+
+      it("permet de réessayer", async () => {
+        const utilisateur = await echouerAvec(new ApiError(500, "Panne"));
+
+        expect(confirmer().hasAttribute("disabled")).toBe(false);
+
+        vi.mocked(supprimerTrajet).mockResolvedValue(undefined);
+        await utilisateur.click(confirmer());
+
+        await waitFor(() => expect(remplacer).toHaveBeenCalledWith("/historique"));
+      });
+
+      it("permet de renoncer après un échec", async () => {
+        const utilisateur = await echouerAvec(new ApiError(500, "Panne"));
+
+        await utilisateur.click(annuler());
+
+        expect(ouvrir()).toBeDefined();
+      });
+
+      it("ne révèle RIEN sur la propriété du trajet", async () => {
+        // Le backend répond 404 aussi bien pour un trajet inexistant que pour
+        // celui d'un autre usager — et jamais 403. L'interface ne doit pas
+        // introduire la distinction que le backend refuse de faire.
+        await echouerAvec(new ApiError(404, "Itinéraire introuvable"));
+
+        const page = document.body.textContent ?? "";
+        expect(page).not.toMatch(/autre utilisateur|appartient|interdit|403/i);
+      });
+    });
+
+    describe("visiteur", () => {
+      it("n'expose AUCUNE action de suppression", async () => {
+        window.localStorage.clear();
+        vi.mocked(utilisateurCourant).mockReset();
+        rendre();
+
+        await waitFor(() => expect(remplacer).toHaveBeenCalledWith("/connexion"));
+        // La protection de route agit avant tout affichage : ni bouton, ni
+        // appel possible.
+        expect(screen.queryByRole("button", { name: /supprimer/i })).toBeNull();
+        expect(supprimerTrajet).not.toHaveBeenCalled();
+      });
     });
   });
 
