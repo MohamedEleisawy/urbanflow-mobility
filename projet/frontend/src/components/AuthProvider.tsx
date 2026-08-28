@@ -59,6 +59,18 @@ export type StatutAuth = "chargement" | "authentifie" | "anonyme";
 interface ContexteAuth {
   statut: StatutAuth;
   utilisateur: User | null;
+  /**
+   * Jeton courant, ou `null`.
+   *
+   * EXPOSÉ À L'ÉTAPE 5A-4, et pour une raison de principe : les écrans
+   * protégés doivent joindre l'API avec le jeton. Les laisser appeler
+   * `lireJeton()` eux-mêmes créerait une SECONDE source de vérité — une page
+   * pourrait alors lire un jeton que le provider a déjà jugé invalide.
+   *
+   * Ici, il vient du même `useSyncExternalStore` que le reste : un seul
+   * endroit sait ce qu'est la session courante.
+   */
+  jeton: string | null;
   /** Ouvre une session et mémorise le jeton. Lève en cas d'échec. */
   connexion: (email: string, motDePasse: string) => Promise<void>;
   /** Crée un compte PUIS ouvre la session. Lève en cas d'échec. */
@@ -171,11 +183,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       statut,
       utilisateur,
+      // `undefined` (rendu serveur) est normalisé en `null` : un appelant n'a
+      // pas à distinguer « pas encore lu » de « absent » — `statut` le dit
+      // déjà, et plus clairement.
+      jeton: jeton ?? null,
       connexion: ouvrirSession,
       inscription: creerCompte,
       deconnexion: fermerSession,
     }),
-    [statut, utilisateur, ouvrirSession, creerCompte, fermerSession],
+    [statut, utilisateur, jeton, ouvrirSession, creerCompte, fermerSession],
   );
 
   return <Contexte.Provider value={valeur}>{children}</Contexte.Provider>;

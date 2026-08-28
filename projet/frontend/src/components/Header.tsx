@@ -87,6 +87,20 @@ export function Header() {
 
               {statut === "authentifie" && utilisateur && (
                 <>
+                  {/* « Mon espace » n'apparaît qu'une fois connecté : un lien
+                      qui redirige aussitôt vers la connexion serait une
+                      fausse promesse. */}
+                  <Link
+                    href="/mon-espace"
+                    aria-current={estActif("/mon-espace") ? "page" : undefined}
+                    className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                      estActif("/mon-espace")
+                        ? "bg-brand/10 text-brand"
+                        : "text-neutral-700 hover:bg-neutral-100"
+                    }`}
+                  >
+                    Mon espace
+                  </Link>
                   {/* L'email n'est pas décoratif : c'est ce qui permet de
                       vérifier d'un coup d'œil SOUS QUEL COMPTE on agit.
                       Masqué sur mobile, où la place manque. */}
