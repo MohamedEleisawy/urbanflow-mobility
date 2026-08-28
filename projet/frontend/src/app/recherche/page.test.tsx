@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RecherchePage from "./page";
 import { AuthProvider } from "@/components/AuthProvider";
 import { ApiError, NetworkError } from "@/lib/api";
@@ -231,9 +231,15 @@ describe("/recherche", () => {
       rendre();
 
       const depart = await screen.findByLabelText("Départ");
-      // Trois arrêts + l'option d'invite.
-      expect(within(depart).getAllByRole("option")).toHaveLength(4);
+      // Trois arrêts + l'option d'invite + « Ma position » (bloc 5D-1).
+      expect(within(depart).getAllByRole("option")).toHaveLength(5);
       expect(within(depart).getByText(/Châtelet/)).toBeDefined();
+
+      // L'ARRIVÉE, elle, n'offre PAS la position : on ne va pas là où on est
+      // déjà. Trois arrêts + l'invite.
+      const arrivee = screen.getByLabelText("Arrivée");
+      expect(within(arrivee).getAllByRole("option")).toHaveLength(4);
+      expect(within(arrivee).queryByText(/ma position/i)).toBeNull();
     });
 
     it("signale les arrêts accessibles en fauteuil", async () => {
@@ -434,6 +440,232 @@ describe("/recherche", () => {
       await screen.findByText("Le plus rapide");
       // <ol> et non <ul> : l'ordre des étapes est celui du trajet.
       expect(document.querySelector("ol")).not.toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Géolocalisation (bloc 5D-1)
+  // ---------------------------------------------------------------------------
+  describe("géolocalisation", () => {
+    /// jsdom n'implémente pas `navigator.geolocation` : on l'installe.
+    const installerPosition = (
+      implementation: (succes: PositionCallback, echec: PositionErrorCallback) => void,
+    ) => {
+      const getCurrentPosition = vi.fn(implementation);
+      Object.defineProperty(navigator, "geolocation", {
+        value: { getCurrentPosition },
+        configurable: true,
+      });
+      return getCurrentPosition;
+    };
+
+    const POSITION_PARIS = {
+      coords: { latitude: 48.8712, longitude: 2.3501 },
+    } as GeolocationPosition;
+
+    /// Choisit « Ma position » dans la liste Départ.
+    const choisirMaPosition = async () => {
+      const utilisateur = userEvent.setup();
+      await utilisateur.selectOptions(
+        await screen.findByLabelText("Départ"),
+        screen.getByRole("option", { name: /ma position actuelle/i }),
+      );
+      return utilisateur;
+    };
+
+    afterEach(() => {
+      Object.defineProperty(navigator, "geolocation", {
+        value: undefined,
+        configurable: true,
+      });
+    });
+
+    it("ne demande RIEN au chargement de la page", async () => {
+      const appel = installerPosition((succes) => succes(POSITION_PARIS));
+
+      rendre();
+      await screen.findByLabelText("Départ");
+
+      // Une invite de permission qui surgit sans geste de l'usager est une
+      // invite qu'on refuse par réflexe.
+      expect(appel).not.toHaveBeenCalled();
+    });
+
+    it("demande la position quand l'usager la choisit", async () => {
+      const appel = installerPosition((succes) => succes(POSITION_PARIS));
+      rendre();
+
+      await choisirMaPosition();
+
+      await waitFor(() => expect(appel).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText(/position trouvée/i)).toBeDefined();
+    });
+
+    it("annonce la localisation en cours", async () => {
+      // Ne répond jamais : la demande reste en attente.
+      installerPosition(() => {});
+      rendre();
+
+      await choisirMaPosition();
+
+      expect(await screen.findByText(/localisation en cours/i)).toBeDefined();
+    });
+
+    it("EMPÊCHE de chercher tant que la position n'est pas arrivée", async () => {
+      installerPosition(() => {});
+      rendre();
+      const utilisateur = await choisirMaPosition();
+
+      await utilisateur.selectOptions(
+        screen.getByLabelText("Arrivée"),
+        screen.getAllByRole("option", { name: /Bastille/ })[1],
+      );
+
+      // Partir maintenant enverrait des coordonnées absentes, et le backend
+      // répondrait 400.
+      await screen.findByText(/localisation en cours/i);
+      expect(screen.getByRole("button", { name: /rechercher/i }).hasAttribute("disabled")).toBe(
+        true,
+      );
+    });
+
+    it("transmet les COORDONNÉES de la position au backend", async () => {
+      installerPosition((succes) => succes(POSITION_PARIS));
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+      const utilisateur = await choisirMaPosition();
+      await screen.findByText(/position trouvée/i);
+
+      await utilisateur.selectOptions(
+        screen.getByLabelText("Arrivée"),
+        screen.getAllByRole("option", { name: /Bastille/ })[1],
+      );
+      await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
+
+      // Le contrat de POST /api/routes/search attend des coordonnées brutes
+      // et cherche lui-même l'arrêt le plus proche : la position GPS s'y
+      // branche telle quelle, sans aucun ajout backend.
+      await waitFor(() =>
+        expect(rechercherItineraires).toHaveBeenCalledWith(
+          expect.objectContaining({ fromLat: 48.8712, fromLon: 2.3501 }),
+        ),
+      );
+    });
+
+    describe("échecs", () => {
+      const refuser = (code: number) =>
+        installerPosition((_succes, echec) => echec({ code } as GeolocationPositionError));
+
+      it("explique un refus de permission ET dit quoi faire", async () => {
+        refuser(1);
+        rendre();
+
+        await choisirMaPosition();
+
+        expect(await screen.findByText(/réglages de votre navigateur/i)).toBeDefined();
+      });
+
+      it("distingue un délai dépassé d'un refus", async () => {
+        refuser(3);
+        rendre();
+
+        await choisirMaPosition();
+
+        expect(await screen.findByText(/pris trop de temps/i)).toBeDefined();
+      });
+
+      it("laisse RÉESSAYER après un échec", async () => {
+        const appel = installerPosition((_succes, echec) =>
+          echec({ code: 3 } as GeolocationPositionError),
+        );
+        rendre();
+        const utilisateur = await choisirMaPosition();
+        await screen.findByText(/pris trop de temps/i);
+
+        // Refuser une fois par mégarde ne doit pas condamner la
+        // fonctionnalité pour la session.
+        appel.mockImplementation((succes) => succes(POSITION_PARIS));
+        await utilisateur.click(screen.getByRole("button", { name: /réessayer/i }));
+
+        expect(await screen.findByText(/position trouvée/i)).toBeDefined();
+      });
+
+      it("empêche de chercher après un échec", async () => {
+        refuser(1);
+        rendre();
+        const utilisateur = await choisirMaPosition();
+        await screen.findByText(/réglages de votre navigateur/i);
+
+        await utilisateur.selectOptions(
+          screen.getByLabelText("Arrivée"),
+          screen.getAllByRole("option", { name: /Bastille/ })[1],
+        );
+
+        expect(screen.getByRole("button", { name: /rechercher/i }).hasAttribute("disabled")).toBe(
+          true,
+        );
+        expect(rechercherItineraires).not.toHaveBeenCalled();
+      });
+
+      it("reste utilisable SANS géolocalisation du tout", async () => {
+        // L'API absente : origine non sécurisée, ou navigateur qui ne la
+        // gère pas. Le formulaire doit continuer de fonctionner.
+        Object.defineProperty(navigator, "geolocation", {
+          value: undefined,
+          configurable: true,
+        });
+        vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+        rendre();
+
+        await chercher();
+
+        // La recherche par arrêts fonctionne exactement comme avant.
+        await waitFor(() => expect(rechercherItineraires).toHaveBeenCalled());
+        expect(await screen.findByText("Le plus rapide")).toBeDefined();
+      });
+    });
+
+    it("OUBLIE la position quand on revient à un arrêt", async () => {
+      installerPosition((succes) => succes(POSITION_PARIS));
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+      const utilisateur = await choisirMaPosition();
+      await screen.findByText(/position trouvée/i);
+
+      await utilisateur.selectOptions(
+        screen.getByLabelText("Départ"),
+        screen.getAllByRole("option", { name: /Gare du Nord/ })[0],
+      );
+
+      // Garder une donnée de géolocalisation dont plus rien n'a besoin
+      // contreviendrait à la minimisation (C8).
+      expect(screen.queryByText(/position trouvée/i)).toBeNull();
+
+      await utilisateur.selectOptions(
+        screen.getByLabelText("Arrivée"),
+        screen.getAllByRole("option", { name: /Bastille/ })[1],
+      );
+      await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
+
+      // Et c'est bien l'ARRÊT qui part, pas la position mémorisée.
+      await waitFor(() =>
+        expect(rechercherItineraires).toHaveBeenCalledWith(
+          expect.objectContaining({ fromLat: 48.88, fromLon: 2.355 }),
+        ),
+      );
+    });
+
+    it("annonce son état aux lecteurs d'écran", async () => {
+      installerPosition((succes) => succes(POSITION_PARIS));
+      rendre();
+
+      await choisirMaPosition();
+
+      // Le résultat arrive de façon asynchrone : sans zone d'état, rien
+      // n'expliquerait pourquoi « Rechercher » reste désactivé.
+      await waitFor(() =>
+        expect(screen.getByRole("status").textContent).toMatch(/position trouvée/i),
+      );
     });
   });
 

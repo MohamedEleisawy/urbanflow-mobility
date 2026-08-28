@@ -10,6 +10,7 @@ import { ErrorMessage } from "@/components/ErrorMessage";
 import { Spinner } from "@/components/Spinner";
 import { messageDErreur } from "@/lib/api";
 import { indexerArrets, pointDepuisArret, traceDepuisSegments } from "@/lib/carte";
+import { ErreurGeolocalisation, positionActuelle, type Coordonnees } from "@/lib/geolocalisation";
 import {
   enregistrerItineraire,
   listerArrets,
@@ -39,6 +40,27 @@ import type { CarbonResult, Itinerary, ItineraryCriterion, Stop, TransportMode }
 // encore.
 // =============================================================================
 
+/**
+ * Valeur du champ « Départ » quand l'usager choisit sa position (bloc 5D-1).
+ *
+ * Un identifiant d'arrêt est un UUID : cette valeur ne peut donc jamais entrer
+ * en collision avec un arrêt réel.
+ */
+const POSITION = "__ma-position__";
+
+/**
+ * Où en est la demande de position.
+ *
+ * « echec » conserve le message ET la cause : un refus de permission se
+ * répare dans les réglages, un délai dépassé se réessaie. Les confondre
+ * laisserait l'usager sans rien à faire.
+ */
+type EtatPosition =
+  | { statut: "repos" }
+  | { statut: "localisation" }
+  | { statut: "ok"; coordonnees: Coordonnees }
+  | { statut: "echec"; message: string };
+
 /// Ce que le formulaire connaît d'un point : l'arrêt choisi.
 type Choix = string;
 
@@ -65,6 +87,7 @@ export default function RecherchePage() {
   const [erreurArrets, setErreurArrets] = useState<string | null>(null);
 
   const [depart, setDepart] = useState<Choix>("");
+  const [position, setPosition] = useState<EtatPosition>({ statut: "repos" });
   const [arrivee, setArrivee] = useState<Choix>("");
 
   const [resultats, setResultats] = useState<Itinerary[] | null>(null);
@@ -99,8 +122,8 @@ export default function RecherchePage() {
    * n'est pas la sienne.
    */
   const [pointsRecherches, setPointsRecherches] = useState<{
-    origine: Stop;
-    destination: Stop;
+    origine: Coordonnees;
+    destination: Coordonnees;
   } | null>(null);
 
   const { statut: statutAuth, jeton } = useAuth();
@@ -121,6 +144,39 @@ export default function RecherchePage() {
     resultats?.find((itineraire) => itineraire.criterion === selection) ?? resultats?.[0] ?? null;
 
   const trace = selectionne ? traceDepuisSegments(selectionne.segments, indexArrets) : null;
+
+  /**
+   * Demande la position, et NE LA DEMANDE QU'À CE MOMENT.
+   *
+   * Déclenchée par le choix explicite de « Ma position » dans la liste, jamais
+   * au chargement de la page : une invite de permission qui surgit sans geste
+   * de l'usager est une invite qu'on refuse par réflexe.
+   */
+  const choisirDepart = (valeur: Choix) => {
+    setDepart(valeur);
+
+    if (valeur !== POSITION) {
+      // Revenir à un arrêt oublie la position : la garder en mémoire ferait
+      // conserver une donnée de géolocalisation dont plus rien n'a besoin
+      // (minimisation, C8).
+      setPosition({ statut: "repos" });
+      return;
+    }
+
+    setPosition({ statut: "localisation" });
+
+    positionActuelle()
+      .then((coordonnees) => setPosition({ statut: "ok", coordonnees }))
+      .catch((echec: unknown) => {
+        setPosition({
+          statut: "echec",
+          message:
+            echec instanceof ErreurGeolocalisation
+              ? echec.message
+              : "Votre position n'a pas pu être déterminée.",
+        });
+      });
+  };
 
   const idDepart = useId();
   const idArrivee = useId();
@@ -195,7 +251,16 @@ export default function RecherchePage() {
   const soumettre = async (evenement: FormEvent) => {
     evenement.preventDefault();
 
-    const origine = arrets?.find((a) => a.id === depart);
+    // L'origine est SOIT un arrêt choisi, SOIT la position de l'usager. Dans
+    // les deux cas, seules des coordonnées partent au backend : le contrat de
+    // `POST /api/routes/search` n'a jamais accepté autre chose.
+    const origine: Coordonnees | undefined =
+      depart === POSITION
+        ? position.statut === "ok"
+          ? position.coordonnees
+          : undefined
+        : arrets?.find((a) => a.id === depart);
+
     const destination = arrets?.find((a) => a.id === arrivee);
 
     if (!origine || !destination) {
@@ -290,7 +355,12 @@ export default function RecherchePage() {
   // rendrait d'ailleurs une liste vide pour deux points identiques, mais
   // faire un aller-retour réseau pour l'apprendre serait discourtois.
   const memeArret = depart !== "" && depart === arrivee;
-  const peutChercher = depart !== "" && arrivee !== "" && !memeArret;
+
+  // Chercher avec « Ma position » exige que la position soit RÉELLEMENT
+  // arrivée : partir pendant la localisation enverrait des coordonnées
+  // absentes, et le backend répondrait 400.
+  const positionPrete = depart !== POSITION || position.statut === "ok";
+  const peutChercher = depart !== "" && arrivee !== "" && !memeArret && positionPrete;
 
   return (
     <Container>
@@ -312,14 +382,21 @@ export default function RecherchePage() {
             <Card>
               <form onSubmit={soumettre} noValidate className="space-y-5">
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <ChoixArret
-                    id={idDepart}
-                    libelle="Départ"
-                    valeur={depart}
-                    arrets={arrets}
-                    onChange={setDepart}
-                    decritPar={memeArret ? idErreur : undefined}
-                  />
+                  <div>
+                    <ChoixArret
+                      id={idDepart}
+                      libelle="Départ"
+                      valeur={depart}
+                      arrets={arrets}
+                      onChange={choisirDepart}
+                      decritPar={memeArret ? idErreur : undefined}
+                      // Une OPTION de la liste, et non un bouton à côté :
+                      // l'usager garde un seul contrôle, navigable au clavier
+                      // et affiché par le sélecteur natif du téléphone.
+                      optionPosition
+                    />
+                    <EtatDeLaPosition etat={position} onReessayer={() => choisirDepart(POSITION)} />
+                  </div>
                   <ChoixArret
                     id={idArrivee}
                     libelle="Arrivée"
@@ -403,6 +480,7 @@ function ChoixArret({
   arrets,
   onChange,
   decritPar,
+  optionPosition = false,
 }: {
   id: string;
   libelle: string;
@@ -410,6 +488,8 @@ function ChoixArret({
   arrets: Stop[];
   onChange: (valeur: string) => void;
   decritPar?: string;
+  /** Propose « Ma position » en tête de liste (bloc 5D-1, départ seulement). */
+  optionPosition?: boolean;
 }) {
   return (
     <div>
@@ -425,6 +505,12 @@ function ChoixArret({
         className="focus:border-brand mt-1.5 w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base outline-none"
       >
         <option value="">Choisir un arrêt…</option>
+        {optionPosition && (
+          // EN TÊTE DE LISTE : c'est le choix le plus courant depuis un
+          // téléphone, et le plus coûteux à atteindre s'il est enterré sous
+          // des milliers d'arrêts.
+          <option value={POSITION}>Ma position actuelle</option>
+        )}
         {arrets.map((arret) => (
           <option key={arret.id} value={arret.id}>
             {arret.name}
@@ -813,4 +899,55 @@ function descriptionCarte(
   }
 
   return `${entete} Le tracé relie les arrêts desservis en ligne droite : c'est un schéma du trajet, pas le chemin exact suivi par le véhicule. Le détail des étapes est listé ci-dessous.`;
+}
+
+// ---------------------------------------------------------------------------
+// État de la géolocalisation (bloc 5D-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Dit où en est la demande de position, et quoi faire quand elle échoue.
+ *
+ * `role="status"` : le résultat arrive de façon asynchrone, après un geste de
+ * l'usager. Sans zone d'état, un lecteur d'écran ne saurait jamais que la
+ * position a été obtenue — ni pourquoi le bouton « Rechercher » reste
+ * désactivé.
+ *
+ * ⚠️ CETTE ZONE NE CONTIENT AUCUN `Spinner` NI `ErrorMessage` : tous deux
+ * portent déjà leur propre rôle live, et les imbriquer ferait tout annoncer
+ * deux fois — l'erreur commise puis corrigée au bloc 5C-3.
+ */
+function EtatDeLaPosition({ etat, onReessayer }: { etat: EtatPosition; onReessayer: () => void }) {
+  if (etat.statut === "repos") {
+    return null;
+  }
+
+  return (
+    <div role="status" className="mt-2 text-sm">
+      {etat.statut === "localisation" && <p className="text-neutral-600">Localisation en cours…</p>}
+
+      {etat.statut === "ok" && (
+        <p className="text-eco">
+          {/* Le mot porte l'information, pas la couleur verte (WCAG 1.4.1). */}
+          Position trouvée. Le trajet partira de l&apos;arrêt le plus proche.
+        </p>
+      )}
+
+      {etat.statut === "echec" && (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2">
+          <p className="text-red-900">{etat.message}</p>
+          {/* Un échec de localisation se réessaie : refuser une fois par
+              mégarde ne doit pas condamner la fonctionnalité pour la
+              session. */}
+          <button
+            type="button"
+            onClick={onReessayer}
+            className="text-brand mt-1 font-medium underline"
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }

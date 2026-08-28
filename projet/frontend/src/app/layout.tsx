@@ -1,8 +1,9 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/components/AuthProvider";
 import { Header } from "@/components/Header";
+import { ServiceWorker } from "@/components/ServiceWorker";
 
 // Geist, la police retenue par le dossier (§2.8.4).
 //
@@ -25,6 +26,27 @@ export const metadata: Metadata = {
   title: "UrbanFlow Mobility",
   description:
     "Planifiez vos trajets multimodaux, consultez les perturbations du réseau en temps réel et mesurez l'empreinte carbone de vos déplacements.",
+
+  // iOS n'implémente pas `display: standalone` du manifeste : il lui faut
+  // cette métadonnée pour ouvrir l'application sans barre d'adresse une fois
+  // ajoutée à l'écran d'accueil. Sans elle, l'application reste installable
+  // sur Android mais s'ouvre dans Safari sur iPhone (bloc 5C-4).
+  appleWebApp: {
+    capable: true,
+    title: "UrbanFlow",
+    statusBarStyle: "default",
+  },
+};
+
+// ⚠️ `themeColor` VIT DANS `viewport`, PAS DANS `metadata`, dans cette version
+// de Next.js. Le placer dans `metadata` déclenche un avertissement au build et
+// la balise n'est pas émise.
+// (node_modules/next/dist/docs/01-app/03-api-reference/04-functions/
+//  generate-viewport.md)
+export const viewport: Viewport = {
+  // Le bleu de l'identité visuelle : c'est la couleur que le système donne à
+  // la barre d'état quand l'application est installée.
+  themeColor: "#1e3a5f",
 };
 
 export default function RootLayout({
@@ -66,6 +88,11 @@ export default function RootLayout({
             {children}
           </main>
         </AuthProvider>
+
+        {/* Sans rendu : enregistre le service worker exigé par la
+            contrainte C1 du sujet (bloc 5D-2). Placé en fin de corps, il
+            n'entre en jeu qu'une fois la page chargée. */}
+        <ServiceWorker />
 
         <footer className="border-t border-neutral-200 bg-white">
           <div className="mx-auto w-full max-w-5xl px-4 py-6 text-sm text-neutral-600 sm:px-6">

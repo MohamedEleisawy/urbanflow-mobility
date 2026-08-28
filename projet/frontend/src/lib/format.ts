@@ -59,3 +59,23 @@ export function formaterDate(iso: string): string {
     year: "numeric",
   });
 }
+
+/**
+ * Date ISO → « 25 août 2026 à 09:30 » (bloc 5C-3).
+ *
+ * Les perturbations se lisent à l'heure près : « travaux depuis le 25 août »
+ * ne dit pas si la ligne est coupée en ce moment. `formaterDate` suffit pour
+ * un trajet enregistré, pas pour une alerte en cours.
+ */
+export function formaterDateHeure(iso: string): string {
+  const date = new Date(iso);
+
+  return `${date.toLocaleDateString("fr-FR", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  })} à ${date.toLocaleTimeString("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
+}
