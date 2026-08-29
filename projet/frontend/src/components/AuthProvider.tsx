@@ -19,7 +19,7 @@ import {
   lireJeton,
   souscrireJeton,
 } from "@/lib/auth-storage";
-import type { User } from "@/lib/types";
+import type { User, UserPreferences } from "@/lib/types";
 
 // =============================================================================
 // État d'authentification partagé (étape 5A-3)
@@ -76,6 +76,26 @@ interface ContexteAuth {
   /** Crée un compte PUIS ouvre la session. Lève en cas d'échec. */
   inscription: (email: string, motDePasse: string) => Promise<void>;
   deconnexion: () => void;
+  /**
+   * Applique des préférences fraîchement enregistrées (bloc 5E-4).
+   *
+   * ═══ POURQUOI PAS UN NOUVEL APPEL À `GET /users/me` ═══
+   *
+   * La réponse du `PATCH` EST déjà la vérité : le backend renvoie la ligne
+   * telle qu'il vient de la persister, valeurs par défaut du schéma
+   * comprises. Redemander le profil entier coûterait un aller-retour pour
+   * réapprendre ce qu'on vient d'apprendre — contraire à l'objectif de
+   * sobriété du dossier — et ouvrirait une fenêtre où deux réponses
+   * pourraient se croiser.
+   *
+   * ═══ POURQUOI ÇA NE CRÉE PAS UNE SECONDE SOURCE DE VÉRITÉ ═══
+   *
+   * L'écran de préférences n'a AUCUN état de son côté pour les valeurs
+   * enregistrées : il lit `utilisateur.preferences` comme tout le monde, et
+   * se contente de pousser ici ce que le serveur lui a répondu. Le provider
+   * reste l'unique détenteur du profil.
+   */
+  appliquerPreferences: (preferences: UserPreferences) => void;
 }
 
 const Contexte = createContext<ContexteAuth | null>(null);
@@ -155,6 +175,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [ouvrirSession],
   );
 
+  const appliquerPreferences = useCallback((preferences: UserPreferences) => {
+    // Forme fonctionnelle : deux enregistrements rapprochés ne doivent pas
+    // se baser sur une capture périmée du profil.
+    setUtilisateur((precedent) => (precedent ? { ...precedent, preferences } : precedent));
+  }, []);
+
   const fermerSession = useCallback(() => {
     // Rien à demander au backend : un JWT est autoportant, il n'existe aucune
     // session à invalider côté serveur. Se déconnecter, c'est oublier le
@@ -190,8 +216,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       connexion: ouvrirSession,
       inscription: creerCompte,
       deconnexion: fermerSession,
+      appliquerPreferences,
     }),
-    [statut, utilisateur, jeton, ouvrirSession, creerCompte, fermerSession],
+    [statut, utilisateur, jeton, ouvrirSession, creerCompte, fermerSession, appliquerPreferences],
   );
 
   return <Contexte.Provider value={valeur}>{children}</Contexte.Provider>;

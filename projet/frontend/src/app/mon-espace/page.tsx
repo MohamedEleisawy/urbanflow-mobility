@@ -7,6 +7,8 @@ import { Card } from "@/components/Card";
 import { Container } from "@/components/Container";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorMessage } from "@/components/ErrorMessage";
+import { ExportDonnees } from "@/components/ExportDonnees";
+import { Preferences } from "@/components/Preferences";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Spinner } from "@/components/Spinner";
 import { ButtonLink } from "@/components/Button";
@@ -97,6 +99,17 @@ function ContenuEspace() {
             role={utilisateur?.role ?? "USER"}
             onDeconnexion={deconnexion}
           />
+
+          {/* Les préférences viennent d'`utilisateur.preferences`, déjà chargé
+              par AuthProvider : aucun appel réseau supplémentaire, et cette
+              section reste affichée même si le chargement du suivi carbone
+              ci-dessous échoue (bloc 5E-3). */}
+          <Preferences />
+
+          {/* Export RGPD (bloc 5F). Indépendant du chargement du suivi
+              carbone ci-dessous : l'usager doit pouvoir récupérer ses données
+              même si le reste de la page est en panne. */}
+          <ExportDonnees />
 
           {erreur && (
             <ErrorMessage title="Vos données n'ont pas pu être chargées">{erreur}</ErrorMessage>

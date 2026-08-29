@@ -77,8 +77,15 @@ export class NetworkError extends Error {
 }
 
 export interface RequestOptions {
-  /** Verbe HTTP. GET par défaut. */
-  method?: "GET" | "POST" | "DELETE";
+  /**
+   * Verbe HTTP. GET par défaut.
+   *
+   * `PATCH` ajouté au bloc 5E : le backend l'emploie pour les préférences
+   * (`PATCH /users/me/preferences`), où le corps décrit ce qui CHANGE. Cette
+   * union reste volontairement fermée sur les verbes réellement utilisés —
+   * l'ouvrir à `string` laisserait passer une faute de frappe.
+   */
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   /** Corps à sérialiser en JSON. */
   body?: unknown;
   /**

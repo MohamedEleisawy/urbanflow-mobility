@@ -2,15 +2,18 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 // "import type" est requis ici : JwtPayload est une interface (elle n'existe
@@ -43,6 +46,81 @@ export class UsersController {
     // celui-ci a pu être émis il y a jusqu'à une heure et ne reflète donc
     // pas forcément les données actuelles (préférences modifiées, etc.).
     return this.usersService.findById(user.sub);
+  }
+
+  /**
+   * Met à jour les préférences de l'usager authentifié (étape 5E-1).
+   *
+   * PATCH ET NON PUT : le corps décrit ce qui CHANGE. Un PUT exigerait
+   * l'objet entier à chaque fois — l'usager qui bascule son thème en sombre
+   * devrait redonner son budget carbone et ses modes favoris, et tout oubli
+   * les effacerait.
+   *
+   * `/me/preferences` ET NON `/:id/preferences` : il n'existe aucun
+   * identifiant à passer. Une route qui en accepterait un obligerait à
+   * vérifier à chaque appel qu'il correspond bien au porteur du jeton — un
+   * contrôle qu'on peut oublier. Ici, il n'y a rien à oublier.
+   *
+   * ⚠️ Ordre de déclaration : cette route ne peut PAS entrer en conflit avec
+   * `@Get(':id')` ci-dessous, les méthodes HTTP étant différentes. En
+   * revanche, si un `@Patch(':id')` était ajouté un jour, il devrait venir
+   * APRÈS celle-ci — pour la raison expliquée plus haut à propos de
+   * `@Get('me')`.
+   *
+   * Réponses : 200 avec les préférences réellement enregistrées (le client
+   * réaffiche ce que le serveur a retenu, pas ce qu'il croit avoir envoyé),
+   * 400 en cas de validation, 401 sans jeton valide.
+   *
+   * Ni 403 ni 404 : on n'atteint jamais que ses propres préférences, et
+   * `user.sub` provient d'un jeton vérifié.
+   */
+  @Patch('me/preferences')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  updateMyPreferences(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateUserPreferencesDto,
+  ) {
+    // `user.sub` est le SEUL identifiant transmis au service. Le corps n'en
+    // contient aucun, et le DTO n'en déclare aucun.
+    return this.usersService.updatePreferences(user.sub, dto);
+  }
+
+  /**
+   * Export RGPD des données personnelles (étape 5F).
+   *
+   * Le dossier promet à l'usager de « télécharger à tout moment un fichier
+   * contenant l'intégralité de ses informations personnelles ».
+   *
+   * `/me/export` ET NON `/:id/export` : la route n'accepte AUCUN
+   * identifiant. Une route paramétrée obligerait à vérifier à chaque appel
+   * qu'il correspond au porteur du jeton — un contrôle qu'on peut oublier, et
+   * dont l'oubli livrerait le compte entier de quelqu'un d'autre.
+   *
+   * ⚠️ Déclarée AVANT `@Get(':id')`, et cette fois l'ordre COMPTE VRAIMENT :
+   * les deux sont des `@Get`. Placée après, l'URL `/users/me/export` ne
+   * correspondrait à rien — mais surtout, `/users/me` a déjà dû être déclarée
+   * avant `:id` pour la même raison (voir plus haut).
+   *
+   * `Content-Disposition: attachment` fait TÉLÉCHARGER le fichier plutôt que
+   * l'afficher, y compris pour un appel direct depuis la barre d'adresse. Le
+   * nom est statique : il ne peut pas être lu par le frontend, car
+   * `Content-Disposition` n'est pas un en-tête exposé par défaut en CORS, et
+   * l'exposer supposerait de toucher la configuration CORS pour un simple
+   * confort. Le frontend compose donc son propre nom de fichier à partir
+   * d'`exportedAt`, présent dans le corps.
+   */
+  @Get('me/export')
+  @UseGuards(JwtAuthGuard)
+  @Header('Content-Type', 'application/json; charset=utf-8')
+  @Header(
+    'Content-Disposition',
+    'attachment; filename="urbanflow-donnees-personnelles.json"',
+  )
+  exportMyData(@CurrentUser() user: JwtPayload) {
+    // `user.sub` est le SEUL identifiant transmis : il vient d'un jeton signé
+    // et vérifié par JwtAuthGuard.
+    return this.usersService.exportPersonalData(user.sub);
   }
 
   @Get(':id')
