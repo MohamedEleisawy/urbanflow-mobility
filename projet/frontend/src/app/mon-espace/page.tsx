@@ -11,6 +11,7 @@ import { ExportDonnees } from "@/components/ExportDonnees";
 import { Preferences } from "@/components/Preferences";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Spinner } from "@/components/Spinner";
+import { SupprimerCompte } from "@/components/SupprimerCompte";
 import { ButtonLink } from "@/components/Button";
 import { messageDErreur } from "@/lib/api";
 import { budgetHebdomadaire, historiqueTrajets, suiviCarbone } from "@/lib/espace-api";
@@ -128,6 +129,12 @@ function ContenuEspace() {
               <Trajets trajets={donnees.trajets} />
             </>
           )}
+
+          {/* EN DERNIER, et hors du bloc conditionnel : la zone de danger
+              ferme la page — on ne la rencontre pas par accident en cherchant
+              autre chose — et reste accessible même si le chargement du suivi
+              carbone échoue (bloc 5G). */}
+          <SupprimerCompte />
         </div>
       </section>
     </Container>

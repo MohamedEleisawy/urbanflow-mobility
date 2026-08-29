@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Header,
   HttpCode,
@@ -121,6 +122,34 @@ export class UsersController {
     // `user.sub` est le SEUL identifiant transmis : il vient d'un jeton signé
     // et vérifié par JwtAuthGuard.
     return this.usersService.exportPersonalData(user.sub);
+  }
+
+  /**
+   * Supprime le compte de l'usager authentifié (étape 5G).
+   *
+   * `DELETE /users/me` — le verbe dit l'intention, et `/me` n'accepte AUCUN
+   * identifiant. Même raisonnement qu'en 5E et 5F : une route paramétrée
+   * obligerait à vérifier à chaque appel qu'elle vise bien son auteur, et
+   * l'oubli de ce contrôle supprimerait le compte de quelqu'un d'autre.
+   *
+   * `204 No Content`, comme `DELETE /routes/:id` (étape 5A-9) : la
+   * suppression a réussi, il n'y a rien à renvoyer. La cohérence compte —
+   * deux suppressions qui répondraient différemment obligeraient le frontend
+   * à s'en souvenir.
+   *
+   * IDEMPOTENT : rappeler cette route sur un compte déjà supprimé répond
+   * encore 204. Le résultat attendu est atteint dans les deux cas.
+   *
+   * ⚠️ En pratique, un second appel n'arrivera jamais jusqu'ici : depuis
+   * cette même étape, `JwtAuthGuard` refuse les jetons des comptes supprimés
+   * et répondrait 401. L'idempotence du service reste néanmoins garantie —
+   * une propriété ne doit pas dépendre d'une autre couche pour être vraie.
+   */
+  @Delete('me')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteMyAccount(@CurrentUser() user: JwtPayload): Promise<void> {
+    await this.usersService.deleteMyAccount(user.sub);
   }
 
   @Get(':id')

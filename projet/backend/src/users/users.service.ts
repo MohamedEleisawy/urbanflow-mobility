@@ -286,6 +286,46 @@ export class UsersService {
     };
   }
 
+  /**
+   * Supprime le compte de l'usager AUTHENTIFIÉ (étape 5G).
+   *
+   * ═══ SUPPRESSION LOGIQUE, ET NON PHYSIQUE ═══
+   *
+   * Le schéma le prescrit noir sur blanc :
+   *
+   *     // Suppression logique (RGPD) : jamais de DELETE physique sur ce compte.
+   *     deletedAt DateTime?
+   *
+   * Un `delete` physique déclencherait les `onDelete: Cascade` de QUATRE
+   * relations — préférences, trajets (et leurs segments), empreintes carbone,
+   * budgets — et détruirait irrémédiablement l'historique. Poser une date
+   * rend le compte inutilisable sans rien détruire.
+   *
+   * ⚠️ `userId` VIENT DU JETON. Aucune route, aucun corps, aucune query ne
+   * peut le désigner : il est structurellement impossible de supprimer le
+   * compte d'autrui.
+   *
+   * ═══ IDEMPOTENT ═══
+   *
+   * `updateMany` plutôt qu'`update` : sur un compte déjà supprimé — ou
+   * inexistant — il ne modifie aucune ligne et ne lève pas. Un second appel
+   * ne peut donc ni échouer en 500, ni surtout ÉCRASER la date de suppression
+   * initiale, qui est la seule trace de quand le droit a été exercé.
+   */
+  async deleteMyAccount(userId: string): Promise<void> {
+    await this.prisma.user.updateMany({
+      // `deletedAt: null` fait partie du filtre : c'est lui qui garantit
+      // qu'une suppression déjà enregistrée n'est jamais redatée.
+      where: { id: userId, deletedAt: null },
+      data: { deletedAt: new Date() },
+    });
+
+    // Aucune valeur de retour, et aucune erreur si rien n'a été modifié : le
+    // résultat attendu — « ce compte est supprimé » — est vrai dans les deux
+    // cas. Dire « déjà supprimé » n'apporterait rien à l'usager et
+    // apprendrait à un attaquant qu'un compte a existé.
+  }
+
   // Retire passwordHash avant de renvoyer l'utilisateur au controller.
   private toPublicUser<T extends { passwordHash: string }>(user: T) {
     const { passwordHash: _passwordHash, ...publicUser } = user;

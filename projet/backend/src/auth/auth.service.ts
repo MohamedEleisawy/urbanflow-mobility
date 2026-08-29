@@ -32,8 +32,23 @@ export class AuthService {
       user?.passwordHash ?? DUMMY_HASH,
     );
 
-    if (!user || !isPasswordValid) {
-      // Même message et même statut, que l'email existe ou non.
+    // ⚠️ UN COMPTE SUPPRIMÉ NE SE RECONNECTE PAS (étape 5G).
+    //
+    // La vérification est faite ICI, avant toute émission de jeton : refuser
+    // plus tard laisserait sortir un JWT valable une heure pour un compte qui
+    // n'existe plus.
+    //
+    // Le mot de passe est vérifié AVANT, et c'est délibéré : sortir plus tôt
+    // sur `deletedAt` ferait répondre plus vite pour un compte supprimé que
+    // pour un mot de passe faux, et cette différence de durée suffirait à
+    // apprendre qu'un compte a existé.
+    const compteSupprime =
+      user?.deletedAt !== null && user?.deletedAt !== undefined;
+
+    if (!user || !isPasswordValid || compteSupprime) {
+      // Même message et même statut dans les trois cas : que l'email soit
+      // inconnu, le mot de passe faux ou le compte supprimé, un attaquant
+      // n'apprend rien.
       throw new UnauthorizedException('Email ou mot de passe incorrect');
     }
 

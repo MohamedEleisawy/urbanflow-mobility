@@ -1,5 +1,6 @@
 import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { AuthenticatedRequest } from './jwt-payload.type';
 
@@ -24,6 +25,7 @@ function fakeContext(request: AuthenticatedRequest): ExecutionContext {
 
 describe('JwtAuthGuard', () => {
   let guard: JwtAuthGuard;
+  let prisma: { user: { findUnique: jest.Mock } };
 
   const validPayload = {
     sub: 'user-1',
@@ -32,7 +34,14 @@ describe('JwtAuthGuard', () => {
   };
 
   beforeEach(() => {
-    guard = new JwtAuthGuard(jwtService);
+    // Le guard consulte la base depuis l'étape 5G : un jeton authentique ne
+    // suffit plus, encore faut-il que le compte existe toujours.
+    prisma = { user: { findUnique: jest.fn() } };
+    // Par défaut, un compte actif — les tests antérieurs vérifient la
+    // signature et l'expiration, pas le cycle de vie du compte.
+    prisma.user.findUnique.mockResolvedValue({ deletedAt: null });
+
+    guard = new JwtAuthGuard(jwtService, prisma as unknown as PrismaService);
   });
 
   it('laisse passer une requête avec un token valide', async () => {
@@ -94,5 +103,69 @@ describe('JwtAuthGuard', () => {
     await expect(
       guard.canActivate(fakeContext(fakeRequest(`Bearer ${token}`))),
     ).rejects.toThrow(UnauthorizedException);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Compte supprimé (étape 5G)
+  // ---------------------------------------------------------------------------
+  describe('compte supprimé', () => {
+    const jetonValide = () => `Bearer ${jwtService.sign(validPayload)}`;
+
+    it('REFUSE un jeton dont le compte a été supprimé', async () => {
+      prisma.user.findUnique.mockResolvedValue({ deletedAt: new Date() });
+
+      await expect(
+        guard.canActivate(fakeContext(fakeRequest(jetonValide()))),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it("REFUSE un jeton dont le compte n'existe plus", async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(
+        guard.canActivate(fakeContext(fakeRequest(jetonValide()))),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('ne RÉVÈLE PAS que le compte a été supprimé', async () => {
+      prisma.user.findUnique.mockResolvedValue({ deletedAt: new Date() });
+
+      const echec = await guard
+        .canActivate(fakeContext(fakeRequest(jetonValide())))
+        .catch((e: unknown) => e);
+
+      // Même message que pour un jeton falsifié : distinguer les deux
+      // apprendrait à un attaquant qu'un compte a existé.
+      expect((echec as UnauthorizedException).message).toBe(
+        'Token invalide ou expiré',
+      );
+    });
+
+    it("interroge la base sur le `sub` DU JETON, et rien d'autre", async () => {
+      await guard.canActivate(fakeContext(fakeRequest(jetonValide())));
+
+      // Le tableau d'appels est typé AVANT d'être indexé : `mock.calls` est
+      // `any`, et l'indexer directement laisserait passer une faute de frappe
+      // dans un nom de champ.
+      const appels = prisma.user.findUnique.mock.calls as {
+        where: { id: string };
+        select: Record<string, boolean>;
+      }[][];
+      const appel = appels[0][0];
+      expect(appel.where).toEqual({ id: 'user-1' });
+      // Une seule colonne : on ne charge pas l'usager entier — et surtout
+      // jamais `passwordHash` — à chaque requête authentifiée.
+      expect(appel.select).toEqual({ deletedAt: true });
+    });
+
+    it("N'INTERROGE PAS la base si le jeton est déjà invalide", async () => {
+      await expect(
+        guard.canActivate(fakeContext(fakeRequest('Bearer pas-un-jeton'))),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      // La signature se vérifie sans réseau ni base : inutile de payer une
+      // requête pour un jeton falsifié.
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    });
   });
 });

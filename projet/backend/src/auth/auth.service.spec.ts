@@ -73,4 +73,63 @@ describe('AuthService', () => {
       }),
     ).rejects.toThrow(UnauthorizedException);
   });
+
+  // ---------------------------------------------------------------------------
+  // Compte supprimé (étape 5G)
+  // ---------------------------------------------------------------------------
+  describe('compte supprimé', () => {
+    const compteSupprime = {
+      ...existingUser,
+      deletedAt: new Date('2026-08-01T10:00:00.000Z'),
+    };
+
+    it('REFUSE la connexion, même avec le bon mot de passe', async () => {
+      prisma.user.findUnique.mockResolvedValue(compteSupprime);
+
+      await expect(
+        service.login({
+          email: 'lena@example.com',
+          password: 'motdepasse123',
+        }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it("N'ÉMET AUCUN jeton pour un compte supprimé", async () => {
+      prisma.user.findUnique.mockResolvedValue(compteSupprime);
+
+      const resultat = await service
+        .login({ email: 'lena@example.com', password: 'motdepasse123' })
+        .catch((e: unknown) => e);
+
+      // Le refus intervient AVANT la signature : laisser sortir un jeton
+      // donnerait une heure d'accès à un compte qui n'existe plus.
+      expect(resultat).not.toHaveProperty('accessToken');
+    });
+
+    it('ne RÉVÈLE PAS que le compte a été supprimé', async () => {
+      prisma.user.findUnique.mockResolvedValue(compteSupprime);
+
+      const echec = await service
+        .login({ email: 'lena@example.com', password: 'motdepasse123' })
+        .catch((e: unknown) => e);
+
+      // Exactement le message d'un email inconnu ou d'un mot de passe faux :
+      // distinguer les cas apprendrait qu'un compte a existé.
+      expect((echec as UnauthorizedException).message).toBe(
+        'Email ou mot de passe incorrect',
+      );
+    });
+
+    it('laisse passer un compte ACTIF', async () => {
+      // Garde-fou : la nouvelle condition ne doit pas bloquer tout le monde.
+      prisma.user.findUnique.mockResolvedValue(existingUser);
+
+      await expect(
+        service.login({
+          email: 'lena@example.com',
+          password: 'motdepasse123',
+        }),
+      ).resolves.toHaveProperty('accessToken');
+    });
+  });
 });

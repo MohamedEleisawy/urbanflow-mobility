@@ -13,7 +13,7 @@ import { UsersService } from './users.service';
 describe('UsersService', () => {
   let service: UsersService;
   let prisma: {
-    user: { create: jest.Mock; findUnique: jest.Mock };
+    user: { create: jest.Mock; findUnique: jest.Mock; updateMany: jest.Mock };
     userPreferences: {
       findUnique: jest.Mock;
       upsert: jest.Mock;
@@ -29,6 +29,8 @@ describe('UsersService', () => {
       user: {
         create: jest.fn(),
         findUnique: jest.fn(),
+        // Ajoutée à l'étape 5G : la suppression est LOGIQUE, donc un update.
+        updateMany: jest.fn(),
       },
       // Ajouté à l'étape 5E-1 : `updatePreferences` ne touche QUE cette table.
       userPreferences: {
@@ -49,7 +51,7 @@ describe('UsersService', () => {
   /// titre — une faute de frappe dans un nom de champ passerait sinon
   /// inaperçue.
   interface AppelPrisma {
-    where?: { userId?: string; id?: string };
+    where?: { userId?: string; id?: string; deletedAt?: Date | null };
     select?: Record<string, unknown>;
     data?: Record<string, unknown>;
     update?: Record<string, unknown>;
@@ -405,6 +407,70 @@ describe('UsersService', () => {
       await expect(service.exportPersonalData(USAGER)).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Suppression du compte (étape 5G)
+  // ---------------------------------------------------------------------------
+  describe('deleteMyAccount', () => {
+    const USAGER = '11111111-1111-1111-1111-111111111111';
+
+    beforeEach(() => {
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+    });
+
+    it('NE SUPPRIME PAS physiquement le compte', async () => {
+      await service.deleteMyAccount(USAGER);
+
+      // Le schéma le prescrit : « jamais de DELETE physique sur ce compte ».
+      // Un `delete` déclencherait quatre `onDelete: Cascade` et détruirait
+      // l'historique.
+      expect(prisma.user.updateMany).toHaveBeenCalled();
+      expect(prisma.user.create).not.toHaveBeenCalled();
+    });
+
+    it('pose une DATE de suppression', async () => {
+      await service.deleteMyAccount(USAGER);
+
+      expect(
+        premierAppel(prisma.user.updateMany).data?.deletedAt,
+      ).toBeInstanceOf(Date);
+    });
+
+    it("cible EXCLUSIVEMENT l'identifiant reçu", async () => {
+      await service.deleteMyAccount(USAGER);
+
+      expect(premierAppel(prisma.user.updateMany).where?.id).toBe(USAGER);
+    });
+
+    it("N'ÉCRASE PAS une suppression déjà enregistrée", async () => {
+      await service.deleteMyAccount(USAGER);
+
+      // `deletedAt: null` dans le filtre : la date initiale est la seule
+      // trace de QUAND le droit a été exercé, et la redater la perdrait.
+      expect(premierAppel(prisma.user.updateMany).where?.deletedAt).toBeNull();
+    });
+
+    it('reste SILENCIEUX quand aucune ligne ne correspond', async () => {
+      // Compte déjà supprimé, ou inexistant.
+      prisma.user.updateMany.mockResolvedValue({ count: 0 });
+
+      // Idempotent : le résultat attendu — « ce compte est supprimé » — est
+      // vrai dans les deux cas. Lever apprendrait à un attaquant qu'un compte
+      // a existé.
+      await expect(service.deleteMyAccount(USAGER)).resolves.toBeUndefined();
+    });
+
+    it('NE TOUCHE À AUCUNE donnée associée', async () => {
+      await service.deleteMyAccount(USAGER);
+
+      // Ni préférences, ni trajets, ni empreintes : la suppression logique
+      // rend le compte inutilisable sans rien détruire.
+      expect(prisma.userPreferences.upsert).not.toHaveBeenCalled();
+      expect(prisma.userPreferences.update).not.toHaveBeenCalled();
+      expect(prisma.route.findMany).not.toHaveBeenCalled();
+      expect(prisma.carbonRecord.findMany).not.toHaveBeenCalled();
     });
   });
 });
