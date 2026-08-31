@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import { PaginationQueryDto } from '../routes/dto/pagination-query.dto';
 import { AdminUsersPageDto } from './dto/admin-user.dto';
+import { AdminStatsDto } from './dto/admin-stats.dto';
 
 // Service d'administration (étape 6-3).
 //
@@ -158,5 +159,100 @@ export class AdminService {
     }
 
     await this.usersService.softDeleteAccount(idCible);
+  }
+
+  /**
+   * Statistiques globales anonymisées (étape 6-5).
+   *
+   * ═══ CE QUE LE DOSSIER DEMANDE ═══
+   *
+   *   « Accès à des tableaux de bord ANONYMISÉS sur L'UTILISATION DE
+   *     L'APPLICATION, permettant d'analyser LES HABITUDES DE DÉPLACEMENT
+   *     dans la ville. » (§3.2.1)
+   *
+   * Deux axes, et rien d'autre. Aucune métrique n'a été ajoutée pour la seule
+   * raison qu'elle était facile à calculer.
+   *
+   * ═══ AUCUNE LIGNE PAR USAGER ═══
+   *
+   * Uniquement des `count`, des `sum` et un `groupBy` sur un mode de
+   * transport. Rien ici ne peut désigner quelqu'un : c'est la différence
+   * entre une statistique et un fichier.
+   *
+   * ═══ LES DONNÉES DES COMPTES DÉSACTIVÉS SONT CONSERVÉES ═══
+   *
+   * Un compte supprimé sort de `users.active`, mais ses trajets et ses
+   * empreintes RESTENT comptés. Deux raisons :
+   *
+   *   1. Ces déplacements ont réellement eu lieu. Les retirer fausserait
+   *      l'analyse des « habitudes de déplacement dans la ville », qui porte
+   *      sur la ville, pas sur les comptes encore ouverts.
+   *   2. Les données sont volontairement préservées par la suppression
+   *      logique (5G et 6-4). Les exclure ici ferait CHUTER les statistiques
+   *      historiques à chaque départ — un tableau de bord qui réécrit le
+   *      passé.
+   *
+   * ═══ CINQ REQUÊTES, TOUTES AGRÉGÉES EN BASE ═══
+   *
+   * Aucun `findMany`, aucune agrégation en mémoire, aucun `$queryRaw` :
+   * PostgreSQL sait compter et sommer, et il le fait sur des millions de
+   * lignes sans les transporter. Les cinq sont indépendantes, donc lancées
+   * ensemble.
+   */
+  async getStats(): Promise<AdminStatsDto> {
+    const [actifs, supprimes, trajets, carbone, parMode] = await Promise.all([
+      // `deletedAt: null` : un compte désactivé ne peut plus rien faire
+      // (5G), le compter parmi les actifs surestimerait l'audience.
+      this.prisma.user.count({ where: { deletedAt: null } }),
+      this.prisma.user.count({ where: { deletedAt: { not: null } } }),
+
+      // ⚠️ `Route`, JAMAIS `CarbonRecord` : un trajet multimodal porte
+      // plusieurs enregistrements carbone, et les confondre gonflerait le
+      // compteur d'un facteur variable.
+      this.prisma.route.aggregate({
+        _count: { _all: true },
+        _sum: { totalDistanceM: true },
+      }),
+
+      this.prisma.carbonRecord.aggregate({
+        _count: { _all: true },
+        _sum: { co2Grams: true, savedVsCarGrams: true },
+      }),
+
+      // Le SEGMENT est l'unité qui porte un mode : un trajet en a plusieurs.
+      this.prisma.segment.groupBy({
+        by: ['mode'],
+        _count: { _all: true },
+        _sum: { distanceM: true },
+      }),
+    ]);
+
+    return {
+      users: { active: actifs, deleted: supprimes },
+      routes: {
+        total: trajets._count._all,
+        // `_sum` rend `null` sur une table vide — pas `0`. Sans ce repli, le
+        // tableau de bord afficherait « null m » au premier démarrage.
+        totalDistanceM: trajets._sum.totalDistanceM ?? 0,
+      },
+      carbon: {
+        totalCo2Grams: carbone._sum.co2Grams ?? 0,
+        totalSavedVsCarGrams: carbone._sum.savedVsCarGrams ?? 0,
+        recordCount: carbone._count._all,
+      },
+      modeUsage: parMode
+        .map((ligne) => ({
+          mode: ligne.mode,
+          segmentCount: ligne._count._all,
+          totalDistanceM: ligne._sum.distanceM ?? 0,
+        }))
+        // TRI EXPLICITE : `groupBy` ne garantit aucun ordre, et un tableau de
+        // bord dont les lignes changent de place à chaque rafraîchissement
+        // est illisible. Le nom du mode départage les égalités.
+        .sort(
+          (a, b) =>
+            b.segmentCount - a.segmentCount || a.mode.localeCompare(b.mode),
+        ),
+    };
   }
 }

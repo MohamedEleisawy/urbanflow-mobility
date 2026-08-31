@@ -16,8 +16,14 @@ import { ApiError, messageDErreur } from "@/lib/api";
 import { indexerArrets, pointDepuisArret, traceDepuisSegments } from "@/lib/carte";
 import { detailTrajet } from "@/lib/espace-api";
 import { listerArrets, supprimerTrajet } from "@/lib/itineraires-api";
-import { formaterCo2, formaterDate, formaterDistance, formaterDuree } from "@/lib/format";
-import type { RouteDetail, Stop, TransportMode } from "@/lib/types";
+import {
+  formaterCo2,
+  formaterDate,
+  formaterDistance,
+  formaterDuree,
+  LIBELLES_MODES,
+} from "@/lib/format";
+import type { RouteDetail, Stop } from "@/lib/types";
 
 // =============================================================================
 // Détail d'un trajet enregistré (étape 5A-8)
@@ -51,17 +57,6 @@ type EtatSuppression =
   | { statut: "confirmation" }
   | { statut: "suppression" }
   | { statut: "echec"; message: string };
-
-/// Libellés français des modes : « WALK » ne se montre pas à un usager.
-const MODES: Record<TransportMode, string> = {
-  WALK: "Marche",
-  BUS: "Bus",
-  TRAM: "Tram",
-  METRO: "Métro",
-  BIKE: "Vélo",
-  ESCOOTER: "Trottinette",
-  CAR: "Voiture",
-};
 
 export default function DetailTrajetPage() {
   // Typé par le générique : `id` est le nom du segment dynamique du dossier
@@ -277,7 +272,7 @@ function Segments({ trajet, arrets }: { trajet: RouteDetail; arrets: Map<string,
                     {/* `line` et `operator` sont RECOPIÉS dans le segment au
                         moment de l'enregistrement : ils décrivent le réseau
                         tel qu'il était ce jour-là. */}
-                    {MODES[segment.mode]} {segment.line} · {segment.operator}
+                    {LIBELLES_MODES[segment.mode]} {segment.line} · {segment.operator}
                   </p>
                 </div>
 
@@ -353,7 +348,7 @@ function Carbone({ trajet }: { trajet: RouteDetail }) {
               {trajet.carbonRecords.map((record) => (
                 <tr key={record.id} className="border-t border-neutral-200">
                   <th scope="row" className="text-ink py-2 pr-4 text-left font-medium">
-                    {MODES[record.mode]}
+                    {LIBELLES_MODES[record.mode]}
                   </th>
                   <td className="py-2 pr-4">{formaterDistance(record.distanceM)}</td>
                   <td className="py-2 pr-4">{formaterCo2(record.co2Grams)}</td>

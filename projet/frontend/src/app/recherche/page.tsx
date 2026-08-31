@@ -20,8 +20,8 @@ import {
 import { useAuth } from "@/components/AuthProvider";
 import { ButtonLink } from "@/components/Button";
 import { estimerCarbone } from "@/lib/carbone-api";
-import { formaterCo2, formaterDistance, formaterDuree } from "@/lib/format";
-import type { CarbonResult, Itinerary, ItineraryCriterion, Stop, TransportMode } from "@/lib/types";
+import { formaterCo2, formaterDistance, formaterDuree, LIBELLES_MODES } from "@/lib/format";
+import type { CarbonResult, Itinerary, ItineraryCriterion, Stop } from "@/lib/types";
 
 // =============================================================================
 // Recherche d'itinéraire (étape 5A-5, UC01)
@@ -610,17 +610,6 @@ const CRITERES = {
   SHORTEST: "Le plus court",
 } as const;
 
-/// Libellés français des modes, pour ne pas afficher « WALK » à un usager.
-const MODES: Record<TransportMode, string> = {
-  WALK: "Marche",
-  BUS: "Bus",
-  TRAM: "Tram",
-  METRO: "Métro",
-  BIKE: "Vélo",
-  ESCOOTER: "Trottinette",
-  CAR: "Voiture",
-};
-
 function ItineraireCarte({
   itineraire,
   carbone,
@@ -664,7 +653,7 @@ function ItineraireCarte({
               <p className="mt-0.5 text-sm text-neutral-600">
                 {/* Le mode ET la ligne : « Bus 38 » plutôt que « BUS ».
                     C'est l'exigence posée en 4E-2 côté backend. */}
-                {MODES[segment.mode]} {segment.lineName} · {segment.operator}
+                {LIBELLES_MODES[segment.mode]} {segment.lineName} · {segment.operator}
               </p>
             </div>
             <p className="shrink-0 text-sm text-neutral-600">

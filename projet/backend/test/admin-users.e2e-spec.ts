@@ -399,11 +399,12 @@ describe('GET /api/admin/users (e2e)', () => {
       await request(app.getHttpServer()).get('/api/alerts').expect(200);
     });
 
-    it("aucune autre route /admin n'existe encore", async () => {
-      // L'étape 6-3 ne crée QUE la lecture. Les statistiques et la
-      // suppression viendront plus tard.
+    it("aucune route /admin non prevue n'existe", async () => {
+      // Mis a jour a l'etape 6-5 : GET /api/admin/stats existe desormais.
+      // Le controle garde son interet — il verifie qu'aucune route
+      // d'administration n'apparait sans avoir ete decidee.
       await request(app.getHttpServer())
-        .get('/api/admin/stats')
+        .get('/api/admin/settings')
         .set('Authorization', `Bearer ${jetonAdmin}`)
         .expect(404);
     });

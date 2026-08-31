@@ -9,6 +9,8 @@
 // garantirait que « 1,2 kg » ici devienne « 1.2kg » là.
 // =============================================================================
 
+import type { TransportMode } from "./types";
+
 /**
  * Grammes de CO₂ → texte lisible.
  *
@@ -79,3 +81,27 @@ export function formaterDateHeure(iso: string): string {
     minute: "2-digit",
   })}`;
 }
+
+/**
+ * Libellés français des modes de transport.
+ *
+ * « WALK » ou « METRO » ne se montrent pas à un usager.
+ *
+ * ⚠️ EXTRAIT AU BLOC 6-6, et pour une raison précise. Cette table était
+ * recopiée à l'identique dans TROIS écrans — perturbations, détail d'un
+ * trajet, recherche d'itinéraire. Le back-office en aurait fait une
+ * quatrième, et le jour où un mode s'ajoute au backend, il faudrait penser à
+ * quatre fichiers. Elle rejoint donc les autres fonctions d'affichage.
+ *
+ * `Record<TransportMode, string>` est exhaustif : ajouter un mode au type
+ * sans lui donner de libellé ne compilera pas.
+ */
+export const LIBELLES_MODES: Record<TransportMode, string> = {
+  WALK: "Marche",
+  BUS: "Bus",
+  TRAM: "Tram",
+  METRO: "Métro",
+  BIKE: "Vélo",
+  ESCOOTER: "Trottinette",
+  CAR: "Voiture",
+};

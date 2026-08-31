@@ -20,6 +20,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { JwtPayload } from '../auth/jwt-payload.type';
 import { PaginationQueryDto } from '../routes/dto/pagination-query.dto';
 import { AdminUsersPageDto } from './dto/admin-user.dto';
+import { AdminStatsDto } from './dto/admin-stats.dto';
 
 // Back-office (étape 6-3).
 //
@@ -102,5 +103,28 @@ export class AdminController {
     @CurrentUser() admin: JwtPayload,
   ): Promise<void> {
     await this.adminService.deleteUser(id, admin.sub);
+  }
+
+  /**
+   * Tableau de bord anonymisé (étape 6-5).
+   *
+   *   GET /api/admin/stats
+   *
+   * Le dossier le décrit ainsi : « Accès à des tableaux de bord anonymisés
+   * sur l'utilisation de l'application, permettant d'analyser les habitudes
+   * de déplacement dans la ville. » (§3.2.1)
+   *
+   * AUCUN PARAMÈTRE. Le dossier ne demande ni période, ni filtre : les
+   * statistiques sont GLOBALES. Ajouter `?from=&to=` parce que c'est possible
+   * inventerait un besoin, et il faudrait ensuite décider ce que signifie une
+   * borne — la date du trajet ? de l'enregistrement carbone ? de la création
+   * du compte ? Trois réponses différentes pour trois sections.
+   *
+   * Protégé par les guards de la CLASSE : 200 pour un ADMIN, 403 pour un
+   * USER, 401 sans jeton valide.
+   */
+  @Get('stats')
+  getStats(): Promise<AdminStatsDto> {
+    return this.adminService.getStats();
   }
 }

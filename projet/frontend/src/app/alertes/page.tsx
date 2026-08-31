@@ -8,8 +8,8 @@ import { ErrorMessage } from "@/components/ErrorMessage";
 import { Spinner } from "@/components/Spinner";
 import { messageDErreur } from "@/lib/api";
 import { listerAlertes } from "@/lib/alertes-api";
-import { formaterDateHeure } from "@/lib/format";
-import type { Alert, AlertSeverity, AlertsResponse, TransportMode } from "@/lib/types";
+import { formaterDateHeure, LIBELLES_MODES } from "@/lib/format";
+import type { Alert, AlertSeverity, AlertsResponse } from "@/lib/types";
 
 // =============================================================================
 // Perturbations en cours (bloc 5C-3, UC02)
@@ -48,17 +48,6 @@ const GRAVITES: Record<AlertSeverity, { libelle: string; classes: string }> = {
     libelle: "Information",
     classes: "border-brand/30 bg-brand/5 text-brand",
   },
-};
-
-/// Libellés français des modes : « METRO » ne se montre pas à un usager.
-const MODES: Record<TransportMode, string> = {
-  WALK: "Marche",
-  BUS: "Bus",
-  TRAM: "Tram",
-  METRO: "Métro",
-  BIKE: "Vélo",
-  ESCOOTER: "Trottinette",
-  CAR: "Voiture",
 };
 
 /**
@@ -252,7 +241,7 @@ function Perturbation({ alerte }: { alerte: Alert }) {
         <span className={`rounded-full border px-3 py-0.5 text-xs font-medium ${gravite.classes}`}>
           {gravite.libelle}
         </span>
-        <span className="text-xs text-neutral-600">{MODES[alerte.mode]}</span>
+        <span className="text-xs text-neutral-600">{LIBELLES_MODES[alerte.mode]}</span>
       </div>
 
       {/*
@@ -264,7 +253,7 @@ function Perturbation({ alerte }: { alerte: Alert }) {
         la conséquence restent affichées plus bas, dans des champs étiquetés.
       */}
       <h3 className="text-ink mt-3 font-semibold">
-        {alerte.headerText ?? `Perturbation signalée sur le réseau ${MODES[alerte.mode]}`}
+        {alerte.headerText ?? `Perturbation signalée sur le réseau ${LIBELLES_MODES[alerte.mode]}`}
       </h3>
 
       {alerte.descriptionText && (

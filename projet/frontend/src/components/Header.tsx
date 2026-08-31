@@ -101,6 +101,32 @@ export function Header() {
                   >
                     Mon espace
                   </Link>
+                  {/*
+                    Accès au back-office (bloc 6-6), visible des seuls
+                    administrateurs.
+
+                    Sans ce lien, `/admin` ne serait atteignable qu'en tapant
+                    l'URL — une fonctionnalité livrée mais introuvable.
+
+                    Le rôle vient de `utilisateur`, donc de `GET /users/me` :
+                    jamais du jeton décodé à la main, qui porterait encore
+                    l'ancien rôle après une promotion. Le masquer n'est pas
+                    une sécurité — `RolesGuard` refuse les requêtes — c'est
+                    seulement ne pas montrer une porte fermée.
+                  */}
+                  {utilisateur.role === "ADMIN" && (
+                    <Link
+                      href="/admin"
+                      aria-current={estActif("/admin") ? "page" : undefined}
+                      className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                        estActif("/admin")
+                          ? "bg-brand/10 text-brand"
+                          : "text-neutral-700 hover:bg-neutral-100"
+                      }`}
+                    >
+                      Administration
+                    </Link>
+                  )}
                   {/* L'email n'est pas décoratif : c'est ce qui permet de
                       vérifier d'un coup d'œil SOUS QUEL COMPTE on agit.
                       Masqué sur mobile, où la place manque. */}

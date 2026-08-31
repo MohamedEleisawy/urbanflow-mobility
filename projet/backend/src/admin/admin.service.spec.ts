@@ -25,6 +25,9 @@ describe('AdminService', () => {
   let service: AdminService;
   let prisma: {
     user: { count: jest.Mock; findMany: jest.Mock; findUnique: jest.Mock };
+    route: { aggregate: jest.Mock };
+    carbonRecord: { aggregate: jest.Mock };
+    segment: { groupBy: jest.Mock };
   };
   let users: { softDeleteAccount: jest.Mock };
 
@@ -58,9 +61,23 @@ describe('AdminService', () => {
         // cible avant d'agir.
         findUnique: jest.fn(),
       },
+      // Ajoutes a l'etape 6-5 : les statistiques n'emploient QUE des
+      // agregations — aucun `findMany`, aucun calcul en memoire.
+      route: { aggregate: jest.fn() },
+      carbonRecord: { aggregate: jest.fn() },
+      segment: { groupBy: jest.fn() },
     };
     prisma.user.count.mockResolvedValue(0);
     prisma.user.findMany.mockResolvedValue([]);
+    prisma.route.aggregate.mockResolvedValue({
+      _count: { _all: 0 },
+      _sum: { totalDistanceM: null },
+    });
+    prisma.carbonRecord.aggregate.mockResolvedValue({
+      _count: { _all: 0 },
+      _sum: { co2Grams: null, savedVsCarGrams: null },
+    });
+    prisma.segment.groupBy.mockResolvedValue([]);
 
     // La suppression logique appartient à `UsersService` : ce test vérifie
     // qu'elle est APPELÉE, pas ce qu'elle fait — c'est le rôle de
@@ -392,6 +409,290 @@ describe('AdminService', () => {
         'role',
       );
       expect(users.softDeleteAccount).toHaveBeenCalledWith(CIBLE);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Statistiques anonymisees (etape 6-5)
+  // ---------------------------------------------------------------------------
+  describe('getStats', () => {
+    /// Prepare des agregats realistes.
+    const peupler = () => {
+      prisma.user.count
+        .mockResolvedValueOnce(12) // actifs
+        .mockResolvedValueOnce(3); // supprimes
+      prisma.route.aggregate.mockResolvedValue({
+        _count: { _all: 48 },
+        _sum: { totalDistanceM: 123456 },
+      });
+      prisma.carbonRecord.aggregate.mockResolvedValue({
+        _count: { _all: 96 },
+        _sum: { co2Grams: 12345.6, savedVsCarGrams: 45678.9 },
+      });
+      prisma.segment.groupBy.mockResolvedValue([
+        { mode: 'WALK', _count: { _all: 10 }, _sum: { distanceM: 2000 } },
+        { mode: 'BUS', _count: { _all: 42 }, _sum: { distanceM: 98765 } },
+      ]);
+    };
+
+    it('rend les quatre sections attendues', async () => {
+      peupler();
+
+      const stats = await service.getStats();
+
+      expect(Object.keys(stats).sort()).toEqual([
+        'carbon',
+        'modeUsage',
+        'routes',
+        'users',
+      ]);
+    });
+
+    describe('utilisateurs', () => {
+      it('compte les ACTIFS avec `deletedAt: null`', async () => {
+        peupler();
+
+        const stats = await service.getStats();
+
+        expect(prisma.user.count).toHaveBeenNthCalledWith(1, {
+          where: { deletedAt: null },
+        });
+        expect(stats.users.active).toBe(12);
+      });
+
+      it('compte les SUPPRIMES separement', async () => {
+        peupler();
+
+        const stats = await service.getStats();
+
+        // Un compte desactive ne peut plus rien faire (5G) : le compter
+        // parmi les actifs surestimerait l'audience.
+        expect(prisma.user.count).toHaveBeenNthCalledWith(2, {
+          where: { deletedAt: { not: null } },
+        });
+        expect(stats.users.deleted).toBe(3);
+      });
+    });
+
+    describe('trajets', () => {
+      it('compte les ROUTES, pas les enregistrements carbone', async () => {
+        peupler();
+
+        const stats = await service.getStats();
+
+        // LE PIEGE DE L'ETAPE. Un trajet multimodal porte plusieurs
+        // `CarbonRecord` : les confondre gonflerait le compteur d'un facteur
+        // variable, plus eleve pour les usages que l'application encourage.
+        expect(stats.routes.total).toBe(48);
+        expect(stats.routes.total).not.toBe(stats.carbon.recordCount);
+        expect(prisma.route.aggregate).toHaveBeenCalled();
+      });
+
+      it('somme la distance des trajets', async () => {
+        peupler();
+
+        expect((await service.getStats()).routes.totalDistanceM).toBe(123456);
+      });
+
+      it('rend 0 — et non `null` — sur une base vide', async () => {
+        // `_sum` de Prisma rend `null` quand il n'y a rien a sommer. Sans
+        // repli, le tableau de bord afficherait « null m ».
+        const stats = await service.getStats();
+
+        expect(stats.routes.totalDistanceM).toBe(0);
+        expect(stats.carbon.totalCo2Grams).toBe(0);
+        expect(stats.carbon.totalSavedVsCarGrams).toBe(0);
+      });
+    });
+
+    describe('carbone', () => {
+      it('LIT les valeurs, ne les recalcule pas', async () => {
+        peupler();
+
+        const stats = await service.getStats();
+
+        // Le microservice les a deja calculees a l'enregistrement. Les
+        // recalculer ici produirait un second chiffre, qui divergerait au
+        // premier changement de facteur d'emission.
+        expect(stats.carbon.totalCo2Grams).toBe(12345.6);
+        expect(stats.carbon.totalSavedVsCarGrams).toBe(45678.9);
+        expect(prisma.carbonRecord.aggregate).toHaveBeenCalledTimes(1);
+      });
+
+      it("expose le nombre d'enregistrements, distinct des trajets", async () => {
+        peupler();
+
+        expect((await service.getStats()).carbon.recordCount).toBe(96);
+      });
+
+      it("n'expose AUCUN eco-score moyen", async () => {
+        peupler();
+
+        const stats = await service.getStats();
+
+        // L'eco-score est un RATIO : en faire une moyenne brute donnerait le
+        // meme poids a un trajet d'un kilometre et a un trajet de quarante.
+        // Un chiffre trompeur vaut moins que pas de chiffre.
+        expect(stats.carbon).not.toHaveProperty('averageEcoScore');
+        const [[argument]] = prisma.route.aggregate.mock.calls as unknown[][];
+        expect(argument).not.toHaveProperty('_avg');
+      });
+    });
+
+    describe('repartition par mode', () => {
+      it('groupe les SEGMENTS par mode', async () => {
+        peupler();
+
+        await service.getStats();
+
+        // Un trajet est MULTIMODAL : « BUS = 3 trajets » n'aurait aucun sens.
+        const [[appel]] = prisma.segment.groupBy.mock.calls as [
+          [{ by: string[] }],
+        ];
+        expect(appel.by).toEqual(['mode']);
+      });
+
+      it('nomme le champ `segmentCount`, pas `tripCount`', async () => {
+        peupler();
+
+        const [premier] = (await service.getStats()).modeUsage;
+
+        // Le nom doit decrire honnetement ce que la valeur compte.
+        expect(premier).toHaveProperty('segmentCount');
+        expect(premier).not.toHaveProperty('tripCount');
+      });
+
+      it('TRIE du plus employe au moins employe', async () => {
+        peupler();
+
+        const modes = (await service.getStats()).modeUsage;
+
+        // `groupBy` ne garantit aucun ordre : un tableau de bord dont les
+        // lignes bougent a chaque rafraichissement est illisible.
+        expect(modes.map((m) => m.mode)).toEqual(['BUS', 'WALK']);
+        expect(modes[0].segmentCount).toBe(42);
+      });
+
+      it('DEPARTAGE les egalites par le nom du mode', async () => {
+        prisma.segment.groupBy.mockResolvedValue([
+          { mode: 'TRAM', _count: { _all: 5 }, _sum: { distanceM: 100 } },
+          { mode: 'BUS', _count: { _all: 5 }, _sum: { distanceM: 200 } },
+        ]);
+
+        const modes = (await service.getStats()).modeUsage;
+
+        expect(modes.map((m) => m.mode)).toEqual(['BUS', 'TRAM']);
+      });
+
+      it('somme la distance par mode', async () => {
+        peupler();
+
+        const modes = (await service.getStats()).modeUsage;
+
+        // Dix etapes de marche de 200 m ne pesent pas le meme usage qu'une
+        // etape de metro de 12 km : la distance dit ce que le compte tait.
+        expect(modes.find((m) => m.mode === 'BUS')?.totalDistanceM).toBe(98765);
+      });
+
+      it('rend un tableau VIDE sans aucun segment', async () => {
+        expect((await service.getStats()).modeUsage).toEqual([]);
+      });
+    });
+
+    describe('anonymisation', () => {
+      it('ne contient AUCUNE donnee nominative', async () => {
+        peupler();
+
+        const brut = JSON.stringify(await service.getStats());
+
+        // Uniquement des comptes et des sommes. Une statistique par usager
+        // n'est pas une statistique, c'est un fichier.
+        expect(brut).not.toMatch(/email|userId|passwordHash|@/i);
+        expect(brut).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/i);
+      });
+
+      it('ne SELECTIONNE aucune colonne nominative', async () => {
+        peupler();
+
+        await service.getStats();
+
+        const premierArgument = (mock: jest.Mock) =>
+          (mock.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+
+        const appels = [
+          premierArgument(prisma.route.aggregate),
+          premierArgument(prisma.carbonRecord.aggregate),
+          premierArgument(prisma.segment.groupBy),
+        ];
+
+        for (const appel of appels) {
+          expect(appel).not.toHaveProperty('select');
+          expect(appel).not.toHaveProperty('include');
+        }
+      });
+    });
+
+    describe('performance', () => {
+      it('AGREGE EN BASE, jamais en memoire', async () => {
+        peupler();
+
+        await service.getStats();
+
+        // Charger toutes les lignes pour les compter en JavaScript
+        // s'effondrerait au premier millier d'enregistrements.
+        expect(prisma.user.findMany).not.toHaveBeenCalled();
+        expect(prisma.route.aggregate).toHaveBeenCalledTimes(1);
+        expect(prisma.carbonRecord.aggregate).toHaveBeenCalledTimes(1);
+        expect(prisma.segment.groupBy).toHaveBeenCalledTimes(1);
+      });
+
+      it('fait CINQ requetes, pas une de plus', async () => {
+        peupler();
+
+        await service.getStats();
+
+        const total =
+          prisma.user.count.mock.calls.length +
+          prisma.route.aggregate.mock.calls.length +
+          prisma.carbonRecord.aggregate.mock.calls.length +
+          prisma.segment.groupBy.mock.calls.length;
+
+        // Aucune requete par usager, par trajet ni par mode : le cout ne
+        // depend pas du volume de donnees.
+        expect(total).toBe(5);
+      });
+
+      it('lance les requetes EN PARALLELE', async () => {
+        peupler();
+        let premiereResolue = false;
+        prisma.user.count.mockReset();
+        prisma.user.count
+          .mockImplementationOnce(async () => {
+            await new Promise((r) => setTimeout(r, 10));
+            premiereResolue = true;
+            return 12;
+          })
+          .mockResolvedValueOnce(3);
+        prisma.segment.groupBy.mockImplementation(() => {
+          // Enchainees, la premiere serait deja resolue ici.
+          expect(premiereResolue).toBe(false);
+          return Promise.resolve([]);
+        });
+
+        await service.getStats();
+
+        expect(premiereResolue).toBe(true);
+      });
+    });
+
+    it('est DETERMINISTE : deux appels, meme resultat', async () => {
+      peupler();
+      const premier = await service.getStats();
+
+      peupler();
+      const second = await service.getStats();
+
+      expect(second).toEqual(premier);
     });
   });
 });

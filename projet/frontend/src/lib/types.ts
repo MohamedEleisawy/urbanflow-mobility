@@ -22,8 +22,13 @@
 /// Modes de transport connus du backend (`enum ModeTransport`).
 export type TransportMode = "WALK" | "BUS" | "TRAM" | "METRO" | "BIKE" | "ESCOOTER" | "CAR";
 
-/// Rôles (`enum RoleEnum`). L'autorisation par rôle n'est pas encore branchée
-/// côté backend (étape 4G-1), mais le jeton transporte déjà cette valeur.
+/// Rôles (`enum RoleEnum`).
+///
+/// ⚠️ Commentaire corrigé au bloc 6-6 : il affirmait que l'autorisation par
+/// rôle n'était « pas encore branchée côté backend ». C'est faux depuis
+/// l'étape 6-1 — `RolesGuard` et `@Roles(ADMIN)` protègent réellement
+/// `/api/admin/*`. Un commentaire périmé désinforme plus sûrement qu'un
+/// commentaire absent.
 export type UserRole = "USER" | "ADMIN";
 
 export type ThemePreference = "LIGHT" | "DARK" | "SYSTEM";
@@ -301,4 +306,73 @@ export interface AlertsResponse {
   limit: number;
   /** Vrai si des perturbations ont été omises faute de place. */
   truncated: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Administration (bloc 6-6)
+// ---------------------------------------------------------------------------
+// Formes relevées dans `projet/backend/src/admin/dto/` — `admin-user.dto.ts`
+// et `admin-stats.dto.ts`. Comme partout ici, les `Date` du backend
+// deviennent des chaînes ISO en traversant JSON.
+
+/**
+ * Un compte, vu par un administrateur (`GET /api/admin/users`).
+ *
+ * CINQ CHAMPS, ET PAS UN DE PLUS. Le backend ne sélectionne rien d'autre :
+ * ni `passwordHash`, ni les préférences, ni les trajets. Ce n'est pas une
+ * omission d'affichage — la donnée ne quitte jamais le serveur.
+ */
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: UserRole;
+  createdAt: string;
+  /** Non nul si le compte a été désactivé (suppression LOGIQUE). */
+  deletedAt: string | null;
+}
+
+/**
+ * Page de comptes (`GET /api/admin/users?page=&limit=`).
+ *
+ * ⚠️ `total` compte TOUS les comptes, désactivés compris : le backend appelle
+ * `count()` sans filtre. Le nombre de pages s'en déduit directement.
+ */
+export interface AdminUsersPage {
+  items: AdminUser[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
+/** Usage d'un mode (`GET /api/admin/stats`, section `modeUsage`). */
+export interface AdminModeUsage {
+  mode: TransportMode;
+  /**
+   * Nombre d'ÉTAPES empruntant ce mode — pas de trajets.
+   *
+   * Le nom vient du backend, et il est délibéré : un trajet est multimodal,
+   * il n'a pas UN mode. L'afficher comme un nombre de trajets retournerait le
+   * mensonge que le backend s'est appliqué à éviter.
+   */
+  segmentCount: number;
+  totalDistanceM: number;
+}
+
+/**
+ * Tableau de bord anonymisé (`GET /api/admin/stats`).
+ *
+ * AUCUNE DONNÉE NOMINATIVE : que des comptes et des sommes. Aucun paramètre
+ * n'est accepté — les chiffres sont globaux et cumulés depuis toujours.
+ */
+export interface AdminStats {
+  users: { active: number; deleted: number };
+  routes: { total: number; totalDistanceM: number };
+  carbon: {
+    totalCo2Grams: number;
+    totalSavedVsCarGrams: number;
+    /** ⚠️ Nombre d'enregistrements carbone — **pas** de trajets. */
+    recordCount: number;
+  };
+  /** Trié par le backend : du mode le plus employé au moins employé. */
+  modeUsage: AdminModeUsage[];
 }
