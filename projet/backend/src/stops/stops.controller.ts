@@ -9,23 +9,40 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { RoleEnum } from '@prisma/client';
 import { StopsService } from './stops.service';
 import { CreateStopDto } from './dto/create-stop.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 
 @Controller('stops')
 export class StopsController {
   constructor(private readonly stopsService: StopsService) {}
 
-  // Écriture protégée : ajouter un arrêt modifie les données de référence du
-  // réseau, ce ne doit pas être possible anonymement.
+  // ÉCRITURE RÉSERVÉE AUX ADMINISTRATEURS (étape 6-1).
   //
-  // (Le dossier réserve à terme cette action à l'administrateur — "UC10
-  // Importer des flux de données". La distinction des rôles USER/ADMIN n'est
-  // pas encore implémentée : pour l'instant tout usager connecté peut le
-  // faire. À restreindre lors de l'étape consacrée aux rôles.)
+  // Un arrêt est une DONNÉE DE RÉFÉRENCE DU RÉSEAU : il est visible de tous,
+  // sert de sommet au calcul d'itinéraire, et un arrêt fantaisiste fausserait
+  // les trajets de tout le monde. Ce n'est pas une donnée personnelle, et
+  // aucun cloisonnement par `userId` ne peut donc la protéger — seul le rôle
+  // le peut.
+  //
+  // C'est la dette que le commentaire précédent annonçait : « pour l'instant
+  // tout usager connecté peut le faire. À restreindre lors de l'étape
+  // consacrée aux rôles. » Elle est levée ici.
+  //
+  // Le dossier le demande explicitement (§3.2.1, bloc Administration :
+  // « Importer des flux de données », et §3.3 : « le système distingue
+  // plusieurs profils afin de contrôler précisément les autorisations »).
+  //
+  // ⚠️ LES DEUX GUARDS, ET DANS CET ORDRE. `JwtAuthGuard` établit QUI demande
+  // (401 sinon) ; `RolesGuard` décide si cette personne-là a le droit (403
+  // sinon). Inversés, le second s'exécuterait avant que `request.user`
+  // n'existe.
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(RoleEnum.ADMIN)
   @HttpCode(HttpStatus.CREATED)
   create(@Body() dto: CreateStopDto) {
     return this.stopsService.create(dto);

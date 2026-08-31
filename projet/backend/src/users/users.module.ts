@@ -9,5 +9,8 @@ import { AuthModule } from '../auth/auth.module';
   imports: [AuthModule],
   controllers: [UsersController],
   providers: [UsersService],
+  // Exporté depuis l'étape 6-4 : `AdminModule` réutilise
+  // `softDeleteAccount`, seule implémentation de la suppression logique.
+  exports: [UsersService],
 })
 export class UsersModule {}

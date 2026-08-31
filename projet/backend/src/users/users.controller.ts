@@ -6,8 +6,6 @@ import {
   Header,
   HttpCode,
   HttpStatus,
-  Param,
-  ParseUUIDPipe,
   Patch,
   Post,
   UseGuards,
@@ -32,10 +30,14 @@ export class UsersController {
     return this.usersService.create(dto);
   }
 
-  // ATTENTION À L'ORDRE : cette route doit être déclarée AVANT @Get(':id').
-  // NestJS teste les routes dans leur ordre de déclaration ; si ':id' venait
-  // en premier, l'URL /users/me lui correspondrait, et ParseUUIDPipe
-  // rejetterait "me" avec une erreur 400 au lieu d'appeler cette méthode.
+  // ⚠️ CE CONTRÔLEUR N'A PLUS AUCUNE ROUTE PARAMÉTRÉE depuis l'étape 6-3
+  // (voir la note en fin de fichier). Toutes visent `/me`, donc l'ordre de
+  // déclaration n'a plus d'importance entre elles.
+  //
+  // Il en retrouverait une le jour où un `@Get(':id')` reviendrait : il
+  // devrait alors être déclaré APRÈS toutes les routes `/me`, sans quoi
+  // l'URL `/users/me` lui correspondrait et `ParseUUIDPipe` rejetterait
+  // « me » en 400.
   @Get('me')
   // @UseGuards : la requête doit passer par JwtAuthGuard avant d'arriver
   // ici. Sans token valide, le guard lève une 401 et findMe n'est jamais
@@ -62,11 +64,10 @@ export class UsersController {
    * vérifier à chaque appel qu'il correspond bien au porteur du jeton — un
    * contrôle qu'on peut oublier. Ici, il n'y a rien à oublier.
    *
-   * ⚠️ Ordre de déclaration : cette route ne peut PAS entrer en conflit avec
-   * `@Get(':id')` ci-dessous, les méthodes HTTP étant différentes. En
-   * revanche, si un `@Patch(':id')` était ajouté un jour, il devrait venir
-   * APRÈS celle-ci — pour la raison expliquée plus haut à propos de
-   * `@Get('me')`.
+   * ⚠️ Ordre de déclaration : sans objet depuis l'étape 6-3, ce contrôleur
+   * n'ayant plus aucune route paramétrée. Si un `@Patch(':id')` était ajouté
+   * un jour, il devrait venir APRÈS celle-ci — pour la raison expliquée plus
+   * haut à propos de `@Get('me')`.
    *
    * Réponses : 200 avec les préférences réellement enregistrées (le client
    * réaffiche ce que le serveur a retenu, pas ce qu'il croit avoir envoyé),
@@ -98,10 +99,10 @@ export class UsersController {
    * qu'il correspond au porteur du jeton — un contrôle qu'on peut oublier, et
    * dont l'oubli livrerait le compte entier de quelqu'un d'autre.
    *
-   * ⚠️ Déclarée AVANT `@Get(':id')`, et cette fois l'ordre COMPTE VRAIMENT :
-   * les deux sont des `@Get`. Placée après, l'URL `/users/me/export` ne
-   * correspondrait à rien — mais surtout, `/users/me` a déjà dû être déclarée
-   * avant `:id` pour la même raison (voir plus haut).
+   * ⚠️ L'ordre de déclaration importait tant que `@Get(':id')` existait :
+   * les deux étant des `@Get`, cette route placée après n'aurait
+   * correspondu à rien. La route paramétrée a été supprimée à l'étape 6-3,
+   * mais la contrainte reviendrait avec elle.
    *
    * `Content-Disposition: attachment` fait TÉLÉCHARGER le fichier plutôt que
    * l'afficher, y compris pour un appel direct depuis la barre d'adresse. Le
@@ -149,13 +150,27 @@ export class UsersController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
   async deleteMyAccount(@CurrentUser() user: JwtPayload): Promise<void> {
-    await this.usersService.deleteMyAccount(user.sub);
+    await this.usersService.softDeleteAccount(user.sub);
   }
 
-  @Get(':id')
-  // ParseUUIDPipe : si :id n'est pas un UUID valide, NestJS renvoie 400 tout
-  // seul, avant même d'interroger la base (id est une colonne @db.Uuid).
-  findById(@Param('id', ParseUUIDPipe) id: string) {
-    return this.usersService.findById(id);
-  }
+  // ═══ `GET /users/:id` A ÉTÉ SUPPRIMÉE À L'ÉTAPE 6-3 ═══
+  //
+  // Elle rendait le profil de n'importe quel usager à partir de son UUID.
+  // Publique jusqu'à l'étape 6-1, puis protégée par `JwtAuthGuard` — mais un
+  // usager authentifié pouvait encore lire l'adresse électronique, le rôle et
+  // les préférences d'un autre.
+  //
+  // Sa suppression plutôt qu'un durcissement, pour trois raisons :
+  //
+  //   1. AUCUN CONSOMMATEUR. Ni le frontend, ni un service, ni un script.
+  //      Les seuls appels étaient les tests qui l'éprouvaient elle-même.
+  //   2. AUCUNE EXIGENCE. Le dossier confie la « gestion des utilisateurs »
+  //      à l'administrateur — c'est `GET /api/admin/users`, pas une route
+  //      d'usager.
+  //   3. LA MEILLEURE FAÇON DE NE PAS SE TROMPER SUR UNE AUTORISATION EST DE
+  //      N'AVOIR RIEN À AUTORISER. Une route qui n'existe pas ne peut pas
+  //      voir sa protection oubliée lors d'un remaniement.
+  //
+  // `GET /users/me` reste inchangée : c'est elle que le frontend utilise, et
+  // `UsersService.findById` continue de la servir.
 }

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
+import { AdminModule } from './admin/admin.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { RoutesModule } from './routes/routes.module';
@@ -18,6 +19,8 @@ import { CarbonTrackingModule } from './carbon-tracking/carbon-tracking.module';
     PrismaModule,
     UsersModule,
     AuthModule,
+    // Back-office réservé aux administrateurs (étape 6-3).
+    AdminModule,
     RoutesModule,
     StopsModule,
     SegmentsModule,

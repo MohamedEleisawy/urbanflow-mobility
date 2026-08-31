@@ -13,7 +13,12 @@ import { UsersService } from './users.service';
 describe('UsersService', () => {
   let service: UsersService;
   let prisma: {
-    user: { create: jest.Mock; findUnique: jest.Mock; updateMany: jest.Mock };
+    user: {
+      create: jest.Mock;
+      findUnique: jest.Mock;
+      update: jest.Mock;
+      updateMany: jest.Mock;
+    };
     userPreferences: {
       findUnique: jest.Mock;
       upsert: jest.Mock;
@@ -29,6 +34,8 @@ describe('UsersService', () => {
       user: {
         create: jest.fn(),
         findUnique: jest.fn(),
+        // Ajoutée à l'étape 6-2 : la promotion écrit UNE colonne.
+        update: jest.fn(),
         // Ajoutée à l'étape 5G : la suppression est LOGIQUE, donc un update.
         updateMany: jest.fn(),
       },
@@ -413,7 +420,7 @@ describe('UsersService', () => {
   // ---------------------------------------------------------------------------
   // Suppression du compte (étape 5G)
   // ---------------------------------------------------------------------------
-  describe('deleteMyAccount', () => {
+  describe('softDeleteAccount', () => {
     const USAGER = '11111111-1111-1111-1111-111111111111';
 
     beforeEach(() => {
@@ -421,7 +428,7 @@ describe('UsersService', () => {
     });
 
     it('NE SUPPRIME PAS physiquement le compte', async () => {
-      await service.deleteMyAccount(USAGER);
+      await service.softDeleteAccount(USAGER);
 
       // Le schéma le prescrit : « jamais de DELETE physique sur ce compte ».
       // Un `delete` déclencherait quatre `onDelete: Cascade` et détruirait
@@ -431,7 +438,7 @@ describe('UsersService', () => {
     });
 
     it('pose une DATE de suppression', async () => {
-      await service.deleteMyAccount(USAGER);
+      await service.softDeleteAccount(USAGER);
 
       expect(
         premierAppel(prisma.user.updateMany).data?.deletedAt,
@@ -439,13 +446,13 @@ describe('UsersService', () => {
     });
 
     it("cible EXCLUSIVEMENT l'identifiant reçu", async () => {
-      await service.deleteMyAccount(USAGER);
+      await service.softDeleteAccount(USAGER);
 
       expect(premierAppel(prisma.user.updateMany).where?.id).toBe(USAGER);
     });
 
     it("N'ÉCRASE PAS une suppression déjà enregistrée", async () => {
-      await service.deleteMyAccount(USAGER);
+      await service.softDeleteAccount(USAGER);
 
       // `deletedAt: null` dans le filtre : la date initiale est la seule
       // trace de QUAND le droit a été exercé, et la redater la perdrait.
@@ -459,11 +466,11 @@ describe('UsersService', () => {
       // Idempotent : le résultat attendu — « ce compte est supprimé » — est
       // vrai dans les deux cas. Lever apprendrait à un attaquant qu'un compte
       // a existé.
-      await expect(service.deleteMyAccount(USAGER)).resolves.toBeUndefined();
+      await expect(service.softDeleteAccount(USAGER)).resolves.toBeUndefined();
     });
 
     it('NE TOUCHE À AUCUNE donnée associée', async () => {
-      await service.deleteMyAccount(USAGER);
+      await service.softDeleteAccount(USAGER);
 
       // Ni préférences, ni trajets, ni empreintes : la suppression logique
       // rend le compte inutilisable sans rien détruire.
@@ -471,6 +478,141 @@ describe('UsersService', () => {
       expect(prisma.userPreferences.update).not.toHaveBeenCalled();
       expect(prisma.route.findMany).not.toHaveBeenCalled();
       expect(prisma.carbonRecord.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Promotion en administrateur (étape 6-2)
+  // ---------------------------------------------------------------------------
+  describe('promoteToAdmin', () => {
+    const EMAIL = 'lena@example.com';
+
+    const trouve = (surcharge: Record<string, unknown> = {}) =>
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: EMAIL,
+        role: 'USER',
+        deletedAt: null,
+        ...surcharge,
+      });
+
+    it('cherche le compte par son ADRESSE', async () => {
+      trouve();
+      prisma.user.update.mockResolvedValue({ email: EMAIL, role: 'ADMIN' });
+
+      await service.promoteToAdmin(EMAIL);
+
+      expect(premierAppel(prisma.user.findUnique).where).toEqual({
+        email: EMAIL,
+      });
+    });
+
+    it('NE LIT JAMAIS passwordHash', async () => {
+      trouve();
+      prisma.user.update.mockResolvedValue({ email: EMAIL, role: 'ADMIN' });
+
+      await service.promoteToAdmin(EMAIL);
+
+      // Cette méthode est appelée depuis un terminal, dont la sortie finit
+      // dans un historique de commandes et parfois dans des journaux.
+      const select = premierAppel(prisma.user.findUnique).select ?? {};
+      expect(select).not.toHaveProperty('passwordHash');
+      expect(Object.keys(select).sort()).toEqual([
+        'deletedAt',
+        'email',
+        'id',
+        'role',
+      ]);
+    });
+
+    it('promeut un USER en ADMIN', async () => {
+      trouve();
+      prisma.user.update.mockResolvedValue({ email: EMAIL, role: 'ADMIN' });
+
+      const resultat = await service.promoteToAdmin(EMAIL);
+
+      expect(resultat).toEqual({
+        email: EMAIL,
+        role: 'ADMIN',
+        dejaAdmin: false,
+      });
+    });
+
+    it("n'écrit QUE la colonne `role`", async () => {
+      trouve();
+      prisma.user.update.mockResolvedValue({ email: EMAIL, role: 'ADMIN' });
+
+      await service.promoteToAdmin(EMAIL);
+
+      const appel = premierAppel(prisma.user.update);
+      // Ni l'email, ni le mot de passe, ni les préférences.
+      expect(appel.data).toEqual({ role: 'ADMIN' });
+      // Ciblé par l'identifiant relu, jamais par l'adresse fournie en
+      // argument : c'est la clé primaire qui désigne la ligne.
+      expect(appel.where).toEqual({ id: 'user-1' });
+    });
+
+    it("ne renvoie RIEN d'autre que l'adresse, le rôle et l'état", async () => {
+      trouve();
+      prisma.user.update.mockResolvedValue({ email: EMAIL, role: 'ADMIN' });
+
+      const resultat = await service.promoteToAdmin(EMAIL);
+
+      expect(Object.keys(resultat).sort()).toEqual([
+        'dejaAdmin',
+        'email',
+        'role',
+      ]);
+    });
+
+    it("N'ÉCRIT RIEN si le compte est DÉJÀ administrateur", async () => {
+      trouve({ role: 'ADMIN' });
+
+      const resultat = await service.promoteToAdmin(EMAIL);
+
+      // Idempotence : le résultat attendu est atteint, ce n'est pas une
+      // erreur. Mais rien n'est réécrit.
+      expect(resultat).toEqual({
+        email: EMAIL,
+        role: 'ADMIN',
+        dejaAdmin: true,
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('LÈVE si le compte est introuvable', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.promoteToAdmin('inconnu@example.com'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      // « Introuvable » n'est JAMAIS un succès : sans cela, une faute de
+      // frappe dans l'adresse passerait pour une promotion réussie.
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('REFUSE de promouvoir un compte SUPPRIMÉ', async () => {
+      trouve({ deletedAt: new Date('2026-08-01T10:00:00.000Z') });
+
+      // Cela produirait un administrateur incapable de se connecter (5G) —
+      // un droit accordé à personne, et une surprise le jour où quelqu'un le
+      // restaurerait.
+      await expect(service.promoteToAdmin(EMAIL)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('ne touche à AUCUNE autre table', async () => {
+      trouve();
+      prisma.user.update.mockResolvedValue({ email: EMAIL, role: 'ADMIN' });
+
+      await service.promoteToAdmin(EMAIL);
+
+      expect(prisma.userPreferences.update).not.toHaveBeenCalled();
+      expect(prisma.route.findMany).not.toHaveBeenCalled();
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
     });
   });
 });

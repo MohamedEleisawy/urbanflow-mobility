@@ -4,7 +4,20 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+
+/**
+ * Ce que la promotion rend à son appelant (étape 6-2).
+ *
+ * VOLONTAIREMENT MINIMAL : de quoi composer un message, et rien de plus.
+ * Rendre l'usager complet exposerait `passwordHash` à une sortie de terminal.
+ */
+export interface PromotionResult {
+  email: string;
+  role: RoleEnum;
+  /** Vrai si le compte était DÉJÀ administrateur : rien n'a été écrit. */
+  dejaAdmin: boolean;
+}
+import { Prisma, RoleEnum } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
@@ -287,7 +300,23 @@ export class UsersService {
   }
 
   /**
-   * Supprime le compte de l'usager AUTHENTIFIÉ (étape 5G).
+   * Supprime LOGIQUEMENT un compte, par son identifiant.
+   *
+   * ⚠️ RENOMMÉE À L'ÉTAPE 6-4, et le nom précédent — `deleteMyAccount` —
+   * décrivait son APPELANT, pas son comportement : la méthode a toujours pris
+   * un identifiant quelconque. L'administration en a désormais besoin pour
+   * agir sur le compte d'autrui, et l'appeler « mon compte » depuis
+   * `AdminService` aurait rendu le code trompeur à la lecture.
+   *
+   * C'est la SEULE implémentation de la suppression logique. La dupliquer
+   * dans `AdminService` créerait deux vérités à maintenir — et le jour où
+   * l'une changerait, l'autre continuerait de faire l'ancienne chose.
+   *
+   * ⚠️ CETTE MÉTHODE NE VÉRIFIE NI L'EXISTENCE, NI LE DROIT D'AGIR. Elle
+   * exécute, elle ne décide pas. Chaque appelant apporte sa propre règle :
+   * `DELETE /users/me` prend l'identifiant du jeton (rien à vérifier) ;
+   * `DELETE /admin/users/:id` vérifie d'abord que la cible existe et qu'elle
+   * n'est pas l'appelant lui-même.
    *
    * ═══ SUPPRESSION LOGIQUE, ET NON PHYSIQUE ═══
    *
@@ -312,7 +341,7 @@ export class UsersService {
    * ne peut donc ni échouer en 500, ni surtout ÉCRASER la date de suppression
    * initiale, qui est la seule trace de quand le droit a été exercé.
    */
-  async deleteMyAccount(userId: string): Promise<void> {
+  async softDeleteAccount(userId: string): Promise<void> {
     await this.prisma.user.updateMany({
       // `deletedAt: null` fait partie du filtre : c'est lui qui garantit
       // qu'une suppression déjà enregistrée n'est jamais redatée.
@@ -324,6 +353,65 @@ export class UsersService {
     // résultat attendu — « ce compte est supprimé » — est vrai dans les deux
     // cas. Dire « déjà supprimé » n'apporterait rien à l'usager et
     // apprendrait à un attaquant qu'un compte a existé.
+  }
+
+  /**
+   * Promeut un usager au rôle ADMIN, par son adresse électronique (6-2).
+   *
+   * ═══ AUCUNE ROUTE HTTP N'APPELLE CETTE MÉTHODE, ET C'EST VOULU ═══
+   *
+   * Elle n'est atteignable que par `npm run user:promote`. Exposer la
+   * promotion en HTTP demanderait de répondre d'abord à une question qui n'a
+   * pas de bonne réponse : QUI aurait le droit de l'appeler ? Un ADMIN — mais
+   * il n'en existe aucun, et c'est précisément le problème qu'on résout. La
+   * ligne de commande brise ce cercle : celui qui l'exécute a déjà l'accès au
+   * serveur et à la base, donc plus de pouvoir que n'importe quelle route ne
+   * lui en donnerait.
+   *
+   * ⚠️ LA PROMOTION NE CHANGE PAS LES JETONS DÉJÀ ÉMIS. Le rôle est signé
+   * dans le JWT au moment du login (`AuthService.login`) : l'usager promu
+   * doit se RECONNECTER pour obtenir un jeton portant `role: ADMIN`. C'est la
+   * contrepartie d'un jeton autoportant, et elle est sans danger — un ancien
+   * jeton donne moins de droits, jamais plus.
+   *
+   * IDEMPOTENTE : relancée sur un compte déjà ADMIN, elle n'écrit rien et le
+   * signale. Ce n'est pas une erreur — le résultat attendu est atteint.
+   */
+  async promoteToAdmin(email: string): Promise<PromotionResult> {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      // Trois colonnes, et surtout PAS `passwordHash` : cette méthode est
+      // appelée depuis un terminal, dont la sortie finit dans un historique
+      // de commandes et parfois dans des journaux.
+      select: { id: true, email: true, role: true, deletedAt: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`Aucun utilisateur avec l'email ${email}`);
+    }
+
+    if (user.deletedAt !== null) {
+      // Promouvoir un compte supprimé produirait un administrateur qui ne
+      // peut pas se connecter (étape 5G) — un droit accordé à personne, et
+      // une surprise le jour où quelqu'un le restaurerait.
+      throw new BadRequestException(
+        `Le compte ${email} est supprimé : il ne peut pas être promu.`,
+      );
+    }
+
+    if (user.role === RoleEnum.ADMIN) {
+      return { email: user.email, role: user.role, dejaAdmin: true };
+    }
+
+    const promu = await this.prisma.user.update({
+      where: { id: user.id },
+      // `role` SEUL. Aucun autre champ n'est touché : ni l'email, ni le mot
+      // de passe, ni les préférences.
+      data: { role: RoleEnum.ADMIN },
+      select: { email: true, role: true },
+    });
+
+    return { email: promu.email, role: promu.role, dejaAdmin: false };
   }
 
   // Retire passwordHash avant de renvoyer l'utilisateur au controller.
