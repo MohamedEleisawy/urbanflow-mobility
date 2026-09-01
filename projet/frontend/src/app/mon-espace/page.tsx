@@ -7,6 +7,7 @@ import { Card } from "@/components/Card";
 import { Container } from "@/components/Container";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorMessage } from "@/components/ErrorMessage";
+import { AdressesFavorites } from "@/components/AdressesFavorites";
 import { ExportDonnees } from "@/components/ExportDonnees";
 import { Preferences } from "@/components/Preferences";
 import { RequireAuth } from "@/components/RequireAuth";
@@ -106,6 +107,12 @@ function ContenuEspace() {
               section reste affichée même si le chargement du suivi carbone
               ci-dessous échoue (bloc 5E-3). */}
           <Preferences />
+
+          {/* Adresses favorites (bloc 7). Section INDÉPENDANTE : elle a son
+              propre chargement et sa propre erreur, si bien qu'une panne de
+              `/users/me/addresses` ne fait disparaître ni les préférences
+              ci-dessus ni l'export ci-dessous. */}
+          <AdressesFavorites />
 
           {/* Export RGPD (bloc 5F). Indépendant du chargement du suivi
               carbone ci-dessous : l'usager doit pouvoir récupérer ses données

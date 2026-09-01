@@ -43,6 +43,14 @@ describe('GET /api/users/me/export (e2e)', () => {
       deletedAt: string | null;
     };
     preferences: { co2BudgetWeekly: number; theme: string } | null;
+    addresses: {
+      id: string;
+      type: string;
+      address: string;
+      latitude: number;
+      longitude: number;
+      createdAt: string;
+    }[];
     routes: {
       id: string;
       totalDistanceM: number;
@@ -241,7 +249,8 @@ describe('GET /api/users/me/export (e2e)', () => {
     it('porte un numéro de version et une date', async () => {
       const corps = (await exporter(jetonA)).body as Export;
 
-      expect(corps.version).toBe(1);
+      // VERSION 2 depuis le bloc 7 : `addresses` s'est ajoute au fichier.
+      expect(corps.version).toBe(2);
       // ISO 8601 : la sérialisation JSON d'une `Date`, déterministe.
       expect(corps.exportedAt).toMatch(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/);
     });
@@ -323,6 +332,7 @@ describe('GET /api/users/me/export (e2e)', () => {
       expect(corps.routes).toEqual([]);
       expect(corps.carbonRecords).toEqual([]);
       expect(corps.carbonBudgets).toEqual([]);
+      expect(corps.addresses).toEqual([]);
     });
   });
 
@@ -426,6 +436,7 @@ describe('GET /api/users/me/export (e2e)', () => {
       expect(corps).not.toHaveProperty('lines');
       expect(corps).not.toHaveProperty('networkLinks');
       expect(Object.keys(corps).sort()).toEqual([
+        'addresses',
         'carbonBudgets',
         'carbonRecords',
         'exportedAt',
@@ -434,6 +445,88 @@ describe('GET /api/users/me/export (e2e)', () => {
         'user',
         'version',
       ]);
+    });
+  });
+
+  // ===========================================================================
+  // Adresses favorites (bloc 7)
+  // ===========================================================================
+  describe('adresses favorites', () => {
+    const creerAdresse = (
+      jeton: string,
+      type: 'HOME' | 'WORK',
+      adresse: string,
+    ) =>
+      request(app.getHttpServer())
+        .post('/api/users/me/addresses')
+        .set('Authorization', `Bearer ${jeton}`)
+        .send({ type, address: adresse, latitude: 48.8566, longitude: 2.3522 })
+        .expect(201);
+
+    afterEach(async () => {
+      await prisma.favoriteAddress.deleteMany({
+        where: { userId: { in: [userA, userB] } },
+      });
+    });
+
+    it('A retrouve SES adresses dans son export', async () => {
+      await creerAdresse(jetonA, 'HOME', '12 rue des Lilas, Paris');
+
+      const corps = (await exporter(jetonA)).body as Export;
+
+      // Une adresse favorite DESIGNE LE DOMICILE d'une personne. L'omettre de
+      // l'export serait un manquement au RGPD, pas un oubli d'affichage.
+      expect(corps.addresses).toHaveLength(1);
+      expect(corps.addresses[0].address).toBe('12 rue des Lilas, Paris');
+      expect(corps.addresses[0].type).toBe('HOME');
+      expect(corps.addresses[0].latitude).toBe(48.8566);
+    });
+
+    it('B ne recoit JAMAIS les adresses de A', async () => {
+      await creerAdresse(jetonA, 'HOME', '12 rue des Lilas, Paris');
+      await creerAdresse(jetonB, 'WORK', '3 avenue de la Gare, Lyon');
+
+      const deB = (await exporter(jetonB)).body as Export;
+
+      // LA GARANTIE CENTRALE DE L'EXPORT : l'identifiant vient du JETON, et
+      // de nulle part ailleurs. B ne peut pas atteindre le domicile de A.
+      expect(deB.addresses).toHaveLength(1);
+      expect(deB.addresses[0].address).toBe('3 avenue de la Gare, Lyon');
+      expect(JSON.stringify(deB)).not.toContain('rue des Lilas');
+    });
+
+    it("n'exporte AUCUN champ au-dela du contrat", async () => {
+      await creerAdresse(jetonA, 'HOME', '12 rue des Lilas, Paris');
+
+      const corps = (await exporter(jetonA)).body as Export;
+
+      expect(Object.keys(corps.addresses[0]).sort()).toEqual([
+        'address',
+        'createdAt',
+        'id',
+        'latitude',
+        'longitude',
+        'type',
+      ]);
+      // `userId` est deja dans `user.id` : le repeter sur chaque ligne
+      // n'apprendrait rien.
+      expect(corps.addresses[0]).not.toHaveProperty('userId');
+    });
+
+    it("l'export dit EXACTEMENT la meme chose que l'ecran", async () => {
+      await creerAdresse(jetonA, 'HOME', '12 rue des Lilas, Paris');
+      await creerAdresse(jetonA, 'WORK', '3 avenue de la Gare, Lyon');
+
+      const parLEcran = await request(app.getHttpServer())
+        .get('/api/users/me/addresses')
+        .set('Authorization', `Bearer ${jetonA}`)
+        .expect(200);
+
+      const corps = (await exporter(jetonA)).body as Export;
+
+      // Les deux passent par `AddressesService.findAllForUser` : une colonne
+      // ajoutee a l'un ne peut pas manquer a l'autre.
+      expect(corps.addresses).toEqual(parLEcran.body);
     });
   });
 });

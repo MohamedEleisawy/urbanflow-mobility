@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { AddressesService } from '../addresses/addresses.service';
 import { UsersService } from './users.service';
 
 // PrismaService n'est pas une vraie base de données ici : on simule
@@ -12,6 +13,7 @@ import { UsersService } from './users.service';
 // user.findUnique). C'est un test unitaire, pas un test d'intégration.
 describe('UsersService', () => {
   let service: UsersService;
+  let addressesService: { findAllForUser: jest.Mock };
   let prisma: {
     user: {
       create: jest.Mock;
@@ -50,7 +52,16 @@ describe('UsersService', () => {
       carbonRecord: { findMany: jest.fn() },
       carbonBudget: { findMany: jest.fn() },
     };
-    service = new UsersService(prisma as unknown as PrismaService);
+
+    // Bloc 7 : l'export délègue la lecture des adresses. Simulé ici — c'est
+    // `addresses.service.spec.ts` qui éprouve son contenu ; ce fichier ne
+    // vérifie que le fait qu'il soit APPELÉ, et avec le bon identifiant.
+    addressesService = { findAllForUser: jest.fn().mockResolvedValue([]) };
+
+    service = new UsersService(
+      prisma as unknown as PrismaService,
+      addressesService as unknown as AddressesService,
+    );
   });
 
   /// Forme des arguments passés à Prisma, pour que les assertions restent
@@ -364,11 +375,15 @@ describe('UsersService', () => {
 
       // Un fichier conservé des années doit pouvoir être identifié : sans
       // numéro de version, impossible de savoir comment le relire.
-      expect(resultat.version).toBe(1);
+      //
+      // VERSION 2 depuis le bloc 7 : `addresses` s'est ajouté. Le numéro a
+      // été incrémenté plutôt que laissé à 1 — c'est exactement ce que ce
+      // champ existe pour permettre.
+      expect(resultat.version).toBe(2);
       expect(resultat.exportedAt).toBeInstanceOf(Date);
     });
 
-    it('expose les six sections attendues, et rien de plus', async () => {
+    it('expose les sept sections attendues, et rien de plus', async () => {
       preparer();
 
       const resultat = await service.exportPersonalData(USAGER);
@@ -376,6 +391,7 @@ describe('UsersService', () => {
       // Ni `alerts`, ni `stops`, ni `lines` : ce sont des données de
       // référence GLOBALES, identiques pour tout le monde.
       expect(Object.keys(resultat).sort()).toEqual([
+        'addresses',
         'carbonBudgets',
         'carbonRecords',
         'exportedAt',
@@ -384,6 +400,60 @@ describe('UsersService', () => {
         'user',
         'version',
       ]);
+    });
+
+    describe('adresses favorites (bloc 7)', () => {
+      it('les demande au service qui en est PROPRIÉTAIRE', async () => {
+        preparer();
+
+        await service.exportPersonalData(USAGER);
+
+        // Recopier ici un `findMany` créerait un second endroit décidant
+        // quelles colonnes d'une adresse quittent le serveur.
+        expect(addressesService.findAllForUser).toHaveBeenCalledWith(USAGER);
+        expect(addressesService.findAllForUser).toHaveBeenCalledTimes(1);
+      });
+
+      it("n'interroge JAMAIS la table des adresses en direct", async () => {
+        preparer();
+
+        await service.exportPersonalData(USAGER);
+
+        // `prisma.favoriteAddress` n'est même pas dans le double de Prisma :
+        // y toucher lèverait. Le test le dit explicitement.
+        expect(prisma).not.toHaveProperty('favoriteAddress');
+      });
+
+      it('inclut les adresses rendues', async () => {
+        preparer();
+        addressesService.findAllForUser.mockResolvedValue([
+          {
+            id: 'a1',
+            type: 'HOME',
+            address: '12 rue des Lilas',
+            latitude: 48.8566,
+            longitude: 2.3522,
+            createdAt: new Date('2026-08-30T10:00:00.000Z'),
+          },
+        ]);
+
+        const resultat = await service.exportPersonalData(USAGER);
+
+        // Une adresse DÉSIGNE LE DOMICILE d'une personne : l'omettre de
+        // l'export serait un manquement RGPD, pas un oubli d'affichage.
+        expect(resultat.addresses).toHaveLength(1);
+        expect(resultat.addresses[0].address).toBe('12 rue des Lilas');
+      });
+
+      it("rend un tableau VIDE quand il n'y en a aucune", async () => {
+        preparer();
+
+        const resultat = await service.exportPersonalData(USAGER);
+
+        // Jamais `null` : une section absente et une section vide ne se
+        // relisent pas de la même façon dans un fichier archivé.
+        expect(resultat.addresses).toEqual([]);
+      });
     });
 
     it("rend `preferences: null` quand il n'y en a aucune", async () => {

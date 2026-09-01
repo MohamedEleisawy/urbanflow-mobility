@@ -19,6 +19,7 @@ export interface PromotionResult {
 }
 import { Prisma, RoleEnum } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { AddressesService } from '../addresses/addresses.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { PersonalDataExportDto } from './dto/personal-data-export.dto';
@@ -26,7 +27,12 @@ import { hashPassword } from '../common/crypto/password.util';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Bloc 7 : l'export RGPD lit les adresses favorites par le service qui
+    // en est propriétaire, jamais par une requête recopiée.
+    private readonly addressesService: AddressesService,
+  ) {}
 
   async create(dto: CreateUserDto) {
     const passwordHash = hashPassword(dto.password);
@@ -183,7 +189,7 @@ export class UsersService {
    * `select` imbriqué, et non par une requête par trajet.
    */
   async exportPersonalData(userId: string): Promise<PersonalDataExportDto> {
-    const [user, preferences, routes, carbonRecords, carbonBudgets] =
+    const [user, preferences, addresses, routes, carbonRecords, carbonBudgets] =
       await Promise.all([
         this.prisma.user.findUnique({
           where: { id: userId },
@@ -209,6 +215,15 @@ export class UsersService {
             theme: true,
           },
         }),
+        // ⚠️ DÉLÉGUÉ À `AddressesService`, et non recopié ici.
+        //
+        // Un `findMany` de plus dans ce fichier aurait fonctionné — et aurait
+        // créé un SECOND endroit décidant quelles colonnes d'une adresse
+        // quittent le serveur. Le jour où une colonne s'ajouterait, l'un des
+        // deux l'oublierait. `findAllForUser` est déjà la réponse de
+        // `GET /users/me/addresses` : l'export dit donc exactement la même
+        // chose que l'écran, par construction.
+        this.addressesService.findAllForUser(userId),
 
         this.prisma.route.findMany({
           // ⚠️ `Route.userId` est NULLABLE : une recherche faite sans compte
@@ -283,10 +298,15 @@ export class UsersService {
     return {
       // Un fichier que l'usager conservera : sa structure doit pouvoir être
       // identifiée dans plusieurs années.
-      version: 1,
+      // VERSION 2 : `addresses` s'est ajouté au bloc 7. C'est précisément
+      // l'usage prévu par ce champ — un fichier `version: 1` téléchargé
+      // avant cette étape reste lisible, et son absence d'adresses
+      // s'explique.
+      version: 2,
       exportedAt: new Date(),
       user,
       preferences,
+      addresses,
       routes,
       carbonRecords,
       // TOUJOURS PRÉSENT, même vide. Aucun code n'écrit dans `CarbonBudget`

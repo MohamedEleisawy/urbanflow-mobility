@@ -11,6 +11,8 @@ import { Spinner } from "@/components/Spinner";
 import { messageDErreur } from "@/lib/api";
 import { indexerArrets, pointDepuisArret, traceDepuisSegments } from "@/lib/carte";
 import { ErreurGeolocalisation, positionActuelle, type Coordonnees } from "@/lib/geolocalisation";
+import { listerAdresses } from "@/lib/adresses-api";
+import type { FavoriteAddress, FavoriteAddressType } from "@/lib/types";
 import {
   enregistrerItineraire,
   listerArrets,
@@ -49,6 +51,24 @@ import type { CarbonResult, Itinerary, ItineraryCriterion, Stop } from "@/lib/ty
 const POSITION = "__ma-position__";
 
 /**
+ * Préfixe des valeurs désignant une adresse favorite (bloc 7-8).
+ *
+ * `adresse:<uuid>`. Un identifiant d'arrêt est un UUID nu : la collision est
+ * donc impossible, comme pour `POSITION`.
+ *
+ * Un préfixe plutôt qu'une seconde liste déroulante : l'usager choisit UN
+ * point de départ, et il doit le faire au même endroit quelle que soit sa
+ * nature — un arrêt, sa position, ou son domicile.
+ */
+const PREFIXE_ADRESSE = "adresse:";
+
+/// Libellés français des deux emplacements. `HOME` ne se montre pas.
+const LIBELLES_ADRESSES: Record<FavoriteAddressType, string> = {
+  HOME: "Domicile",
+  WORK: "Travail",
+};
+
+/**
  * Où en est la demande de position.
  *
  * « echec » conserve le message ET la cause : un refus de permission se
@@ -83,6 +103,15 @@ type EtatEnregistrement =
   { statut: "envoi" } | { statut: "enregistre" } | { statut: "echec"; message: string };
 
 export default function RecherchePage() {
+  /**
+   * Adresses favorites de l'usager connecté (bloc 7-8).
+   *
+   * ⚠️ TABLEAU VIDE PAR DÉFAUT, jamais `null` : un visiteur non connecté n'a
+   * pas d'adresses, et ce n'est pas un chargement en cours. L'écran ne doit
+   * RIEN attendre pour lui — la recherche reste en libre accès, comme le
+   * dossier l'exige.
+   */
+  const [adressesFav, setAdressesFav] = useState<FavoriteAddress[]>([]);
   const [arrets, setArrets] = useState<Stop[] | null>(null);
   const [erreurArrets, setErreurArrets] = useState<string | null>(null);
 
@@ -127,6 +156,31 @@ export default function RecherchePage() {
   } | null>(null);
 
   const { statut: statutAuth, jeton } = useAuth();
+
+  useEffect(() => {
+    // Aucun jeton : rien à demander. Un visiteur ne déclenche donc AUCUN
+    // appel supplémentaire sur cette page publique.
+    if (!jeton) {
+      setAdressesFav([]);
+      return;
+    }
+
+    const controleur = new AbortController();
+
+    listerAdresses(jeton, controleur.signal)
+      .then(setAdressesFav)
+      .catch(() => {
+        // ÉCHEC SILENCIEUX, et c'est délibéré : les adresses favorites sont
+        // un RACCOURCI. Leur absence n'empêche ni de chercher un itinéraire,
+        // ni de choisir un arrêt. Afficher une erreur en tête d'une page
+        // publique pour un confort indisponible serait disproportionné.
+        setAdressesFav([]);
+      });
+
+    return () => {
+      controleur.abort();
+    };
+  }, [jeton]);
 
   // --- Données géographiques (bloc 5B) --------------------------------------
   //
@@ -254,14 +308,24 @@ export default function RecherchePage() {
     // L'origine est SOIT un arrêt choisi, SOIT la position de l'usager. Dans
     // les deux cas, seules des coordonnées partent au backend : le contrat de
     // `POST /api/routes/search` n'a jamais accepté autre chose.
-    const origine: Coordonnees | undefined =
-      depart === POSITION
-        ? position.statut === "ok"
-          ? position.coordonnees
-          : undefined
-        : arrets?.find((a) => a.id === depart);
+    // UN SEUL ENDROIT traduit un choix en coordonnées, et il sert aux DEUX
+    // champs. C'est ce qui garantit qu'« arrivée = Travail » ne peut pas
+    // recevoir par accident les coordonnées du départ : la fonction ne
+    // connaît que la valeur qu'on lui passe.
+    const resoudre = (choix: Choix): Coordonnees | undefined => {
+      if (choix === POSITION) {
+        return position.statut === "ok" ? position.coordonnees : undefined;
+      }
 
-    const destination = arrets?.find((a) => a.id === arrivee);
+      if (choix.startsWith(PREFIXE_ADRESSE)) {
+        return adressesFav.find((a) => a.id === choix.slice(PREFIXE_ADRESSE.length));
+      }
+
+      return arrets?.find((a) => a.id === choix);
+    };
+
+    const origine = resoudre(depart);
+    const destination = resoudre(arrivee);
 
     if (!origine || !destination) {
       return;
@@ -388,6 +452,7 @@ export default function RecherchePage() {
                       libelle="Départ"
                       valeur={depart}
                       arrets={arrets}
+                      adresses={adressesFav}
                       onChange={choisirDepart}
                       decritPar={memeArret ? idErreur : undefined}
                       // Une OPTION de la liste, et non un bouton à côté :
@@ -402,6 +467,7 @@ export default function RecherchePage() {
                     libelle="Arrivée"
                     valeur={arrivee}
                     arrets={arrets}
+                    adresses={adressesFav}
                     onChange={setArrivee}
                     decritPar={memeArret ? idErreur : undefined}
                   />
@@ -481,6 +547,7 @@ function ChoixArret({
   onChange,
   decritPar,
   optionPosition = false,
+  adresses = [],
 }: {
   id: string;
   libelle: string;
@@ -490,6 +557,13 @@ function ChoixArret({
   decritPar?: string;
   /** Propose « Ma position » en tête de liste (bloc 5D-1, départ seulement). */
   optionPosition?: boolean;
+  /**
+   * Adresses favorites de l'usager connecté (bloc 7-8).
+   *
+   * Proposées aux DEUX champs : on part de chez soi le matin, on y rentre le
+   * soir. N'en offrir qu'au départ obligerait à ressaisir le retour.
+   */
+  adresses?: FavoriteAddress[];
 }) {
   return (
     <div>
@@ -510,6 +584,18 @@ function ChoixArret({
           // téléphone, et le plus coûteux à atteindre s'il est enterré sous
           // des milliers d'arrêts.
           <option value={POSITION}>Ma position actuelle</option>
+        )}
+        {adresses.length > 0 && (
+          // `<optgroup>` : un lecteur d'écran annonce le nom du groupe avant
+          // chaque option, si bien que « Domicile » ne se confond pas avec un
+          // arrêt qui porterait le même nom.
+          <optgroup label="Mes adresses favorites">
+            {adresses.map((adresse) => (
+              <option key={adresse.id} value={`${PREFIXE_ADRESSE}${adresse.id}`}>
+                {LIBELLES_ADRESSES[adresse.type]} — {adresse.address}
+              </option>
+            ))}
+          </optgroup>
         )}
         {arrets.map((arret) => (
           <option key={arret.id} value={arret.id}>

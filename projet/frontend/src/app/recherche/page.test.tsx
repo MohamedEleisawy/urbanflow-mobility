@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RecherchePage from "./page";
 import { AuthProvider } from "@/components/AuthProvider";
 import { ApiError, NetworkError } from "@/lib/api";
-import type { CarbonResult, Itinerary, Stop, User } from "@/lib/types";
+import type { CarbonResult, FavoriteAddress, Itinerary, Stop, User } from "@/lib/types";
 
 // Seul le RÉSEAU est simulé. Le formulaire, son état, sa validation et le
 // rendu des résultats sont les vrais : c'est précisément ce qu'on veut
@@ -41,6 +41,13 @@ vi.mock("@/components/CarteLeaflet", () => ({
 
 // Le VRAI AuthProvider est utilisé, avec le VRAI localStorage : c'est lui qui
 // décide si l'enregistrement est proposé.
+vi.mock("@/lib/adresses-api", () => ({
+  listerAdresses: vi.fn(),
+  creerAdresse: vi.fn(),
+  modifierAdresse: vi.fn(),
+  supprimerAdresse: vi.fn(),
+}));
+
 vi.mock("@/lib/auth-api", () => ({
   inscrire: vi.fn(),
   connecter: vi.fn(),
@@ -59,6 +66,7 @@ const { listerArrets, rechercherItineraires, enregistrerItineraire } =
   await import("@/lib/itineraires-api");
 const { estimerCarbone } = await import("@/lib/carbone-api");
 const { utilisateurCourant } = await import("@/lib/auth-api");
+const { listerAdresses } = await import("@/lib/adresses-api");
 
 const PROFIL: User = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -209,6 +217,10 @@ describe("/recherche", () => {
     vi.mocked(estimerCarbone).mockReset();
     vi.mocked(enregistrerItineraire).mockReset();
     vi.mocked(utilisateurCourant).mockReset();
+    vi.mocked(listerAdresses).mockReset();
+    // Par defaut : aucune adresse favorite. Les tests anterieurs au bloc 7
+    // doivent se comporter exactement comme avant.
+    vi.mocked(listerAdresses).mockResolvedValue([]);
     vi.mocked(listerArrets).mockResolvedValue(ARRETS);
     // Par défaut, l'estimation n'aboutit jamais : les tests qui ne parlent
     // pas de carbone ne doivent pas dépendre de son résultat.
@@ -1388,6 +1400,188 @@ describe("/recherche", () => {
       expect(screen.getByRole("button", { name: /rechercher/i }).hasAttribute("disabled")).toBe(
         false,
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Adresses favorites (bloc 7-8)
+  // ---------------------------------------------------------------------------
+  describe("adresses favorites", () => {
+    const DOMICILE: FavoriteAddress = {
+      id: "aaaaaaaa-0000-0000-0000-000000000001",
+      type: "HOME",
+      address: "12 rue des Lilas, Paris",
+      latitude: 48.11,
+      longitude: 2.11,
+      createdAt: "2026-08-30T10:00:00.000Z",
+    };
+
+    const TRAVAIL: FavoriteAddress = {
+      id: "bbbbbbbb-0000-0000-0000-000000000002",
+      type: "WORK",
+      address: "3 avenue de la Gare, Lyon",
+      latitude: 45.22,
+      longitude: 4.22,
+      createdAt: "2026-08-30T11:00:00.000Z",
+    };
+
+    const avecAdresses = () => {
+      vi.mocked(listerAdresses).mockResolvedValue([DOMICILE, TRAVAIL]);
+      authentifier();
+      rendre();
+    };
+
+    it("un VISITEUR ne voit aucune adresse, et rien n'est demande", async () => {
+      rendre();
+      await screen.findByLabelText("Depart".replace("Depart", "Départ"));
+
+      // La recherche reste en libre acces : un visiteur ne doit declencher
+      // AUCUN appel supplementaire sur cette page publique.
+      expect(listerAdresses).not.toHaveBeenCalled();
+      expect(screen.queryByRole("group", { name: "Mes adresses favorites" })).toBeNull();
+    });
+
+    it("un usager connecte voit ses adresses dans les DEUX listes", async () => {
+      avecAdresses();
+
+      // On part de chez soi le matin, on y rentre le soir : n'en offrir qu'au
+      // depart obligerait a ressaisir le retour.
+      await waitFor(() => {
+        expect(screen.getAllByRole("group", { name: "Mes adresses favorites" })).toHaveLength(2);
+      });
+      expect(screen.getAllByRole("option", { name: /Domicile/ })).toHaveLength(2);
+      expect(screen.getAllByRole("option", { name: /Travail/ })).toHaveLength(2);
+    });
+
+    it("affiche le LIBELLE francais, jamais HOME ni WORK", async () => {
+      avecAdresses();
+
+      await waitFor(() => {
+        expect(screen.getAllByRole("option", { name: /Domicile — 12 rue des Lilas/ })).toHaveLength(
+          2,
+        );
+      });
+      expect(screen.queryByRole("option", { name: /HOME/ })).toBeNull();
+    });
+
+    it("DOMICILE en depart envoie SES coordonnees", async () => {
+      avecAdresses();
+      vi.mocked(rechercherItineraires).mockResolvedValue([]);
+
+      const utilisateur = userEvent.setup();
+      await waitFor(() => {
+        expect(screen.getAllByRole("option", { name: /Domicile/ })).toHaveLength(2);
+      });
+
+      await utilisateur.selectOptions(
+        screen.getByLabelText("Départ"),
+        screen.getAllByRole("option", { name: /Domicile/ })[0],
+      );
+      await utilisateur.selectOptions(
+        screen.getByLabelText("Arrivée"),
+        screen.getAllByRole("option", { name: /Bastille/ })[1],
+      );
+      await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
+
+      await waitFor(() => {
+        expect(rechercherItineraires).toHaveBeenCalled();
+      });
+      const corps = vi.mocked(rechercherItineraires).mock.calls[0][0];
+      expect(corps.fromLat).toBe(48.11);
+      expect(corps.fromLon).toBe(2.11);
+      // ⚠️ ET SURTOUT PAS celles du travail.
+      expect(corps.fromLat).not.toBe(45.22);
+    });
+
+    it("TRAVAIL en arrivee envoie SES coordonnees, pas celles du depart", async () => {
+      avecAdresses();
+      vi.mocked(rechercherItineraires).mockResolvedValue([]);
+
+      const utilisateur = userEvent.setup();
+      await waitFor(() => {
+        expect(screen.getAllByRole("option", { name: /Travail/ })).toHaveLength(2);
+      });
+
+      await utilisateur.selectOptions(
+        screen.getByLabelText("Départ"),
+        screen.getAllByRole("option", { name: /Domicile/ })[0],
+      );
+      await utilisateur.selectOptions(
+        screen.getByLabelText("Arrivée"),
+        screen.getAllByRole("option", { name: /Travail/ })[1],
+      );
+      await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
+
+      await waitFor(() => {
+        expect(rechercherItineraires).toHaveBeenCalled();
+      });
+
+      // LE TEST QUI COMPTE : les deux points sont resolus SEPAREMENT. Une
+      // inversion enverrait le domicile en arrivee sans que rien ne le dise.
+      expect(vi.mocked(rechercherItineraires).mock.calls[0][0]).toEqual({
+        fromLat: 48.11,
+        fromLon: 2.11,
+        toLat: 45.22,
+        toLon: 4.22,
+      });
+    });
+
+    it("n'envoie JAMAIS d'identifiant d'usager", async () => {
+      avecAdresses();
+      vi.mocked(rechercherItineraires).mockResolvedValue([]);
+
+      const utilisateur = userEvent.setup();
+      await waitFor(() => {
+        expect(screen.getAllByRole("option", { name: /Domicile/ })).toHaveLength(2);
+      });
+
+      await utilisateur.selectOptions(
+        screen.getByLabelText("Départ"),
+        screen.getAllByRole("option", { name: /Domicile/ })[0],
+      );
+      await utilisateur.selectOptions(
+        screen.getByLabelText("Arrivée"),
+        screen.getAllByRole("option", { name: /Travail/ })[1],
+      );
+      await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
+
+      await waitFor(() => {
+        expect(rechercherItineraires).toHaveBeenCalled();
+      });
+      // `POST /routes/search` n'a jamais accepte autre chose que quatre
+      // coordonnees. Aucun nouvel endpoint, aucun champ supplementaire.
+      expect(Object.keys(vi.mocked(rechercherItineraires).mock.calls[0][0]).sort()).toEqual([
+        "fromLat",
+        "fromLon",
+        "toLat",
+        "toLon",
+      ]);
+    });
+
+    it("CONSERVE les arrets et « Ma position »", async () => {
+      avecAdresses();
+
+      await waitFor(() => {
+        expect(screen.getAllByRole("option", { name: /Domicile/ })).toHaveLength(2);
+      });
+
+      // Les adresses S'AJOUTENT : elles ne remplacent rien.
+      expect(screen.getAllByRole("option", { name: /Gare du Nord/ }).length).toBeGreaterThan(0);
+      expect(screen.getByRole("option", { name: /Ma position actuelle/ })).toBeDefined();
+    });
+
+    it("un echec de chargement des adresses NE CASSE PAS la recherche", async () => {
+      vi.mocked(listerAdresses).mockRejectedValue(new Error("indisponible"));
+      authentifier();
+      rendre();
+
+      // Les adresses favorites sont un RACCOURCI : leur absence n'empeche ni
+      // de chercher, ni de choisir un arret. Aucune erreur ne s'affiche.
+      await waitFor(() => {
+        expect(screen.getAllByRole("option", { name: /Gare du Nord/ }).length).toBeGreaterThan(0);
+      });
+      expect(screen.queryByRole("group", { name: "Mes adresses favorites" })).toBeNull();
+      expect(screen.getByRole("button", { name: /rechercher/i })).toBeDefined();
     });
   });
 });

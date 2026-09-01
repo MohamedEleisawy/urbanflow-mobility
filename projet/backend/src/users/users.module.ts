@@ -2,11 +2,15 @@ import { Module } from '@nestjs/common';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { AuthModule } from '../auth/auth.module';
+import { AddressesModule } from '../addresses/addresses.module';
 
 @Module({
   // AuthModule est importé pour son export JwtService, dont JwtAuthGuard a
   // besoin pour vérifier les tokens sur la route protégée GET /users/me.
-  imports: [AuthModule],
+  // `AddressesModule` exporte `AddressesService`, dont l'export RGPD a
+  // besoin (bloc 7). Aucun cycle : `AddressesModule` n'importe que
+  // `AuthModule`.
+  imports: [AuthModule, AddressesModule],
   controllers: [UsersController],
   providers: [UsersService],
   // Exporté depuis l'étape 6-4 : `AdminModule` réutilise

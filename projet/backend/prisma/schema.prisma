@@ -44,6 +44,23 @@ enum LanguageEnum {
   EN
 }
 
+/// Type d'adresse favorite (bloc 7).
+///
+/// DEUX VALEURS, ET C'EST VOULU. Le dossier nomme exactement celles-ci :
+/// « mémoriser des adresses favorites (Domicile, Travail) » (§3.2.1).
+///
+/// Un troisième cas « OTHER » aurait entraîné trois décisions qu'aucune
+/// source ne tranche : un libellé libre à valider, une limite maximale à
+/// justifier, et une unicité PARTIELLE que Prisma ne sait pas exprimer
+/// (« unique seulement si type ≠ OTHER » demanderait un index SQL brut).
+///
+/// Avec deux valeurs, la limite de deux adresses par compte n'est pas une
+/// règle arbitraire posée dans le code : elle découle de `@@unique`.
+enum FavoriteAddressType {
+  HOME
+  WORK
+}
+
 enum ModeTransport {
   WALK
   BUS
@@ -74,6 +91,7 @@ model User {
   deletedAt    DateTime?
 
   preferences   UserPreferences?
+  addresses     FavoriteAddress[]
   carbonRecords CarbonRecord[]
   carbonBudgets CarbonBudget[]
   routes        Route[]
@@ -96,6 +114,67 @@ model UserPreferences {
   @@map("user_preferences")
 }
 
+/// Adresse favorite d'un usager (bloc 7).
+///
+/// Le dossier la place dans l'espace personnel : « Gérer ses préférences :
+/// Permet de mémoriser des adresses favorites (Domicile, Travail) ou de
+/// définir un mode de transport privilégié pour accélérer les recherches. »
+///
+/// ═══ UNE TABLE À PART, PAS DEUX COLONNES DANS UserPreferences ═══
+///
+/// Coller `domicileLat`, `domicileLng`, `domicileAdresse`, `travailLat`… dans
+/// les préférences aurait fait six colonnes nullables décrivant deux choses
+/// de même nature. Une table les décrit une fois.
+///
+/// ═══ RELIÉE DIRECTEMENT À User ═══
+///
+/// Une adresse est une DONNÉE PERSONNELLE — la plus sensible du projet, sans
+/// doute : elle dit où quelqu'un habite. Elle appartient donc au compte, pas
+/// aux préférences, et l'ownership se lit sur cette table sans jointure.
+///
+/// `onDelete: Cascade` comme les quatre autres relations de `User`. Il ne se
+/// déclenche JAMAIS en pratique : la suppression de compte est LOGIQUE
+/// (étape 5G), aucune ligne n'est détruite. Le cascade n'existe que pour le
+/// jour où une suppression physique serait décidée — et il évite alors une
+/// ligne orpheline pointant vers un compte disparu.
+model FavoriteAddress {
+  id String @id @default(uuid()) @db.Uuid
+
+  type FavoriteAddressType
+
+  /// Adresse telle que l'usager l'a saisie — « 12 rue des Lilas, Paris ».
+  ///
+  /// AUCUN GÉOCODAGE : le projet n'appelle aucun service d'adresses, et en
+  /// inventer un ici ajouterait une dépendance externe hors périmètre. Le
+  /// texte et les coordonnées sont donc saisis ensemble, et conservés
+  /// exactement tels qu'envoyés.
+  address String
+
+  /// Coordonnées, mêmes bornes que partout ailleurs : [-90, 90] et
+  /// [-180, 180], vérifiées par `@IsLatitude` / `@IsLongitude` au DTO.
+  latitude  Float
+  longitude Float
+
+  /// Seule date du modèle. `User.createdAt` est le précédent du schéma, et
+  /// l'export RGPD a besoin de dire QUAND une donnée a été enregistrée.
+  ///
+  /// Pas d'`updatedAt` : aucun modèle du projet n'en porte, et personne ne
+  /// lirait celui-ci. Une colonne sans lecteur est une colonne à maintenir.
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @db.Uuid
+
+  /// UN SEUL DOMICILE ET UN SEUL TRAVAIL PAR COMPTE.
+  ///
+  /// La contrainte vit dans la BASE, pas seulement dans le service : deux
+  /// requêtes simultanées ne peuvent pas créer deux domiciles en se croisant
+  /// entre le `findFirst` et le `create`. C'est aussi ce qui plafonne le
+  /// nombre d'adresses à deux, sans compteur à écrire nulle part.
+  @@unique([userId, type])
+  @@map("favorite_addresses")
+}
+
 // -----------------------------------------------------------------------------
 // Mobilité — itinéraires
 // -----------------------------------------------------------------------------
@@ -104,8 +183,8 @@ model Route {
   id String @id @default(uuid()) @db.Uuid
 
   // GeoPoint "origin" aplati (voir décision en tête de fichier).
-  originLat Float
-  originLng Float
+  originLat      Float
+  originLng      Float
   // GeoPoint "destination" aplati.
   destinationLat Float
   destinationLng Float
@@ -114,8 +193,8 @@ model Route {
   totalDurationMin Int
   totalDistanceM   Int
   // 0 = voiture individuelle, 100 = mobilité douce (cf. note du diagramme).
-  ecoScore       Float
-  carbonEstimate Float
+  ecoScore         Float
+  carbonEstimate   Float
 
   // Usager qui a enregistré cet itinéraire dans son historique.
   //

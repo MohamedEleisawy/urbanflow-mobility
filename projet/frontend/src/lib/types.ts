@@ -376,3 +376,37 @@ export interface AdminStats {
   /** Trié par le backend : du mode le plus employé au moins employé. */
   modeUsage: AdminModeUsage[];
 }
+
+// ---------------------------------------------------------------------------
+// Adresses favorites (bloc 7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Emplacement d'une adresse favorite (`enum FavoriteAddressType`).
+ *
+ * DEUX VALEURS, et deux seulement — celles que le dossier nomme :
+ * « mémoriser des adresses favorites (Domicile, Travail) » (§3.2.1).
+ *
+ * L'enum plutôt qu'un libellé libre : le frontend identifie le domicile par
+ * une VALEUR, jamais en comparant « Domicile » à « domicile » ou « Maison ».
+ */
+export type FavoriteAddressType = "HOME" | "WORK";
+
+/**
+ * Adresse favorite (`GET /api/users/me/addresses`).
+ *
+ * ⚠️ PAS DE `userId` : la route est `/me`, ces adresses sont forcément
+ * celles de l'usager connecté. Le backend ne le sélectionne même pas.
+ *
+ * `address` est le texte SAISI par l'usager, conservé tel quel — aucun
+ * géocodage n'a lieu nulle part dans le projet. `latitude` et `longitude`
+ * sont ce que la recherche d'itinéraire consomme réellement.
+ */
+export interface FavoriteAddress {
+  id: string;
+  type: FavoriteAddressType;
+  address: string;
+  latitude: number;
+  longitude: number;
+  createdAt: string;
+}

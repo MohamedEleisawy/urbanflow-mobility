@@ -1,4 +1,5 @@
 import {
+  FavoriteAddressType,
   LanguageEnum,
   ModeTransport,
   RoleEnum,
@@ -123,6 +124,26 @@ export interface ExportedCarbonBudgetDto {
 }
 
 /**
+ * Adresse favorite exportée (bloc 7).
+ *
+ * UNE ADRESSE EST UNE DONNEE PERSONNELLE — au sens plein : elle désigne le
+ * domicile d'une personne. Elle DOIT donc figurer dans l'export RGPD, au même
+ * titre que les trajets.
+ *
+ * `userId` en est absent : le fichier entier appartient à un seul compte, dont
+ * l'identifiant figure déjà dans `user.id`. Le répéter sur chaque ligne
+ * n'apprendrait rien.
+ */
+export interface ExportedAddressDto {
+  id: string;
+  type: FavoriteAddressType;
+  address: string;
+  latitude: number;
+  longitude: number;
+  createdAt: Date;
+}
+
+/**
  * Le fichier complet.
  *
  * ⚠️ `version` EN TÊTE, ET CE N'EST PAS DÉCORATIF. Un export est un fichier
@@ -130,6 +151,11 @@ export interface ExportedCarbonBudgetDto {
  * ce numéro sera le seul moyen de savoir comment relire un fichier ancien.
  * L'ajouter après coup serait impossible : les fichiers déjà téléchargés ne
  * l'auraient pas.
+ *
+ * ⚠️ VERSION 2 depuis le bloc 7 : le champ `addresses` s'est ajouté. Un
+ * fichier portant `version: 1` n'en contient pas — ce n'est pas une donnée
+ * manquante, c'est un export antérieur à la fonctionnalité. C'est
+ * exactement le cas que ce numéro existait pour distinguer.
  */
 export interface PersonalDataExportDto {
   version: number;
@@ -137,6 +163,8 @@ export interface PersonalDataExportDto {
   exportedAt: Date;
   user: ExportedUserDto;
   preferences: ExportedPreferencesDto | null;
+  /** Adresses favorites — ajoutées en VERSION 2 (bloc 7). */
+  addresses: ExportedAddressDto[];
   routes: ExportedRouteDto[];
   carbonRecords: ExportedCarbonRecordDto[];
   carbonBudgets: ExportedCarbonBudgetDto[];

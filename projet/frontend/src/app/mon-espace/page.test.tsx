@@ -21,6 +21,15 @@ vi.mock("@/lib/auth-api", () => ({
   utilisateurCourant: vi.fn(),
 }));
 
+// Bloc 7 : la section « Mes adresses favorites » vit dans cette page. Le
+// module est simulé pour qu'aucun appel réseau réel ne parte d'un test.
+vi.mock("@/lib/adresses-api", () => ({
+  listerAdresses: vi.fn().mockResolvedValue([]),
+  creerAdresse: vi.fn(),
+  modifierAdresse: vi.fn(),
+  supprimerAdresse: vi.fn(),
+}));
+
 vi.mock("@/lib/espace-api", () => ({
   suiviCarbone: vi.fn(),
   budgetHebdomadaire: vi.fn(),
