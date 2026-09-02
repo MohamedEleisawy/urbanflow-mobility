@@ -4,17 +4,28 @@
 // Ce module ne contient AUCUN code Leaflet. Il traduit les données du backend
 // en points et en tracés — des nombres, testables sans DOM ni navigateur.
 //
-// ⚠️ CE QUE LE BACKEND NE FOURNIT PAS. Il n'existe nulle part de géométrie de
-// voie : ni `shapes.txt` GTFS, ni colonne PostGIS de type `LineString`, ni
-// champ `geometry` sur `NetworkLink`. Les seules coordonnées du modèle sont
-// `Stop.latitude` / `Stop.longitude`.
+// ⚠️ CE QUI A CHANGÉ EN PHASE 4. Le commentaire d'origine disait, à juste
+// titre pour l'époque : « il n'existe nulle part de géométrie de voie ». C'est
+// désormais FAUX. `NetworkLink.geometry` porte le tracé réel issu de
+// `shapes.txt`, et chaque segment d'itinéraire le transporte jusqu'ici.
 //
-// Un tracé ne peut donc relier que des ARRÊTS RÉELS, en ligne droite. Ce n'est
-// pas le chemin emprunté par le véhicule, et l'interface doit le dire — d'où
-// le vocabulaire « schématique » employé partout dans la carte.
+// Mais SEULEMENT 2 858 des 6 676 liaisons en ont un. Les deux cas coexistent
+// donc, et l'interface ne doit jamais les confondre :
+//
+//   `SHAPE`    le tracé réel de la voie, tel que publié par l'opérateur ;
+//   `STRAIGHT` une droite entre deux arrêts, faute de mieux — ce n'est PAS le
+//              chemin emprunté par le véhicule, et il faut le dire.
+//
+// C'est `geometrySource` qui porte la distinction, et `tronconsDItineraire`
+// qui la fait remonter jusqu'au dessin.
 // =============================================================================
 
-import type { Stop } from "./types";
+import type {
+  GeoJsonLineString,
+  ItinerarySegment,
+  Stop,
+  TransportMode,
+} from "./types";
 
 /** Un point affichable : une position réelle, portant un nom réel. */
 export interface PointCarte {
@@ -109,4 +120,156 @@ export function traceDepuisSegments(
   }
 
   return points;
+}
+
+// =============================================================================
+// Tracés d'itinéraire (Phase 4)
+// =============================================================================
+
+/**
+ * Un tronçon dessinable : une suite de points, et ce qu'il faut savoir pour
+ * le représenter honnêtement.
+ *
+ * ⚠️ `points` est en **[latitude, longitude]** — l'ordre de Leaflet, et
+ * l'INVERSE de GeoJSON. La conversion se fait ici, une fois pour toutes :
+ * c'est le seul endroit du frontend où l'ordre GeoJSON existe.
+ */
+export interface TronconTrace {
+  /** Segment d'origine, pour la légende et l'infobulle. */
+  cle: string;
+  points: [number, number][];
+  mode: TransportMode;
+  lineName: string;
+  /** `STRAIGHT` = droite tracée faute de géométrie réelle. */
+  source: "SHAPE" | "STRAIGHT";
+}
+
+/**
+ * Vérifie qu'une valeur venue du backend est bien un LineString utilisable.
+ *
+ * ⚠️ POURQUOI CETTE VÉRIFICATION EXISTE. `NetworkLink.geometry` est une
+ * colonne `Json` : PostgreSQL n'en contrôle pas la forme, et le contrat la
+ * transporte en `unknown`. Faire confiance au type déclaré ferait planter la
+ * carte sur une donnée malformée, au lieu de la dessiner sans ce tronçon.
+ *
+ * Deux points au minimum : une « ligne » d'un seul point ne se dessine pas.
+ */
+function estLineString(valeur: unknown): valeur is GeoJsonLineString {
+  if (typeof valeur !== "object" || valeur === null) {
+    return false;
+  }
+
+  const objet = valeur as { type?: unknown; coordinates?: unknown };
+
+  if (objet.type !== "LineString" || !Array.isArray(objet.coordinates)) {
+    return false;
+  }
+
+  return (
+    objet.coordinates.length >= 2 &&
+    objet.coordinates.every(
+      (point) =>
+        Array.isArray(point) &&
+        point.length >= 2 &&
+        typeof point[0] === "number" &&
+        typeof point[1] === "number" &&
+        Number.isFinite(point[0]) &&
+        Number.isFinite(point[1]),
+    )
+  );
+}
+
+/**
+ * Traduit les segments d'un itinéraire en tronçons dessinables.
+ *
+ * UN TRONÇON PAR SEGMENT, et non une seule polyligne pour tout le trajet :
+ * c'est ce qui permet de colorer chaque portion selon son mode, et de
+ * distinguer visuellement un tracé réel d'une droite de repli.
+ *
+ * ⚠️ REPLI EXPLICITE. Quand la géométrie manque ou est malformée, on relie les
+ * deux arrêts en droite ET on marque le tronçon `STRAIGHT`. On ne renonce pas
+ * à dessiner — l'usager verrait un trou dans son trajet — mais on ne fait pas
+ * passer la droite pour un tracé.
+ */
+export function tronconsDItineraire(
+  segments: readonly ItinerarySegment[],
+): TronconTrace[] {
+  return segments.map((segment, rang) => {
+    const commun = {
+      // Le rang fait partie de la clé : une même liaison peut apparaître deux
+      // fois dans un aller-retour, et React exige des clés uniques.
+      cle: `${rang}-${segment.lineId}-${segment.fromStopId}-${segment.toStopId}`,
+      mode: segment.mode,
+      lineName: segment.lineName,
+    };
+
+    if (segment.geometrySource === "SHAPE" && estLineString(segment.geometry)) {
+      return {
+        ...commun,
+        // GeoJSON dit [lon, lat] ; Leaflet veut [lat, lon].
+        points: segment.geometry.coordinates.map(
+          ([lon, lat]) => [lat, lon] as [number, number],
+        ),
+        source: "SHAPE" as const,
+      };
+    }
+
+    return {
+      ...commun,
+      points: [
+        [segment.fromStopLat, segment.fromStopLon],
+        [segment.toStopLat, segment.toStopLon],
+      ],
+      source: "STRAIGHT" as const,
+    };
+  });
+}
+
+/**
+ * Les arrêts desservis par un itinéraire, dans l'ordre, sans doublon.
+ *
+ * Sert aux marqueurs et au cadrage. Aucune résolution d'identifiant : depuis
+ * la Phase 4, chaque segment porte les noms et les coordonnées de ses deux
+ * arrêts.
+ */
+export function arretsDItineraire(
+  segments: readonly ItinerarySegment[],
+): PointCarte[] {
+  const points: PointCarte[] = [];
+  const vus = new Set<string>();
+
+  const ajouter = (id: string, nom: string, latitude: number, longitude: number) => {
+    // Le `toStopId` d'un segment est le `fromStopId` du suivant : sans cette
+    // garde, chaque arrêt intermédiaire serait dessiné deux fois.
+    if (vus.has(id)) return;
+    vus.add(id);
+    points.push({ id, nom, latitude, longitude });
+  };
+
+  for (const segment of segments) {
+    ajouter(
+      segment.fromStopId,
+      segment.fromStopName,
+      segment.fromStopLat,
+      segment.fromStopLon,
+    );
+    ajouter(
+      segment.toStopId,
+      segment.toStopName,
+      segment.toStopLat,
+      segment.toStopLon,
+    );
+  }
+
+  return points;
+}
+
+/**
+ * Vrai si au moins un tronçon est une droite de repli.
+ *
+ * L'interface s'en sert pour l'annoncer, une fois, sous la carte — plutôt que
+ * de laisser croire que tout le tracé est exact.
+ */
+export function comporteUnRepli(troncons: readonly TronconTrace[]): boolean {
+  return troncons.some((troncon) => troncon.source === "STRAIGHT");
 }

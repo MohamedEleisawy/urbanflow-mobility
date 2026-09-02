@@ -3,7 +3,8 @@
 import { useEffect, useRef } from "react";
 import type { Map as CarteLeafletType, LayerGroup } from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { CENTRE_DEFAUT, type PointCarte } from "@/lib/carte";
+import { CENTRE_DEFAUT, type PointCarte, type TronconTrace } from "@/lib/carte";
+import type { TransportMode } from "@/lib/types";
 
 // =============================================================================
 // Rendu Leaflet (bloc 5B)
@@ -29,14 +30,50 @@ const RAYON_ETAPE = 7;
 const BLEU = "#1e3a5f";
 const VERT = "#2d7d46";
 
+/**
+ * Couleur de chaque mode de transport.
+ *
+ * ⚠️ CE SONT DES COULEURS D'INTERFACE, PAS LES COULEURS OFFICIELLES DES
+ * LIGNES. Le flux GTFS publie bien un `route_color` par ligne, mais nous ne
+ * l'importons pas : afficher un vert « RER D » approximatif serait pire que
+ * d'assumer une palette qui distingue les MODES. Le jour où `route_color`
+ * sera importé, c'est cette table qui devra céder la place.
+ *
+ * La marche est volontairement grise et discrète : c'est le liant du trajet,
+ * pas son sujet.
+ */
+const COULEURS_MODES: Record<TransportMode, string> = {
+  WALK: "#6b7280",
+  BUS: "#b45309",
+  TRAM: "#0f766e",
+  METRO: "#1e3a5f",
+  TRAIN: "#6d28d9",
+  BIKE: "#2d7d46",
+  ESCOOTER: "#be185d",
+  CAR: "#991b1b",
+};
+
 export interface CarteLeafletProps {
-  /** Tous les arrêts du réseau, affichés en fond. */
+  /** Arrêts affichés en fond. */
   arrets: readonly PointCarte[];
   /** Étapes du trajet mis en avant, dans l'ordre — ou `null` s'il n'y en a pas. */
   trace: readonly PointCarte[] | null;
+  /**
+   * Tracés réels du trajet, un par segment (Phase 4).
+   *
+   * ⚠️ QUAND ILS SONT FOURNIS, ILS REMPLACENT la polyligne reliant les
+   * `trace` en droite. Chacun porte son mode — donc sa couleur — et sa
+   * provenance : un tronçon `STRAIGHT` est dessiné en POINTILLÉS, parce qu'il
+   * ne représente pas le chemin réel du véhicule.
+   */
+  troncons?: readonly TronconTrace[] | null;
 }
 
-export default function CarteLeaflet({ arrets, trace }: CarteLeafletProps) {
+export default function CarteLeaflet({
+  arrets,
+  trace,
+  troncons = null,
+}: CarteLeafletProps) {
   const conteneur = useRef<HTMLDivElement>(null);
   const carte = useRef<CarteLeafletType | null>(null);
   const couche = useRef<LayerGroup | null>(null);
@@ -120,11 +157,35 @@ export default function CarteLeaflet({ arrets, trace }: CarteLeafletProps) {
           .addTo(groupe);
       }
 
-      if (trace && trace.length > 0) {
+      if (troncons && troncons.length > 0) {
+        for (const troncon of troncons) {
+          L.polyline(troncon.points, {
+            color: COULEURS_MODES[troncon.mode] ?? VERT,
+            weight: troncon.mode === "WALK" ? 3 : 5,
+            opacity: 0.9,
+            // POINTILLÉS = « nous ne connaissons pas le tracé réel ». C'est
+            // la seule chose qui distingue visuellement une voie publiée par
+            // l'opérateur d'une droite tracée faute de mieux.
+            dashArray:
+              troncon.source === "STRAIGHT" || troncon.mode === "WALK"
+                ? "6 6"
+                : undefined,
+          })
+            .bindTooltip(
+              troncon.source === "STRAIGHT"
+                ? `${troncon.lineName} — tracé approché`
+                : troncon.lineName,
+            )
+            .addTo(groupe);
+        }
+      } else if (trace && trace.length > 0) {
         L.polyline(
           trace.map((point) => [point.latitude, point.longitude] as [number, number]),
           { color: VERT, weight: 4, opacity: 0.85 },
         ).addTo(groupe);
+      }
+
+      if (trace && trace.length > 0) {
 
         for (const [rang, etape] of trace.entries()) {
           L.circleMarker([etape.latitude, etape.longitude], {
@@ -141,19 +202,35 @@ export default function CarteLeaflet({ arrets, trace }: CarteLeafletProps) {
 
       // Cadrage sur ce qui compte : le trajet s'il y en a un, sinon le réseau
       // entier. `CENTRE_DEFAUT` ne sert donc que si les deux sont vides.
-      const aCadrer = trace && trace.length > 0 ? trace : arrets;
+      // Cadrage sur ce qui compte : les tracés réels s'il y en a, sinon les
+      // étapes, sinon le réseau. `CENTRE_DEFAUT` ne sert donc que si tout est
+      // vide.
+      const pointsDuTrace: [number, number][] =
+        troncons && troncons.length > 0
+          ? troncons.flatMap((troncon) => troncon.points)
+          : (trace ?? []).map(
+              (point) => [point.latitude, point.longitude] as [number, number],
+            );
+
+      const aCadrer: [number, number][] =
+        pointsDuTrace.length > 0
+          ? pointsDuTrace
+          : arrets.map(
+              (point) => [point.latitude, point.longitude] as [number, number],
+            );
+
       if (aCadrer.length > 0) {
-        instance.fitBounds(
-          L.latLngBounds(aCadrer.map((point) => [point.latitude, point.longitude])),
-          { padding: [32, 32], maxZoom: 16 },
-        );
+        instance.fitBounds(L.latLngBounds(aCadrer), {
+          padding: [32, 32],
+          maxZoom: 16,
+        });
       }
     });
 
     return () => {
       annule = true;
     };
-  }, [arrets, trace]);
+  }, [arrets, trace, troncons]);
 
   // `aria-hidden` : tout ce que la carte montre est déjà écrit en toutes
   // lettres à côté d'elle (étapes, arrêts, distances). Faire lire à un

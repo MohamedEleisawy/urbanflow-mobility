@@ -36,7 +36,7 @@ describe('RoutesService', () => {
     carbonRecord: { createMany: jest.Mock };
     $transaction: jest.Mock;
   };
-  let carbonService: { calculate: jest.Mock };
+  let carbonService: { calculate: jest.Mock; facteurs: jest.Mock };
 
   const MOI = 'user-1';
   const QUELQU_UN_DAUTRE = 'user-2';
@@ -183,6 +183,22 @@ describe('RoutesService', () => {
     };
     carbonService = {
       calculate: jest.fn().mockResolvedValue(RESULTAT_CARBONE),
+      // Table des facteurs telle que la publie le microservice (GET /factors).
+      // ⚠️ ESCOOTER est ABSENT, exactement comme dans app/factors.py : c'est
+      // ce qui permet de tester qu'un mode sans facteur n'est jamais compté
+      // pour zéro.
+      facteurs: jest.fn().mockResolvedValue({
+        gPerKm: {
+          WALK: 0,
+          BIKE: 0,
+          TRAM: 4,
+          METRO: 4,
+          TRAIN: 4,
+          BUS: 113,
+          CAR: 218,
+        },
+        carGPerKm: 218,
+      }),
     };
 
     service = new RoutesService(
@@ -686,7 +702,12 @@ describe('RoutesService', () => {
       expect(prisma.route.findUniqueOrThrow).toHaveBeenCalledWith({
         where: { id: 'route-1' },
         include: {
-          segments: { orderBy: { departureTime: 'asc' } },
+          segments: {
+            orderBy: { departureTime: 'asc' },
+            // Phase 4 : les arrêts voyagent AVEC le segment, pour que
+            // l'historique n'ait plus à charger tout le référentiel réseau.
+            include: { fromStop: true, toStop: true },
+          },
           carbonRecords: { orderBy: [{ distanceM: 'desc' }, { id: 'asc' }] },
         },
       });
@@ -965,26 +986,242 @@ describe('RoutesService', () => {
       expect(result[0].totalDurationMin).toBe(20);
     });
 
-    it('propose deux itinéraires distincts : le plus rapide et le plus court', async () => {
+    it('oppose le plus rapide au moins de changements quand ils diffèrent', async () => {
+      // Rapide  : A --métro 4--> B --bus 38--> C   8 + 4 = 12 min, 1 changement
+      // Direct  : A --bus 350--> C                 30 min, 0 changement
+      const aVersBMetro = segment(A.id, B.id, 'METRO', 1000, 8, 'ligne-metro');
+      const bVersCBus = segment(B.id, C.id, 'BUS', 900, 4, 'ligne-bus');
+
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
-      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC, aVersC]);
+      prisma.networkLink.findMany.mockResolvedValue([
+        aVersBMetro,
+        bVersCBus,
+        aVersC,
+      ]);
 
       const result = await service.searchRoutes({ ...depuisA, ...versC });
 
-      expect(result).toHaveLength(2);
-
       const rapide = result.find((i) => i.criterion === 'FASTEST');
-      const court = result.find((i) => i.criterion === 'SHORTEST');
+      const direct = result.find((i) => i.criterion === 'FEWEST_TRANSFERS');
 
-      // Le plus rapide passe par B : 20 min au lieu de 30.
-      expect(rapide?.totalDurationMin).toBe(20);
-      expect(rapide?.totalDistanceM).toBe(3800);
+      // Le plus rapide gagne 18 minutes, au prix d'une correspondance.
+      expect(rapide?.totalDurationMin).toBe(12);
       expect(rapide?.segments).toHaveLength(2);
+      expect(rapide?.numberOfTransfers).toBe(1);
 
-      // Le plus court est le trajet direct : 3000 m au lieu de 3800.
-      expect(court?.totalDistanceM).toBe(3000);
-      expect(court?.totalDurationMin).toBe(30);
-      expect(court?.segments).toHaveLength(1);
+      // Le plus direct est plus lent, mais d'un seul tenant : c'est
+      // exactement le compromis que ce critère doit rendre visible.
+      expect(direct?.totalDurationMin).toBe(30);
+      expect(direct?.segments).toHaveLength(1);
+      expect(direct?.numberOfTransfers).toBe(0);
+    });
+
+    it('ne compte PAS la marche comme un changement de ligne', async () => {
+      // A --à pied--> B --bus 38--> C : une seule ligne réellement empruntée.
+      // Un couloir de correspondance n'est pas une correspondance.
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
+
+      const [itineraire] = await service.searchRoutes({ ...depuisA, ...versC });
+
+      expect(itineraire.segments).toHaveLength(2);
+      expect(itineraire.segments[0].mode).toBe('WALK');
+      expect(itineraire.numberOfTransfers).toBe(0);
+    });
+
+    it("ne renvoie qu'un itinéraire quand les trois critères désignent le même trajet", async () => {
+      // Un seul chemin possible : il est à la fois le plus rapide, le plus
+      // direct et le moins émetteur. On ne le renvoie pas trois fois.
+      prisma.stop.findMany.mockResolvedValue([A, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+      const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+      expect(result).toHaveLength(1);
+      expect(result[0].criterion).toBe('FASTEST');
+    });
+
+    // -------------------------------------------------------------------------
+    // Phase 4 : empreinte carbone portée par chaque itinéraire
+    // -------------------------------------------------------------------------
+    describe('empreinte carbone des itinéraires', () => {
+      beforeEach(() => {
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+      });
+
+      it('renseigne les émissions, la référence voiture et l’EcoScore', async () => {
+        carbonService.calculate.mockResolvedValue({
+          totalDistanceM: 3000,
+          totalCo2Grams: 339,
+          carCo2Grams: 654,
+          savedVsCarGrams: 315,
+          ecoScore: 48.2,
+          breakdown: [],
+        });
+
+        const [itineraire] = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+        });
+
+        expect(itineraire.carbon).toEqual({
+          status: 'CARBON_AVAILABLE',
+          co2Grams: 339,
+          carCo2Grams: 654,
+          savedVsCarGrams: 315,
+          ecoScore: 48.2,
+          reason: null,
+        });
+      });
+
+      it('envoie au calcul le mode et la distance issus du RÉSEAU', async () => {
+        await service.searchRoutes({ ...depuisA, ...versC });
+
+        expect(carbonService.calculate).toHaveBeenCalledWith({
+          segments: [{ mode: 'BUS', distanceM: 3000 }],
+        });
+      });
+
+      // ⚠️ LA PROPRIÉTÉ LA PLUS IMPORTANTE DE CE BLOC. L'étape 4D-2 exigeait
+      // qu'une panne du calcul carbone ne rende jamais la recherche
+      // d'itinéraire indisponible. La recherche appelle désormais le
+      // microservice ; cette garantie doit survivre intacte.
+      it('rend quand même les itinéraires quand le calcul carbone échoue', async () => {
+        carbonService.calculate.mockRejectedValue(
+          new Error('microservice injoignable'),
+        );
+
+        const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].segments).toHaveLength(1);
+        expect(result[0].totalDurationMin).toBe(30);
+      });
+
+      it('n’affiche JAMAIS 0 g à la place d’une erreur', async () => {
+        carbonService.calculate.mockRejectedValue(new Error('panne'));
+
+        const [itineraire] = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+        });
+
+        expect(itineraire.carbon.status).toBe('CARBON_UNAVAILABLE');
+        // Tous à null, aucun à zéro : « nous ne savons pas » ne se dit pas
+        // « ce trajet ne pollue pas ».
+        expect(itineraire.carbon.co2Grams).toBeNull();
+        expect(itineraire.carbon.carCo2Grams).toBeNull();
+        expect(itineraire.carbon.savedVsCarGrams).toBeNull();
+        expect(itineraire.carbon.ecoScore).toBeNull();
+        expect(itineraire.carbon.reason).toEqual(expect.any(String));
+      });
+
+      it('ne divulgue rien du microservice dans le message rendu à l’usager', async () => {
+        carbonService.calculate.mockRejectedValue(
+          new Error('connect ECONNREFUSED 127.0.0.1:8000'),
+        );
+
+        const [itineraire] = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+        });
+
+        expect(itineraire.carbon.reason).not.toContain('8000');
+        expect(itineraire.carbon.reason).not.toContain('ECONNREFUSED');
+      });
+
+      it('ne propose AUCUN itinéraire LOWEST_CO2 sans facteurs d’émission', async () => {
+        carbonService.facteurs.mockResolvedValue(null);
+        prisma.stop.findMany.mockResolvedValue([A, B, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC, aVersC]);
+
+        const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+        // Un « plus écologique » qui n'a été comparé à rien serait un
+        // mensonge : on préfère ne pas le proposer.
+        expect(result.filter((i) => i.criterion === 'LOWEST_CO2')).toHaveLength(
+          0,
+        );
+        // Mais la recherche, elle, fonctionne toujours.
+        expect(result.length).toBeGreaterThan(0);
+      });
+
+      it('n’appelle même pas le calcul quand les facteurs sont indisponibles', async () => {
+        carbonService.facteurs.mockResolvedValue(null);
+
+        const [itineraire] = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+        });
+
+        // Le microservice vient déjà d'échouer : trois appels de plus
+        // n'ajouteraient que trois délais d'attente à la recherche.
+        expect(carbonService.calculate).not.toHaveBeenCalled();
+        expect(itineraire.carbon.status).toBe('CARBON_UNAVAILABLE');
+      });
+    });
+
+    // -------------------------------------------------------------------------
+    // Phase 4 : géométrie réelle transmise à la carte
+    // -------------------------------------------------------------------------
+    describe('géométrie des segments', () => {
+      it('transmet le tracé réel tel quel, en le marquant SHAPE', async () => {
+        const trace = {
+          type: 'LineString',
+          // ⚠️ [longitude, latitude] : l'ordre GeoJSON, inverse de Leaflet.
+          coordinates: [
+            [2.3553, 48.8809],
+            [2.347, 48.8583],
+          ],
+        };
+
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([
+          { ...aVersC, geometry: trace },
+        ]);
+
+        const [itineraire] = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+        });
+
+        expect(itineraire.segments[0].geometry).toEqual(trace);
+        expect(itineraire.segments[0].geometrySource).toBe('SHAPE');
+      });
+
+      it('annonce STRAIGHT quand le flux ne publie aucun tracé', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([
+          { ...aVersC, geometry: null },
+        ]);
+
+        const [itineraire] = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+        });
+
+        // La carte tracera une droite — mais elle saura que c'en est une.
+        expect(itineraire.segments[0].geometry).toBeNull();
+        expect(itineraire.segments[0].geometrySource).toBe('STRAIGHT');
+      });
+
+      it('expose les coordonnées des deux arrêts de chaque segment', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+        const [itineraire] = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+        });
+
+        expect(itineraire.segments[0]).toMatchObject({
+          fromStopLat: A.latitude,
+          fromStopLon: A.longitude,
+          toStopLat: C.latitude,
+          toStopLon: C.longitude,
+        });
+      });
     });
 
     it("renvoie [] quand l'arrivée n'est reliée à rien", async () => {
@@ -1252,6 +1489,16 @@ describe('RoutesService', () => {
         lineId: 'ligne-express',
         distanceM: 3000,
         durationMin: 30,
+        // Ajoutés en Phase 4 : la carte doit pouvoir tracer le trajet sans
+        // redemander chaque arrêt un par un.
+        fromStopLat: A.latitude,
+        fromStopLon: A.longitude,
+        toStopLat: C.latitude,
+        toStopLon: C.longitude,
+        // Cette liaison de test n'a pas de tracé : `null`, et la source le
+        // dit franchement — le client tracera une droite en le sachant.
+        geometry: null,
+        geometrySource: 'STRAIGHT',
       });
       expect(itineraire.criterion).toBe('FASTEST');
       expect(itineraire.totalDistanceM).toBe(3000);
@@ -1456,8 +1703,8 @@ describe('RoutesService', () => {
 
     it('choisit correctement parmi trois chemins possibles', async () => {
       // A→B→C  : 3800 m / 20 min  → le plus RAPIDE
-      // A→C    : 3000 m / 30 min
-      // A→E→C  : 2000 m / 50 min  → le plus COURT
+      // A→C    : 3000 m / 30 min  → le plus DIRECT (aucun changement)
+      // A→E→C  : 2000 m / 50 min  → entièrement à pied, donc le moins ÉMETTEUR
       const E = { ...B, id: 'stop-e', name: 'Detour E' };
       const aVersE = segment(A.id, E.id, 'WALK', 1000, 25);
       const eVersC = segment(E.id, C.id, 'WALK', 1000, 25);
@@ -1474,12 +1721,28 @@ describe('RoutesService', () => {
       const result = await service.searchRoutes({ ...depuisA, ...versC });
 
       const rapide = result.find((i) => i.criterion === 'FASTEST');
-      const court = result.find((i) => i.criterion === 'SHORTEST');
+      const propre = result.find((i) => i.criterion === 'LOWEST_CO2');
 
       // Le plus rapide est bien le minimum des trois durées (20 < 30 < 50).
       expect(rapide?.totalDurationMin).toBe(20);
-      // Le plus court est bien le minimum des trois distances (2000 < 3000 < 3800).
-      expect(court?.totalDistanceM).toBe(2000);
+
+      // ⚠️ AUCUN itinéraire FEWEST_TRANSFERS ici, et c'est CORRECT : le plus
+      // rapide (A→B à pied, puis le bus 38) ne comporte lui non plus aucun
+      // changement, la marche n'en étant pas un. Les deux critères désignent
+      // le même trajet, qui n'est donc rendu qu'une fois.
+      expect(rapide?.numberOfTransfers).toBe(0);
+      expect(
+        result.filter((i) => i.criterion === 'FEWEST_TRANSFERS'),
+      ).toHaveLength(0);
+
+      // Le moins émetteur est A→E→C, entièrement à pied : deux liaisons WALK
+      // à 0 g/km, contre du BUS à 113 g/km sur les deux autres trajets.
+      // ⚠️ Ce n'est PAS l'effet d'un Dijkstra minimisant les grammes — celui-ci
+      // choisirait toujours de tout faire à pied. C'est une SÉLECTION parmi
+      // des trajets réels : ici, le plus rapide sans bus se trouve être ce
+      // trajet-là.
+      expect(propre?.segments.every((s) => s.mode === 'WALK')).toBe(true);
+      expect(propre?.totalDistanceM).toBe(2000);
     });
 
     it('renvoie [] quand le point de départ est trop loin de tout arrêt', async () => {
@@ -1568,14 +1831,15 @@ describe('RoutesService', () => {
         const result = await service.searchRoutes({ ...depuisA, ...versC });
 
         const rapide = result.find((i) => i.criterion === 'FASTEST');
-        const court = result.find((i) => i.criterion === 'SHORTEST');
+        const propre = result.find((i) => i.criterion === 'LOWEST_CO2');
 
-        // Le plus rapide est le bus (30 min), le plus court la marche (2000 m) :
-        // les deux liaisons ont donc bien été prises en compte séparément.
+        // Le plus rapide est le bus (30 min contre 45), le moins émetteur la
+        // marche (0 g/km contre 113) : les deux liaisons ont donc bien été
+        // prises en compte séparément.
         expect(rapide?.totalDurationMin).toBe(30);
         expect(rapide?.segments[0].mode).toBe('BUS');
-        expect(court?.totalDistanceM).toBe(2000);
-        expect(court?.segments[0].mode).toBe('WALK');
+        expect(propre?.segments[0].mode).toBe('WALK');
+        expect(propre?.totalDistanceM).toBe(2000);
       });
     });
 

@@ -1,0 +1,362 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, within } from "@testing-library/react";
+import ItinerairePage from "./page";
+import { memoriserSelection, type SelectionItineraire } from "@/lib/itineraire-selection";
+import type { Itinerary, ItinerarySegment } from "@/lib/types";
+
+// =============================================================================
+// /itineraire — le détail du trajet retenu
+// =============================================================================
+// ⚠️ CET ÉCRAN NE FAIT AUCUN APPEL RÉSEAU. Aucun module d'API n'est donc
+// simulé ici : s'il en appelait un, le test échouerait sur un `fetch` absent
+// plutôt que passer inaperçu.
+//
+// Leaflet, lui, est remplacé : la vraie bibliothèque exige un vrai navigateur.
+// Le remplaçant expose ses propriétés dans le DOM, ce qui permet de vérifier
+// ce que la page lui transmet réellement.
+// =============================================================================
+
+vi.mock("@/components/CarteLeaflet", () => ({
+  default: ({
+    arrets,
+    troncons,
+  }: {
+    arrets: unknown[];
+    troncons?: unknown[] | null;
+  }) => (
+    <div
+      data-testid="carte-leaflet"
+      data-arrets={arrets.length}
+      data-troncons={
+        troncons == null
+          ? "aucun"
+          : troncons
+              .map((t) => {
+                const troncon = t as { source: string; points: unknown[] };
+                return `${troncon.source}:${troncon.points.length}`;
+              })
+              .join("|")
+      }
+    />
+  ),
+}));
+
+const segment = (
+  surcharge: Partial<ItinerarySegment> = {},
+): ItinerarySegment => ({
+  fromStopId: "a",
+  fromStopName: "Gare de Lyon",
+  fromStopLat: 48.8443,
+  fromStopLon: 2.3743,
+  toStopId: "b",
+  toStopName: "Châtelet",
+  toStopLat: 48.8583,
+  toStopLon: 2.347,
+  mode: "TRAIN",
+  lineName: "A",
+  operator: "SNCF",
+  lineId: "rer-a",
+  distanceM: 2964,
+  durationMin: 3,
+  geometry: null,
+  geometrySource: "STRAIGHT",
+  ...surcharge,
+});
+
+/// Le trajet réel mesuré en base : RER A puis RER D, avec géométrie.
+const ITINERAIRE: Itinerary = {
+  criterion: "FASTEST",
+  totalDistanceM: 5358,
+  totalDurationMin: 6,
+  numberOfTransfers: 1,
+  carbon: {
+    status: "CARBON_AVAILABLE",
+    co2Grams: 21.43,
+    carCo2Grams: 1231.7,
+    savedVsCarGrams: 1210.27,
+    ecoScore: 98.3,
+    reason: null,
+  },
+  segments: [
+    segment({
+      geometry: {
+        type: "LineString",
+        coordinates: [
+          [2.3743, 48.8443],
+          [2.36, 48.851],
+          [2.347, 48.8583],
+        ],
+      },
+      geometrySource: "SHAPE",
+    }),
+    segment({
+      fromStopId: "b",
+      fromStopName: "Châtelet",
+      fromStopLat: 48.8583,
+      fromStopLon: 2.347,
+      toStopId: "c",
+      toStopName: "Gare du Nord",
+      toStopLat: 48.8809,
+      toStopLon: 2.3553,
+      lineName: "D",
+      lineId: "rer-d",
+      distanceM: 2394,
+      durationMin: 3,
+    }),
+  ],
+};
+
+const SELECTION: SelectionItineraire = {
+  itineraire: ITINERAIRE,
+  origine: { label: "Gare de Lyon, Paris", latitude: 48.8443, longitude: 2.3743 },
+  destination: { label: "Gare du Nord, Paris", latitude: 48.8809, longitude: 2.3553 },
+  choisiA: "2026-09-02T10:00:00.000Z",
+};
+
+const rendre = () => render(<ItinerairePage />);
+
+describe("/itineraire", () => {
+  beforeEach(() => {
+    window.sessionStorage.clear();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Absence de sélection
+  // ---------------------------------------------------------------------------
+  describe("sans itinéraire mémorisé", () => {
+    it("le dit franchement et propose un retour", () => {
+      rendre();
+
+      // §54 du cahier des charges : jamais de page vide cassée.
+      expect(screen.getByText(/n'est plus disponible/i)).toBeDefined();
+      expect(screen.getByRole("link", { name: /revenir à la recherche/i })).toBeDefined();
+    });
+
+    it("ne montre aucune carte ni aucun chiffre inventé", () => {
+      rendre();
+
+      expect(screen.queryByTestId("carte-leaflet")).toBeNull();
+      expect(screen.queryByText(/durée/i)).toBeNull();
+    });
+
+    it("traite une valeur corrompue comme une absence", () => {
+      window.sessionStorage.setItem("urbanflow.itineraire", "{ceci n'est pas du JSON");
+
+      rendre();
+
+      // Plutôt qu'un écran blanc et une exception dans la console.
+      expect(screen.getByText(/n'est plus disponible/i)).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Trajet affiché
+  // ---------------------------------------------------------------------------
+  describe("avec un itinéraire mémorisé", () => {
+    beforeEach(() => {
+      memoriserSelection(SELECTION);
+    });
+
+    it("nomme le trajet par les libellés SAISIS PAR L'USAGER", () => {
+      rendre();
+
+      // Pas les noms d'arrêts : l'usager a demandé « Gare de Lyon, Paris »,
+      // pas « quai du RER A ».
+      expect(
+        screen.getByRole("heading", {
+          name: /Gare de Lyon, Paris → Gare du Nord, Paris/,
+          level: 1,
+        }),
+      ).toBeDefined();
+    });
+
+    it("annonce le critère retenu", () => {
+      rendre();
+
+      expect(screen.getByText("Le plus rapide")).toBeDefined();
+    });
+
+    it("affiche les quatre chiffres du trajet", () => {
+      rendre();
+
+      expect(screen.getByText("6 min")).toBeDefined();
+      expect(screen.getByText("5,4 km")).toBeDefined();
+      // « 1 » changement, pas « Aucun ».
+      expect(screen.getByText("1")).toBeDefined();
+      expect(screen.getByText("21 g")).toBeDefined();
+    });
+
+    it("dit « Aucun » plutôt que « 0 » quand il n'y a pas de changement", () => {
+      window.sessionStorage.clear();
+      memoriserSelection({
+        ...SELECTION,
+        itineraire: { ...ITINERAIRE, numberOfTransfers: 0 },
+      });
+
+      rendre();
+
+      expect(screen.getByText("Aucun")).toBeDefined();
+    });
+
+    it("met en avant l'économie de CO₂ et l'éco-score", () => {
+      rendre();
+
+      const eco = screen.getByText(/évités par rapport à la voiture/i);
+      expect(eco.textContent).toContain("1,2 kg");
+      expect(eco.textContent).toContain("98/100");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Empreinte indisponible
+  // ---------------------------------------------------------------------------
+  describe("empreinte carbone indisponible", () => {
+    beforeEach(() => {
+      memoriserSelection({
+        ...SELECTION,
+        itineraire: {
+          ...ITINERAIRE,
+          carbon: {
+            status: "CARBON_UNAVAILABLE",
+            co2Grams: null,
+            carCo2Grams: null,
+            savedVsCarGrams: null,
+            ecoScore: null,
+            reason: "Le calcul des émissions est momentanément indisponible.",
+          },
+        },
+      });
+    });
+
+    it("écrit « Indisponible », JAMAIS « 0 g »", () => {
+      rendre();
+
+      expect(screen.getByText("Indisponible")).toBeDefined();
+      // Zéro est une valeur légitime — un trajet à pied émet réellement zéro.
+      // L'employer comme repli rendrait les deux cas indiscernables.
+      expect(screen.queryByText("0 g")).toBeNull();
+    });
+
+    it("affiche le motif rendu par le backend", () => {
+      rendre();
+
+      expect(screen.getByText(/momentanément indisponible/i)).toBeDefined();
+    });
+
+    it("affiche quand même le trajet en entier", () => {
+      rendre();
+
+      // Une panne du calcul carbone ne fait pas disparaître un itinéraire.
+      expect(screen.getByText("6 min")).toBeDefined();
+      expect(screen.getByText(/Gare de Lyon → Châtelet/)).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Déroulé
+  // ---------------------------------------------------------------------------
+  describe("déroulé du trajet", () => {
+    beforeEach(() => {
+      memoriserSelection(SELECTION);
+    });
+
+    it("liste une étape par LIGNE empruntée", () => {
+      rendre();
+
+      const deroule = within(screen.getByRole("region", { name: /déroulé du trajet/i }));
+
+      expect(deroule.getByText(/Train A/)).toBeDefined();
+      expect(deroule.getByText(/Train D/)).toBeDefined();
+    });
+
+    it("nomme le départ et l'arrivée de chaque étape", () => {
+      rendre();
+
+      expect(screen.getByText(/Gare de Lyon → Châtelet/)).toBeDefined();
+      expect(screen.getByText(/Châtelet → Gare du Nord/)).toBeDefined();
+    });
+
+    it("termine par l'arrivée à destination", () => {
+      rendre();
+
+      expect(screen.getByText(/Arrivée · Gare du Nord, Paris/)).toBeDefined();
+    });
+
+    it("regroupe plusieurs tronçons d'une même ligne en UNE étape", () => {
+      window.sessionStorage.clear();
+      memoriserSelection({
+        ...SELECTION,
+        itineraire: {
+          ...ITINERAIRE,
+          // Trois tronçons consécutifs sur la même ligne.
+          segments: [
+            segment({ fromStopId: "s0", toStopId: "s1", toStopName: "Arrêt 1" }),
+            segment({ fromStopId: "s1", fromStopName: "Arrêt 1", toStopId: "s2", toStopName: "Arrêt 2" }),
+            segment({ fromStopId: "s2", fromStopName: "Arrêt 2", toStopId: "s3", toStopName: "Arrêt 3" }),
+          ],
+        },
+      });
+
+      rendre();
+
+      const deroule = within(screen.getByRole("region", { name: /déroulé du trajet/i }));
+
+      // UNE étape « Train A », pas trois — c'est tout l'objet du regroupement.
+      expect(deroule.getAllByText(/Train A/)).toHaveLength(1);
+      // « 3 arrêts » au sens de « trois arrêts plus loin » — la formulation
+      // qu'emploient les réseaux eux-mêmes.
+      expect(deroule.getByText(/· 3 arrêts ·/)).toBeDefined();
+      // Le détail reste accessible, REPLIÉ.
+      expect(deroule.getByText(/voir les 3 arrêts desservis/i)).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Carte
+  // ---------------------------------------------------------------------------
+  describe("carte", () => {
+    beforeEach(() => {
+      memoriserSelection(SELECTION);
+    });
+
+    it("dessine la voie RÉELLE là où elle existe", () => {
+      rendre();
+
+      const carte = screen.getByTestId("carte-leaflet");
+
+      // Le premier tronçon suit les trois points du `LineString` ; le second,
+      // dépourvu de géométrie, relie ses deux arrêts en droite.
+      expect(carte.getAttribute("data-troncons")).toBe("SHAPE:3|STRAIGHT:2");
+    });
+
+    it("ne dessine que les arrêts DU TRAJET", () => {
+      rendre();
+
+      // Trois arrêts pour deux segments : le `toStop` du premier est le
+      // `fromStop` du second, et n'est pas dessiné deux fois.
+      expect(screen.getByTestId("carte-leaflet").getAttribute("data-arrets")).toBe("3");
+    });
+
+    it("annonce qu'une portion du tracé est approchée", () => {
+      rendre();
+
+      const description = screen.getByText(/1 portion dessinée/i);
+      expect(description.textContent).toContain("pointillés");
+    });
+
+    it("annonce un tracé ENTIÈREMENT réel quand toutes les géométries existent", () => {
+      window.sessionStorage.clear();
+      memoriserSelection({
+        ...SELECTION,
+        itineraire: {
+          ...ITINERAIRE,
+          segments: [ITINERAIRE.segments[0]],
+        },
+      });
+
+      rendre();
+
+      expect(screen.getByText(/suit la voie réelle publiée par l'opérateur/i)).toBeDefined();
+    });
+  });
+});

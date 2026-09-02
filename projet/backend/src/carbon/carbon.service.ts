@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ModeTransport } from '@prisma/client';
 import { CalculateCarbonDto } from './dto/calculate-carbon.dto';
+import { CarbonFactorsDto } from './dto/carbon-factors.dto';
 import {
   CarbonBreakdownItemDto,
   CarbonResultDto,
@@ -30,8 +31,32 @@ interface ReponseCalculFastApi {
   }[];
 }
 
+/**
+ * Forme EXACTE de la réponse de `GET /factors` (snake_case).
+ *
+ * Interne au service, comme `ReponseCalculFastApi` : le contrat public est
+ * `CarbonFactorsDto`.
+ */
+interface ReponseFacteursFastApi {
+  factors: Record<string, number>;
+  car_factor_g_per_km: number;
+}
+
 /// Valeur de repli, identique à celle du `.env.example` de la racine.
 const URL_PAR_DEFAUT = 'http://localhost:8000';
+
+/**
+ * Durée de vie du cache des facteurs d'émission.
+ *
+ * ⚠️ COURTE ET BORNÉE, jamais infinie. Les facteurs ne changent qu'au
+ * déploiement du microservice ; une minute suffit donc largement à absorber
+ * la rafale d'appels d'une session de recherche, tout en garantissant qu'un
+ * facteur corrigé sera pris en compte sans redémarrer le backend.
+ *
+ * Un cache sans expiration figerait une valeur ADEME périmée pour la durée de
+ * vie du processus — soit, en production, indéfiniment.
+ */
+const DUREE_CACHE_FACTEURS_MS = 60_000;
 
 /// Message PUBLIC unique : il ne révèle ni l'adresse interne du
 /// microservice, ni la nature exacte de la panne.
@@ -66,6 +91,16 @@ export class CarbonService {
   private readonly DELAI_MS = 5_000;
 
   private readonly baseUrl: string;
+
+  /**
+   * Dernière lecture de `GET /factors`, valable jusqu'à `expireA`.
+   *
+   * `valeur: null` mémorise un ÉCHEC — voir `facteurs()`.
+   */
+  private cacheFacteurs: {
+    valeur: CarbonFactorsDto | null;
+    expireA: number;
+  } | null = null;
 
   constructor() {
     const configuree = process.env.CARBON_SERVICE_URL;
@@ -107,6 +142,134 @@ export class CarbonService {
     }
 
     return this.versContratPublic(await this.lireCorps(reponse));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Facteurs d'émission (Phase 4)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Table des facteurs d'émission, telle que publiée par le microservice.
+   *
+   * ═══ NE LÈVE JAMAIS, ET C'EST LE POINT ESSENTIEL ═══
+   *
+   * `calculate()` lève un 503 quand le microservice est en panne : c'est
+   * correct, car l'usager a explicitement demandé un calcul carbone.
+   *
+   * Ici, non. Cette méthode sert la RECHERCHE D'ITINÉRAIRES, et l'étape 4D-2
+   * a posé une règle que rien ne doit défaire : « une panne du calcul carbone
+   * ne doit pas rendre la recherche d'itinéraire indisponible ». Une panne
+   * rend donc `null`, l'appelant retire l'alternative écologique de sa
+   * réponse et le dit à l'usager. Il ne se rabat JAMAIS sur des facteurs de
+   * secours écrits en dur : ce serait à la fois une seconde source de vérité
+   * et un chiffre inventé.
+   *
+   * Le résultat est mis en cache pour `DUREE_CACHE_FACTEURS_MS` : une
+   * recherche d'itinéraire évalue plusieurs candidats, et aucun ne mérite son
+   * propre aller-retour HTTP.
+   */
+  async facteurs(): Promise<CarbonFactorsDto | null> {
+    const maintenant = Date.now();
+
+    if (this.cacheFacteurs && maintenant < this.cacheFacteurs.expireA) {
+      return this.cacheFacteurs.valeur;
+    }
+
+    const valeur = await this.lireFacteurs();
+
+    // ⚠️ L'ÉCHEC EST MIS EN CACHE LUI AUSSI (`null` est une valeur, pas une
+    // absence). Sans cela, un microservice éteint serait re-sollicité à
+    // chaque candidat de chaque recherche, chacun payant le délai complet de
+    // 5 secondes : la panne du service carbone deviendrait une panne de la
+    // recherche, précisément ce que cette méthode existe pour éviter.
+    this.cacheFacteurs = {
+      valeur,
+      expireA: maintenant + DUREE_CACHE_FACTEURS_MS,
+    };
+
+    return valeur;
+  }
+
+  private async lireFacteurs(): Promise<CarbonFactorsDto | null> {
+    const url = `${this.baseUrl}/factors`;
+
+    try {
+      const reponse = await fetch(url, {
+        signal: AbortSignal.timeout(this.DELAI_MS),
+      });
+
+      if (!reponse.ok) {
+        this.logger.warn(
+          `Facteurs d'émission indisponibles : HTTP ${reponse.status}`,
+        );
+        return null;
+      }
+
+      const corps: unknown = await reponse.json();
+
+      if (!this.estReponseFacteurs(corps)) {
+        this.logger.warn(
+          "Facteurs d'émission : réponse de forme inattendue, ignorée",
+        );
+        return null;
+      }
+
+      return this.versFacteursPublics(corps);
+    } catch (error) {
+      this.logger.warn(
+        `Facteurs d'émission injoignables (${url}) : ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+  }
+
+  private estReponseFacteurs(corps: unknown): corps is ReponseFacteursFastApi {
+    if (typeof corps !== 'object' || corps === null) {
+      return false;
+    }
+
+    const champs = corps as Record<string, unknown>;
+
+    if (typeof champs.car_factor_g_per_km !== 'number') {
+      return false;
+    }
+
+    const table = champs.factors;
+
+    if (typeof table !== 'object' || table === null || Array.isArray(table)) {
+      return false;
+    }
+
+    // Une valeur non numérique dans la table invaliderait un classement par
+    // émissions sans jamais lever d'erreur : on refuse la table entière.
+    return Object.values(table as Record<string, unknown>).every(
+      (facteur) => typeof facteur === 'number' && Number.isFinite(facteur),
+    );
+  }
+
+  /**
+   * Traduit la table FastAPI vers l'enum Prisma.
+   *
+   * ⚠️ LES MODES INCONNUS DE NOTRE ENUM SONT ÉCARTÉS EN SILENCE, et c'est
+   * volontaire : le jour où le microservice publierait un `FERRY`, notre
+   * `ModeTransport` ne le connaîtrait pas, et le laisser entrer produirait
+   * une clé qui ne correspond à aucun mode du réseau. Aucune information
+   * n'est perdue — aucun de nos itinéraires ne peut emprunter ce mode.
+   */
+  private versFacteursPublics(
+    reponse: ReponseFacteursFastApi,
+  ): CarbonFactorsDto {
+    const modesConnus = new Set<string>(Object.values(ModeTransport));
+    const gPerKm: Partial<Record<ModeTransport, number>> = {};
+
+    for (const [mode, facteur] of Object.entries(reponse.factors)) {
+      if (modesConnus.has(mode)) {
+        gPerKm[mode as ModeTransport] = facteur;
+      }
+    }
+
+    return { gPerKm, carGPerKm: reponse.car_factor_g_per_km };
   }
 
   // ---------------------------------------------------------------------------

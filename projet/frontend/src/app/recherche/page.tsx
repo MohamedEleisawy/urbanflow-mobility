@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { Carte } from "@/components/Carte";
@@ -9,15 +10,15 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorMessage } from "@/components/ErrorMessage";
 import { Spinner } from "@/components/Spinner";
 import { messageDErreur } from "@/lib/api";
-import { indexerArrets, pointDepuisArret, traceDepuisSegments } from "@/lib/carte";
+import {
+  arretsDItineraire,
+  tronconsDItineraire,
+  type TronconTrace,
+} from "@/lib/carte";
 import { ErreurGeolocalisation, positionActuelle, type Coordonnees } from "@/lib/geolocalisation";
 import { listerAdresses } from "@/lib/adresses-api";
-import {
-  nombreDeChangements,
-  regrouperSegments,
-  resumerModes,
-  type GroupeEtapes,
-} from "@/lib/itineraire";
+import { regrouperSegments, resumerModes, type GroupeEtapes } from "@/lib/itineraire";
+import { memoriserSelection } from "@/lib/itineraire-selection";
 import { ChampAdresse, type PointChoisi } from "@/components/ChampAdresse";
 import type { FavoriteAddress, FavoriteAddressType } from "@/lib/types";
 import {
@@ -28,9 +29,8 @@ import {
 } from "@/lib/itineraires-api";
 import { useAuth } from "@/components/AuthProvider";
 import { ButtonLink } from "@/components/Button";
-import { estimerCarbone } from "@/lib/carbone-api";
 import { formaterCo2, formaterDistance, formaterDuree, LIBELLES_MODES } from "@/lib/format";
-import type { CarbonResult, Itinerary, ItineraryCriterion, Stop } from "@/lib/types";
+import type { Itinerary, ItineraryCarbon, ItineraryCriterion, Stop } from "@/lib/types";
 
 // =============================================================================
 // Recherche d'itinéraire (étape 5A-5, UC01)
@@ -91,15 +91,6 @@ type EtatPosition =
 /// Ce que le formulaire connaît d'un point : l'arrêt choisi.
 
 /**
- * Sort de l'estimation carbone d'UN itinéraire (étape 5A-6).
- *
- * L'absence de clé signifie « en cours » : c'est un état DÉRIVÉ, non stocké.
- * Le distinguer d'un échec importe — « nous cherchons » et « nous n'avons pas
- * pu » ne disent pas la même chose à l'usager.
- */
-type EtatCarbone = { statut: "ok"; resultat: CarbonResult } | { statut: "echec"; message: string };
-
-/**
  * Sort de l'enregistrement d'UN itinéraire (étape 5A-7).
  *
  * L'absence de clé signifie « rien de tenté ». Les trois états sont
@@ -147,10 +138,6 @@ export default function RecherchePage() {
   const [recherche, setRecherche] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
 
-  /// Estimations carbone, indexées par critère — la clé est unique dans une
-  /// réponse, le backend dédupliquant les itinéraires identiques.
-  const [carbone, setCarbone] = useState<Partial<Record<ItineraryCriterion, EtatCarbone>>>({});
-
   /// Enregistrements, indexés de la même façon (étape 5A-7).
   const [enregistrements, setEnregistrements] = useState<
     Partial<Record<ItineraryCriterion, EtatEnregistrement>>
@@ -196,14 +183,12 @@ export default function RecherchePage() {
     };
   }, [jeton]);
 
-  // --- Données géographiques (bloc 5B) --------------------------------------
+  // --- Données géographiques (bloc 5B, refondu Phase 4) ---------------------
   //
-  // TOUT VIENT DE `arrets`, DÉJÀ CHARGÉ. La carte ne déclenche aucun appel :
-  // ni pour les positions, ni pour les noms. Résoudre chaque étape par un
-  // `GET /api/stops/:id` produirait exactement le N+1 réseau que le dossier
-  // demande d'éviter.
-  const pointsReseau = useMemo(() => (arrets ?? []).map(pointDepuisArret), [arrets]);
-  const indexArrets = useMemo(() => indexerArrets(arrets ?? []), [arrets]);
+  // ⚠️ PLUS AUCUNE RÉSOLUTION D'IDENTIFIANT. Chaque segment porte désormais
+  // les NOMS, les COORDONNÉES et le TRACÉ RÉEL de ses deux arrêts. La carte
+  // n'a donc plus besoin ni de la liste des arrêts, ni d'un index — et
+  // surtout, plus besoin de charger le réseau entier pour dessiner un trajet.
 
   // Dérivée, jamais stockée : un état « sélection » et un état « résultats »
   // qui se contrediraient laisseraient la carte afficher un trajet absent de
@@ -211,7 +196,20 @@ export default function RecherchePage() {
   const selectionne =
     resultats?.find((itineraire) => itineraire.criterion === selection) ?? resultats?.[0] ?? null;
 
-  const trace = selectionne ? traceDepuisSegments(selectionne.segments, indexArrets) : null;
+  // Les arrêts DU TRAJET, et eux seuls : on ne dessine plus le réseau entier
+  // en fond. Avant une recherche, la carte est simplement vide.
+  const trace = useMemo(
+    () => (selectionne ? arretsDItineraire(selectionne.segments) : null),
+    [selectionne],
+  );
+
+  // Le tracé RÉEL, un tronçon par segment, coloré par mode. Les tronçons
+  // dépourvus de géométrie sont marqués `STRAIGHT` et dessinés en pointillés :
+  // une droite ne doit jamais passer pour le chemin du véhicule.
+  const troncons = useMemo(
+    () => (selectionne ? tronconsDItineraire(selectionne.segments) : null),
+    [selectionne],
+  );
 
   /**
    * Demande la position, et NE LA DEMANDE QU'À CE MOMENT.
@@ -278,6 +276,8 @@ export default function RecherchePage() {
       origine: "favori",
     });
 
+  const routeur = useRouter();
+
   const idDepart = useId();
   const idArrivee = useId();
   const idErreur = useId();
@@ -286,10 +286,14 @@ export default function RecherchePage() {
   useEffect(() => {
     let abandonne = false;
 
-    listerArrets()
-      .then((liste) => {
+    // ⚠️ UNE PAGE, PAS LE RÉSEAU (Phase 4). `GET /api/stops` est borné : cette
+    // liste alimente le sélecteur d'appoint replié, qui annonce lui-même
+    // n'être qu'un début d'alphabet. La saisie d'adresse reste l'entrée
+    // principale, et la carte n'a plus besoin d'aucun arrêt pour dessiner.
+    listerArrets({ limit: 200 })
+      .then((page) => {
         if (abandonne) return;
-        setArrets(liste);
+        setArrets(page.items);
       })
       .catch((echec: unknown) => {
         if (abandonne) return;
@@ -301,52 +305,49 @@ export default function RecherchePage() {
     };
   }, []);
 
-  // --- Estimation carbone des itinéraires trouvés (étape 5A-6) -------------
+  // ⚠️ IL N'Y A PLUS D'APPEL CARBONE ICI (Phase 4).
   //
-  // DEUX NIVEAUX DE DONNÉES, DEUX SORTS INDÉPENDANTS. Un itinéraire valide ne
-  // doit jamais disparaître parce que le microservice carbone est éteint : la
-  // recherche a réussi, et ce qu'elle a trouvé reste vrai.
+  // L'écran faisait un `POST /api/carbone` par itinéraire, APRÈS la recherche.
+  // Le backend fait désormais ce calcul lui-même et rend l'empreinte AVEC
+  // chaque itinéraire : un aller-retour de moins, et surtout plus aucun risque
+  // d'attribuer une estimation au mauvais trajet.
   //
-  // D'où `allSettled` et non `all` : `all` rejette au premier échec, ce qui
-  // effacerait l'estimation d'un itinéraire parfaitement calculable parce que
-  // l'autre a échoué.
-  useEffect(() => {
-    if (!resultats || resultats.length === 0) {
-      return;
+  // La garantie qui comptait est préservée, et elle l'est mieux : quand le
+  // microservice est en panne, le backend rend `carbon.status =
+  // CARBON_UNAVAILABLE` avec des champs à `null` — l'itinéraire, lui, arrive
+  // intact.
+
+  /**
+   * Ouvre le détail d'un itinéraire.
+   *
+   * ⚠️ L'ITINÉRAIRE EST MÉMORISÉ AVANT LA NAVIGATION, jamais mis dans l'URL :
+   * un trajet réel pèse plusieurs kilo-octets une fois sa géométrie incluse.
+   * Voir `lib/itineraire-selection.ts` pour le raisonnement complet.
+   *
+   * ⚠️ ON NAVIGUE MÊME SI LA MÉMORISATION ÉCHOUE. `sessionStorage` peut être
+   * indisponible ; l'écran suivant dira alors franchement qu'il n'a rien
+   * trouvé, ce qui vaut mieux qu'un bouton qui ne fait rien (§45).
+   */
+  const voirLeTrajet = (itineraire: Itinerary) => {
+    if (pointsRecherches) {
+      memoriserSelection({
+        itineraire,
+        origine: {
+          label: depart?.label ?? "Départ",
+          latitude: pointsRecherches.origine.latitude,
+          longitude: pointsRecherches.origine.longitude,
+        },
+        destination: {
+          label: arrivee?.label ?? "Arrivée",
+          latitude: pointsRecherches.destination.latitude,
+          longitude: pointsRecherches.destination.longitude,
+        },
+        choisiA: new Date().toISOString(),
+      });
     }
 
-    let abandonne = false;
-
-    // Un appel par itinéraire — au plus deux, le backend n'en rend jamais
-    // davantage. Chaque appel porte l'itinéraire ENTIER : le contrat accepte
-    // un tableau de segments et rend le bilan de l'ensemble.
-    Promise.allSettled(resultats.map((itineraire) => estimerCarbone(itineraire.segments))).then(
-      (sorts) => {
-        if (abandonne) return;
-
-        const etats: Partial<Record<ItineraryCriterion, EtatCarbone>> = {};
-
-        sorts.forEach((sort, index) => {
-          // L'index fait le lien entre la promesse et SON itinéraire :
-          // `allSettled` préserve l'ordre du tableau d'entrée. C'est ce qui
-          // garantit qu'une estimation n'est jamais attribuée au mauvais
-          // itinéraire.
-          const critere = resultats[index].criterion;
-
-          etats[critere] =
-            sort.status === "fulfilled"
-              ? { statut: "ok", resultat: sort.value }
-              : { statut: "echec", message: messageDErreur(sort.reason) };
-        });
-
-        setCarbone(etats);
-      },
-    );
-
-    return () => {
-      abandonne = true;
-    };
-  }, [resultats]);
+    routeur.push("/itineraire");
+  };
 
   const soumettre = async (evenement: FormEvent) => {
     evenement.preventDefault();
@@ -367,10 +368,9 @@ export default function RecherchePage() {
 
     setErreur(null);
     setRecherche(true);
-    // Les estimations et enregistrements précédents n'ont plus d'objet : les
-    // conserver afficherait le carbone — ou un « Trajet enregistré » — de
-    // l'ancienne recherche sous les nouveaux itinéraires.
-    setCarbone({});
+    // Les enregistrements précédents n'ont plus d'objet : les conserver
+    // afficherait un « Trajet enregistré » de l'ancienne recherche sous les
+    // nouveaux itinéraires.
     setEnregistrements({});
 
     try {
@@ -388,9 +388,10 @@ export default function RecherchePage() {
       // produits. C'est ce couple qui sera enregistré.
       setPointsRecherches({ origine, destination });
       setResultats(trouves);
-      // La sélection repart de zéro : garder « SHORTEST » d'une recherche
+      // La sélection repart de zéro : garder « LOWEST_CO2 » d'une recherche
       // précédente mettrait en avant un critère que la nouvelle réponse ne
-      // contient peut-être pas.
+      // contient peut-être pas — deux critères désignant souvent le même
+      // trajet, le backend n'en rend qu'un.
       setSelection(null);
     } catch (echec) {
       setErreur(messageDErreur(echec));
@@ -473,8 +474,8 @@ export default function RecherchePage() {
           Rechercher un itinéraire
         </h1>
         <p className="mt-3 max-w-2xl text-neutral-700">
-          Choisissez un point de départ et une destination pour comparer le trajet le plus rapide et
-          le plus court.
+          Choisissez un point de départ et une destination pour comparer le trajet le plus rapide,
+          le plus direct et le moins émetteur.
         </p>
 
         <div className="mt-8 space-y-8">
@@ -539,6 +540,14 @@ export default function RecherchePage() {
                     <summary className="cursor-pointer text-sm text-neutral-700">
                       Choisir directement un arrêt du réseau
                     </summary>
+                    {/* ⚠️ CE N'EST PLUS TOUT LE RÉSEAU (Phase 4). `GET
+                        /api/stops` est désormais borné : cette liste montre
+                        les premiers arrêts par ordre alphabétique, et le dit.
+                        La saisie d'adresse reste l'entrée principale. */}
+                    <p className="mt-2 text-xs text-neutral-600">
+                      Les {arrets.length} premiers arrêts, par ordre alphabétique. Pour un lieu
+                      précis, utilisez la recherche d&apos;adresse ci-dessus.
+                    </p>
                     <div className="mt-3 grid gap-4 sm:grid-cols-2">
                       <ChoixArret
                         id={idDepart}
@@ -585,10 +594,11 @@ export default function RecherchePage() {
               retenu. Elle reste un complément — les étapes détaillées, en
               dessous, se lisent sans elle. */}
           <Carte
-            titre={selectionne ? "Le trajet retenu sur la carte" : "Les arrêts du réseau"}
-            description={descriptionCarte(selectionne, trace !== null, pointsReseau.length)}
-            arrets={pointsReseau}
+            titre={selectionne ? "Le trajet retenu sur la carte" : "Carte"}
+            description={descriptionCarte(selectionne, troncons)}
+            arrets={trace ?? []}
             trace={trace}
+            troncons={troncons}
           />
 
           <Resultats
@@ -597,10 +607,10 @@ export default function RecherchePage() {
             onSelectionner={setSelection}
             recherche={recherche}
             erreur={erreur}
-            carbone={carbone}
             enregistrements={enregistrements}
             peutEnregistrer={statutAuth === "authentifie"}
             onEnregistrer={enregistrer}
+            onVoirLeTrajet={voirLeTrajet}
           />
         </div>
       </section>
@@ -703,20 +713,20 @@ function Resultats({
   resultats,
   recherche,
   erreur,
-  carbone,
   enregistrements,
   peutEnregistrer,
   onEnregistrer,
+  onVoirLeTrajet,
   selection,
   onSelectionner,
 }: {
   resultats: Itinerary[] | null;
   recherche: boolean;
   erreur: string | null;
-  carbone: Partial<Record<ItineraryCriterion, EtatCarbone>>;
   enregistrements: Partial<Record<ItineraryCriterion, EtatEnregistrement>>;
   peutEnregistrer: boolean;
   onEnregistrer: (itineraire: Itinerary) => void;
+  onVoirLeTrajet: (itineraire: Itinerary) => void;
   selection: ItineraryCriterion | null;
   onSelectionner: (critere: ItineraryCriterion) => void;
 }) {
@@ -756,13 +766,15 @@ function Resultats({
           <li key={itineraire.criterion}>
             <ItineraireCarte
               itineraire={itineraire}
-              // Chaque carte reçoit SON estimation et SON enregistrement,
-              // désignés par son propre critère : aucune ne peut afficher
-              // ceux d'une autre.
-              carbone={carbone[itineraire.criterion]}
+              // La référence de comparaison est TOUJOURS le plus rapide :
+              // c'est par rapport à lui qu'on annonce « +3 min, −5 g ».
+              reference={resultats[0]}
+              // Chaque carte reçoit SON enregistrement, désigné par son
+              // propre critère : aucune ne peut afficher celui d'une autre.
               enregistrement={enregistrements[itineraire.criterion]}
               peutEnregistrer={peutEnregistrer}
               onEnregistrer={onEnregistrer}
+              onVoirLeTrajet={onVoirLeTrajet}
               // Un seul itinéraire porte la carte à la fois : la comparaison
               // n'aurait plus de sens si les deux tracés se superposaient.
               selectionne={itineraire.criterion === selection}
@@ -775,26 +787,43 @@ function Resultats({
   );
 }
 
-/// Libellés des deux critères produits par le backend.
-const CRITERES = {
+/**
+ * Libellés des trois critères produits par le backend.
+ *
+ * ⚠️ LES TROIS NE SONT PAS TOUJOURS PRÉSENTS. Deux critères désignant le même
+ * trajet, le backend ne le rend qu'une fois — sous le premier de cette liste.
+ * L'interface n'affiche donc que ce qu'elle reçoit.
+ */
+const CRITERES: Record<ItineraryCriterion, string> = {
   FASTEST: "Le plus rapide",
-  SHORTEST: "Le plus court",
-} as const;
+  FEWEST_TRANSFERS: "Le moins de changements",
+  LOWEST_CO2: "Le plus écologique",
+};
+
+/// Ce que chaque critère promet, en une phrase.
+const EXPLICATIONS: Record<ItineraryCriterion, string> = {
+  FASTEST: "Le trajet le plus court en temps, tous modes confondus.",
+  FEWEST_TRANSFERS: "Le moins de correspondances — la marche n'en est pas une.",
+  LOWEST_CO2: "Le trajet le moins émetteur parmi ceux réellement praticables.",
+};
 
 function ItineraireCarte({
   itineraire,
-  carbone,
+  reference,
   enregistrement,
   peutEnregistrer,
   onEnregistrer,
+  onVoirLeTrajet,
   selectionne,
   onSelectionner,
 }: {
   itineraire: Itinerary;
-  carbone?: EtatCarbone;
+  /** Itinéraire de référence — le plus rapide — pour chiffrer le compromis. */
+  reference: Itinerary;
   enregistrement?: EtatEnregistrement;
   peutEnregistrer: boolean;
   onEnregistrer: (itineraire: Itinerary) => void;
+  onVoirLeTrajet: (itineraire: Itinerary) => void;
   selectionne: boolean;
   onSelectionner: (critere: ItineraryCriterion) => void;
 }) {
@@ -802,23 +831,39 @@ function ItineraireCarte({
   // inventée, seulement présentée autrement. Le détail reste accessible.
   const groupes = regrouperSegments(itineraire.segments);
   const resume = resumerModes(groupes, LIBELLES_MODES);
-  const changements = nombreDeChangements(groupes);
+
+  // ⚠️ LE NOMBRE DE CHANGEMENTS VIENT DU BACKEND, qui en est la source depuis
+  // la Phase 4. Le recalculer ici ferait deux implémentations d'une même
+  // règle — « la marche n'est pas une correspondance » — qui divergeraient au
+  // premier changement de l'une des deux.
+  const changements = itineraire.numberOfTransfers;
 
   return (
     <Card>
       <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
-        <h3 className="text-ink font-semibold">{CRITERES[itineraire.criterion]}</h3>
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-ink font-semibold">{CRITERES[itineraire.criterion]}</h3>
+          {itineraire.criterion === "LOWEST_CO2" && (
+            // Le badge n'apparaît QUE sur le critère écologique, et seulement
+            // quand le backend l'a effectivement proposé — donc jamais sur un
+            // trajet qui n'a été comparé à rien.
+            <span className="bg-eco/10 text-eco rounded-full px-2.5 py-0.5 text-xs font-semibold">
+              🌱 Meilleur pour le climat
+            </span>
+          )}
+        </div>
         <p className="text-sm text-neutral-700">
           <span className="text-ink font-medium">{formaterDuree(itineraire.totalDurationMin)}</span>{" "}
-          · {formaterDistance(itineraire.totalDistanceM)}
-          {changements > 0 && (
-            <>
-              {" "}
-              · {changements} changement{changements > 1 ? "s" : ""}
-            </>
-          )}
+          · {formaterDistance(itineraire.totalDistanceM)} ·{" "}
+          {changements === 0
+            ? "sans changement"
+            : `${changements} changement${changements > 1 ? "s" : ""}`}
         </p>
       </div>
+
+      <p className="mt-1 text-sm text-neutral-600">{EXPLICATIONS[itineraire.criterion]}</p>
+
+      <Compromis itineraire={itineraire} reference={reference} />
 
       {/* Le résumé du trajet EN UNE LIGNE — « Marche + Métro 8 ». C'est la
           première chose qu'on lit pour comparer deux propositions, bien
@@ -843,7 +888,18 @@ function ItineraireCarte({
           une navigation. Un lecteur d'écran annonce donc « activé » sur
           l'itinéraire porté par la carte — l'information ne repose pas que
           sur la couleur du tracé. */}
-      <div className="mt-4">
+      <div className="mt-4 flex flex-wrap gap-3">
+        <Button
+          type="button"
+          onClick={() => onVoirLeTrajet(itineraire)}
+          // Le libellé nomme l'itinéraire : trois boutons « Voir le trajet »
+          // identiques sur la même page seraient indistinguables au lecteur
+          // d'écran.
+          aria-label={`Voir le trajet ${CRITERES[itineraire.criterion].toLowerCase()} en détail`}
+        >
+          Voir le trajet
+        </Button>
+
         <button
           type="button"
           aria-pressed={selectionne}
@@ -859,12 +915,11 @@ function ItineraireCarte({
       </div>
 
       {/*
-        L'empreinte vient d'un SECOND appel : `POST /api/routes/search` ne
-        renvoie ni CO₂ ni éco-score. Elle est donc affichée à part, et son
-        échec n'efface jamais l'itinéraire ci-dessus (étape 5A-6).
+        L'empreinte arrive AVEC l'itinéraire depuis la Phase 4. Quand elle
+        manque, c'est l'itinéraire lui-même qui le dit — et il reste affiché.
       */}
       <div className="mt-4 border-t border-neutral-200 pt-4">
-        <Carbone carbone={carbone} />
+        <Carbone carbone={itineraire.carbon} />
       </div>
 
       <div className="mt-4 border-t border-neutral-200 pt-4">
@@ -884,40 +939,112 @@ function ItineraireCarte({
 // ---------------------------------------------------------------------------
 
 /**
- * Trois affichages pour trois situations, jamais confondues.
+ * Le compromis entre cet itinéraire et le plus rapide, en toutes lettres.
  *
- *   `undefined` → l'estimation est en cours
- *   `echec`     → le calcul n'a pas abouti, et on le DIT
- *   `ok`        → les chiffres réellement calculés
+ * ═══ C'EST LE CŒUR DU PRODUIT ═══
+ *
+ * « 3 min de plus, 5 g de CO₂ en moins » est la phrase qui permet de CHOISIR.
+ * Sans elle, l'usager voit trois itinéraires et aucune raison de préférer
+ * l'un à l'autre.
+ *
+ * ⚠️ RIEN N'EST AFFICHÉ QUAND RIEN N'EST COMPARABLE :
+ *   - sur l'itinéraire de référence lui-même (se comparer à soi n'apprend
+ *     rien) ;
+ *   - quand l'une des deux empreintes est indisponible — un écart calculé sur
+ *     une valeur manquante serait un chiffre inventé.
+ */
+function Compromis({
+  itineraire,
+  reference,
+}: {
+  itineraire: Itinerary;
+  reference: Itinerary;
+}) {
+  if (itineraire.criterion === reference.criterion) {
+    return null;
+  }
+
+  const minutes = itineraire.totalDurationMin - reference.totalDurationMin;
+  const ici = itineraire.carbon.co2Grams;
+  const la = reference.carbon.co2Grams;
+
+  // Les deux empreintes doivent exister : sinon l'écart n'est pas calculable,
+  // et l'inventer serait exactement ce que ce projet refuse.
+  const grammes = ici !== null && la !== null ? ici - la : null;
+
+  if (minutes === 0 && (grammes === null || grammes === 0)) {
+    return null;
+  }
+
+  const temps =
+    minutes === 0
+      ? "même durée"
+      : minutes > 0
+        ? `${formaterDuree(minutes)} de plus`
+        : `${formaterDuree(-minutes)} de moins`;
+
+  return (
+    <p className="mt-2 text-sm">
+      <span className="text-neutral-700">Par rapport au plus rapide : {temps}</span>
+      {grammes !== null && grammes !== 0 && (
+        <>
+          <span className="text-neutral-700">, </span>
+          <span className={grammes < 0 ? "text-eco font-medium" : "text-neutral-700"}>
+            {formaterCo2(Math.abs(grammes))} de CO₂ {grammes < 0 ? "en moins" : "en plus"}
+          </span>
+        </>
+      )}
+      <span className="text-neutral-700">.</span>
+    </p>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Empreinte carbone d'un itinéraire
+// ---------------------------------------------------------------------------
+
+/**
+ * Deux affichages pour deux situations, jamais confondues.
+ *
+ *   `CARBON_UNAVAILABLE` → le calcul n'a pas abouti, et on le DIT
+ *   `CARBON_AVAILABLE`   → les chiffres réellement calculés
  *
  * CE QUI N'EST JAMAIS FAIT : afficher « 0 g » à la place d'une erreur. Zéro
  * est une valeur légitime — un trajet entièrement à pied émet réellement
  * zéro — et l'employer comme valeur de repli rendrait les deux cas
  * indiscernables.
  */
-function Carbone({ carbone }: { carbone?: EtatCarbone }) {
-  if (!carbone) {
-    return <Spinner label="Estimation de l'empreinte carbone…" />;
-  }
-
-  if (carbone.statut === "echec") {
+function Carbone({ carbone }: { carbone: ItineraryCarbon }) {
+  if (carbone.status === "CARBON_UNAVAILABLE") {
     return (
       <p className="text-sm text-neutral-700">
         {/* Ni rouge alarmant ni silence : l'itinéraire reste valable, c'est
             seulement son empreinte qui manque. Le texte porte l'information,
             pas la couleur. */}
-        <span className="font-medium">Empreinte carbone indisponible.</span> {carbone.message}
+        <span className="font-medium">Empreinte carbone indisponible.</span>{" "}
+        {carbone.reason ?? ""}
       </p>
     );
   }
 
-  const { totalCo2Grams, savedVsCarGrams, ecoScore } = carbone.resultat;
+  const { co2Grams, savedVsCarGrams, ecoScore } = carbone;
+
+  // Le statut promet ces trois valeurs. Si l'une manquait malgré tout, mieux
+  // vaut le dire que d'afficher « NaN/100 ».
+  if (co2Grams === null || savedVsCarGrams === null || ecoScore === null) {
+    return (
+      <p className="text-sm text-neutral-700">
+        <span className="font-medium">Empreinte carbone incomplète.</span> Les chiffres ne sont pas
+        exploitables pour ce trajet.
+      </p>
+    );
+  }
 
   return (
     <dl className="grid gap-4 sm:grid-cols-3">
       <div>
         <dt className="text-sm text-neutral-600">CO₂ émis</dt>
-        <dd className="text-ink mt-0.5 font-semibold">{formaterCo2(totalCo2Grams)}</dd>
+        <dd className="text-ink mt-0.5 font-semibold">{formaterCo2(co2Grams)}</dd>
       </div>
       <div>
         <dt className="text-sm text-neutral-600">Économisé vs voiture</dt>
@@ -1038,15 +1165,23 @@ function Enregistrement({
  * Signale aussi le cas où AUCUN tracé n'a pu être dessiné — un arrêt sans
  * position connue, par exemple — au lieu de laisser une carte muette.
  */
+/**
+ * Équivalent textuel de la carte — AFFICHÉ, pas réservé aux lecteurs d'écran.
+ *
+ * ⚠️ IL DIT D'OÙ VIENT LE TRACÉ. Depuis la Phase 4 la carte dessine la voie
+ * réelle publiée par l'opérateur… mais seulement là où elle existe : 2 858 des
+ * 6 676 liaisons du réseau en ont une. Les autres sont reliées en droite.
+ *
+ * Annoncer « le tracé suit la voie » serait donc faux une fois sur deux, et
+ * annoncer « c'est un schéma » serait injuste pour le reste. La phrase change
+ * donc selon ce qui est RÉELLEMENT dessiné.
+ */
 function descriptionCarte(
   selectionne: Itinerary | null,
-  traceDessine: boolean,
-  nombreArrets: number,
+  troncons: readonly TronconTrace[] | null,
 ): string {
-  if (!selectionne) {
-    return nombreArrets === 1
-      ? "1 arrêt du réseau est localisé sur la carte. Lancez une recherche pour y voir un trajet."
-      : `${nombreArrets} arrêts du réseau sont localisés sur la carte. Lancez une recherche pour y voir un trajet.`;
+  if (!selectionne || !troncons || troncons.length === 0) {
+    return "Lancez une recherche pour voir un trajet sur la carte.";
   }
 
   const etapes = selectionne.segments.length;
@@ -1056,11 +1191,19 @@ function descriptionCarte(
     selectionne.totalDurationMin,
   )}.`;
 
-  if (!traceDessine) {
-    return `${entete} Le tracé ne peut pas être dessiné : la position d'au moins un arrêt de ce trajet est inconnue. Les étapes restent listées ci-dessous.`;
+  const approche = troncons.filter((troncon) => troncon.source === "STRAIGHT").length;
+
+  if (approche === 0) {
+    return `${entete} Le tracé suit la voie réelle publiée par l'opérateur. Le détail des étapes est listé ci-dessous.`;
   }
 
-  return `${entete} Le tracé relie les arrêts desservis en ligne droite : c'est un schéma du trajet, pas le chemin exact suivi par le véhicule. Le détail des étapes est listé ci-dessous.`;
+  if (approche === troncons.length) {
+    return `${entete} Aucun tracé de voie n'est publié pour ce trajet : les arrêts sont reliés en ligne droite, ce qui n'est PAS le chemin suivi par le véhicule. Le détail des étapes est listé ci-dessous.`;
+  }
+
+  return `${entete} Le tracé suit la voie réelle, sauf sur ${approche} ${
+    approche === 1 ? "portion dessinée" : "portions dessinées"
+  } en pointillés, où aucune géométrie n'est publiée — la ligne droite n'y est pas le chemin réel. Le détail des étapes est listé ci-dessous.`;
 }
 
 // ---------------------------------------------------------------------------

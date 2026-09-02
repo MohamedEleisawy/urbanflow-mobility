@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RecherchePage from "./page";
 import { AuthProvider } from "@/components/AuthProvider";
 import { ApiError, NetworkError } from "@/lib/api";
-import type { CarbonResult, FavoriteAddress, Itinerary, Stop, User } from "@/lib/types";
+import type {
+  FavoriteAddress,
+  Itinerary,
+  ItineraryCarbon,
+  Stop,
+  User,
+} from "@/lib/types";
 
 // Seul le RÉSEAU est simulé. Le formulaire, son état, sa validation et le
 // rendu des résultats sont les vrais : c'est précisément ce qu'on veut
@@ -28,15 +34,44 @@ vi.mock("@/lib/itineraires-api", async (original) => ({
 // Le remplaçant EXPOSE ses propriétés dans le DOM : c'est ainsi qu'on vérifie
 // ce que la page transmet réellement à la carte.
 vi.mock("@/components/CarteLeaflet", () => ({
-  default: ({ arrets, trace }: { arrets: unknown[]; trace: unknown[] | null }) => (
+  default: ({
+    arrets,
+    trace,
+    troncons,
+  }: {
+    arrets: unknown[];
+    trace: unknown[] | null;
+    troncons?: unknown[] | null;
+  }) => (
     <div
       data-testid="carte-leaflet"
       data-arrets={arrets.length}
       data-trace={
         trace === null ? "aucun" : trace.map((p) => (p as { nom: string }).nom).join(" > ")
       }
+      // Chaque tronçon est résumé par sa PROVENANCE et son nombre de points :
+      // c'est ce qui permet de vérifier qu'une géométrie réelle est bien
+      // suivie, et qu'une droite de repli est bien signalée comme telle.
+      data-troncons={
+        troncons == null
+          ? "aucun"
+          : troncons
+              .map((t) => {
+                const troncon = t as { source: string; points: unknown[] };
+                return `${troncon.source}:${troncon.points.length}`;
+              })
+              .join("|")
+      }
     />
   ),
+}));
+
+// Le routeur de Next : `useRouter` exige un contexte que jsdom n'a pas. On le
+// remplace par une navigation OBSERVABLE — c'est ainsi qu'on vérifie que
+// « Voir le trajet » ouvre bien /itineraire.
+const pousser = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: pousser, replace: vi.fn(), refresh: vi.fn() }),
 }));
 
 // Le VRAI AuthProvider est utilisé, avec le VRAI localStorage : c'est lui qui
@@ -110,78 +145,133 @@ const ARRETS: Stop[] = [
   },
 ];
 
+/**
+ * Empreinte disponible — la forme que le backend rend depuis la Phase 4.
+ *
+ * Elle voyage AVEC l'itinéraire : il n'y a plus de second appel `POST
+ * /api/carbone` depuis cet écran.
+ */
+const carbone = (
+  co2Grams: number,
+  carCo2Grams: number,
+  savedVsCarGrams: number,
+  ecoScore: number,
+): ItineraryCarbon => ({
+  status: "CARBON_AVAILABLE",
+  co2Grams,
+  carCo2Grams,
+  savedVsCarGrams,
+  ecoScore,
+  reason: null,
+});
+
+/**
+ * Empreinte INDISPONIBLE.
+ *
+ * ⚠️ TOUS LES CHAMPS À `null`, JAMAIS À ZÉRO : « nous ne savons pas » ne se
+ * dit pas « ce trajet ne pollue pas ».
+ */
+const CARBONE_ABSENT: ItineraryCarbon = {
+  status: "CARBON_UNAVAILABLE",
+  co2Grams: null,
+  carCo2Grams: null,
+  savedVsCarGrams: null,
+  ecoScore: null,
+  reason: "Le calcul des émissions est momentanément indisponible.",
+};
+
 const RAPIDE: Itinerary = {
   criterion: "FASTEST",
   totalDistanceM: 4300,
   totalDurationMin: 24,
+  numberOfTransfers: 0,
+  carbon: carbone(316, 937, 621, 66.3),
   segments: [
     {
       fromStopId: ARRETS[0].id,
       fromStopName: "Gare du Nord",
+      fromStopLat: ARRETS[0].latitude,
+      fromStopLon: ARRETS[0].longitude,
       toStopId: ARRETS[1].id,
       toStopName: "Châtelet",
+      toStopLat: ARRETS[1].latitude,
+      toStopLon: ARRETS[1].longitude,
       mode: "METRO",
       lineName: "4",
       operator: "RATP",
       lineId: "ligne-4",
       distanceM: 2800,
       durationMin: 9,
+      // Tracé RÉEL : ce segment doit être dessiné en trait plein.
+      geometry: {
+        type: "LineString",
+        // ⚠️ [longitude, latitude] — l'ordre GeoJSON.
+        coordinates: [
+          [ARRETS[0].longitude, ARRETS[0].latitude],
+          [2.36, 48.865],
+          [ARRETS[1].longitude, ARRETS[1].latitude],
+        ],
+      },
+      geometrySource: "SHAPE",
     },
     {
       fromStopId: ARRETS[1].id,
       fromStopName: "Châtelet",
+      fromStopLat: ARRETS[1].latitude,
+      fromStopLon: ARRETS[1].longitude,
       toStopId: ARRETS[2].id,
       toStopName: "Bastille",
+      toStopLat: ARRETS[2].latitude,
+      toStopLon: ARRETS[2].longitude,
       mode: "WALK",
       lineName: "À pied",
       operator: "—",
       lineId: "ligne-marche",
       distanceM: 1500,
       durationMin: 15,
+      // Aucune géométrie publiée : droite, et l'interface doit le dire.
+      geometry: null,
+      geometrySource: "STRAIGHT",
     },
   ],
 };
 
-const COURT: Itinerary = {
-  criterion: "SHORTEST",
+/**
+ * Le second itinéraire : plus lent, mais MOINS ÉMETTEUR.
+ *
+ * ⚠️ Les chiffres sont choisis pour que le compromis soit vérifiable de tête :
+ * 31 − 24 = 7 minutes de plus, et 316 − 200 = 116 g de CO₂ en moins.
+ */
+const PROPRE: Itinerary = {
+  criterion: "LOWEST_CO2",
   totalDistanceM: 3900,
   totalDurationMin: 31,
+  numberOfTransfers: 0,
+  carbon: carbone(200, 850, 650, 76.5),
   segments: [
     {
       fromStopId: ARRETS[0].id,
       fromStopName: "Gare du Nord",
+      fromStopLat: ARRETS[0].latitude,
+      fromStopLon: ARRETS[0].longitude,
       toStopId: ARRETS[2].id,
       toStopName: "Bastille",
+      toStopLat: ARRETS[2].latitude,
+      toStopLon: ARRETS[2].longitude,
       mode: "BUS",
       lineName: "38",
       operator: "RATP",
       lineId: "ligne-38",
       distanceM: 3900,
       durationMin: 31,
+      geometry: null,
+      geometrySource: "STRAIGHT",
     },
   ],
 };
 
-const CARBONE_RAPIDE: CarbonResult = {
-  totalDistanceM: 4300,
-  totalCo2Grams: 316,
-  carCo2Grams: 937,
-  savedVsCarGrams: 621,
-  ecoScore: 66.3,
-  breakdown: [
-    { mode: "METRO", distanceM: 2800, co2Grams: 11 },
-    { mode: "WALK", distanceM: 1500, co2Grams: 0 },
-  ],
-};
-
-const CARBONE_COURT: CarbonResult = {
-  totalDistanceM: 3900,
-  totalCo2Grams: 441,
-  carCo2Grams: 850,
-  savedVsCarGrams: 409,
-  ecoScore: 48.1,
-  breakdown: [{ mode: "BUS", distanceM: 3900, co2Grams: 441 }],
-};
+/// Ancien nom, conservé pour ne pas réécrire des dizaines de tests.
+const COURT = PROPRE;
 
 const rendre = () =>
   render(
@@ -235,9 +325,16 @@ describe("/recherche", () => {
     // doivent se comporter exactement comme avant.
     vi.mocked(listerAdresses).mockResolvedValue([]);
     vi.mocked(rechercherAdresses).mockReset();
-    vi.mocked(listerArrets).mockResolvedValue(ARRETS);
-    // Par défaut, l'estimation n'aboutit jamais : les tests qui ne parlent
-    // pas de carbone ne doivent pas dépendre de son résultat.
+    // ⚠️ UNE PAGE, PAS UN TABLEAU (Phase 4) : `GET /api/stops` est borné.
+    vi.mocked(listerArrets).mockResolvedValue({
+      items: ARRETS.map((arret) => ({ ...arret, distanceM: null })),
+      page: 1,
+      limit: 200,
+      total: ARRETS.length,
+    });
+    // L'écran ne doit plus JAMAIS appeler le calcul carbone : si un test le
+    // déclenchait malgré tout, la promesse en suspens le ferait échouer par
+    // dépassement de délai plutôt que passer inaperçu.
     vi.mocked(estimerCarbone).mockReturnValue(new Promise(() => {}));
   });
 
@@ -453,7 +550,7 @@ describe("/recherche", () => {
 
       expect(await screen.findByRole("heading", { name: /2 itinéraires proposés/i })).toBeDefined();
       expect(screen.getByText("Le plus rapide")).toBeDefined();
-      expect(screen.getByText("Le plus court")).toBeDefined();
+      expect(screen.getByText("Le plus écologique")).toBeDefined();
     });
 
     it("accorde le titre au singulier pour une seule proposition", async () => {
@@ -462,7 +559,7 @@ describe("/recherche", () => {
 
       await chercher();
 
-      // Le backend déduplique quand le plus court est aussi le plus rapide.
+      // Le backend déduplique quand deux critères désignent le même trajet.
       expect(await screen.findByRole("heading", { name: /1 itinéraire proposé/i })).toBeDefined();
     });
 
@@ -728,24 +825,29 @@ describe("/recherche", () => {
     it("est présente dès le chargement, avant toute recherche", async () => {
       rendre();
 
-      expect(await screen.findByRole("heading", { name: /arrêts du réseau/i })).toBeDefined();
-      expect(carte()).toBeDefined();
+      expect(await screen.findByRole("heading", { name: /^carte$/i })).toBeDefined();
+      expect(screen.getByText(/lancez une recherche pour voir un trajet/i)).toBeDefined();
     });
 
-    it("reçoit les arrêts DÉJÀ chargés, sans appel supplémentaire", async () => {
+    it("ne dessine QUE les arrêts du trajet, jamais le réseau entier", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
       rendre();
 
+      await chercher();
+
+      // ⚠️ TROIS arrêts — ceux des deux segments — et non les 1 934 du
+      // réseau. La carte n'a plus besoin d'aucun référentiel : chaque segment
+      // porte les coordonnées de ses deux extrémités.
       await waitFor(() => expect(carte().getAttribute("data-arrets")).toBe("3"));
-      // Un seul GET /api/stops pour toute la page : ni la carte ni les étapes
-      // ne résolvent un arrêt par un appel individuel (pas de N+1).
-      expect(listerArrets).toHaveBeenCalledTimes(1);
     });
 
     it("ne trace RIEN tant qu'aucune recherche n'a eu lieu", async () => {
       rendre();
 
-      await waitFor(() => expect(traceAffiche()).toBe("aucun"));
-      expect(screen.getByText(/3 arrêts du réseau sont localisés/i)).toBeDefined();
+      // Avant toute recherche il n'y a rien à montrer, et la carte le dit
+      // plutôt que d'afficher un fond vide sans explication.
+      expect(await screen.findByText(/aucun arrêt à afficher/i)).toBeDefined();
+      expect(screen.queryByTestId("carte-leaflet")).toBeNull();
     });
 
     it("trace l'itinéraire retenu après une recherche", async () => {
@@ -806,36 +908,42 @@ describe("/recherche", () => {
       await waitFor(() => expect(traceAffiche()).toBe("Gare du Nord > Châtelet > Bastille"));
     });
 
-    it("ne trace RIEN quand un arrêt du trajet est inconnu", async () => {
-      // Un itinéraire dont une étape désigne un arrêt absent de GET /api/stops.
-      vi.mocked(rechercherItineraires).mockResolvedValue([
-        {
-          ...RAPIDE,
-          segments: [
-            { ...RAPIDE.segments[0], toStopId: "arret-absent-du-referentiel" },
-            { ...RAPIDE.segments[1], fromStopId: "arret-absent-du-referentiel" },
-          ],
-        },
-      ]);
-      rendre();
-
-      await chercher();
-
-      // Relier directement les arrêts connus sauterait une étape réelle :
-      // mieux vaut ne rien tracer, et le DIRE.
-      await waitFor(() => expect(traceAffiche()).toBe("aucun"));
-      expect(screen.getByText(/le tracé ne peut pas être dessiné/i)).toBeDefined();
-    });
-
-    it("annonce que le tracé est un SCHÉMA, pas le chemin réel", async () => {
+    it("dessine la VOIE RÉELLE quand l'opérateur la publie", async () => {
+      // Les deux segments de RAPIDE : le métro a une géométrie, la marche non.
       vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
       rendre();
 
       await chercher();
 
-      // Le backend ne stocke aucune géométrie de voie : le dire est la seule
-      // façon honnête d'afficher une ligne droite entre deux arrêts.
-      expect(await screen.findByText(/schéma du trajet, pas le chemin exact/i)).toBeDefined();
+      // Le premier tronçon suit les trois points du `LineString`, converti de
+      // [lon, lat] (GeoJSON) vers [lat, lon] (Leaflet).
+      await waitFor(() =>
+        expect(carte().getAttribute("data-troncons")).toBe("SHAPE:3|STRAIGHT:2"),
+      );
+    });
+
+    it("distingue une portion approchée d'un tracé réel, et le DIT", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      // Un segment sur deux est approché : la description doit l'annoncer
+      // sans pour autant nier le tracé réel de l'autre.
+      const description = await screen.findByText(/1 portion dessinée/i);
+      expect(description.textContent).toContain("pointillés");
+      expect(description.textContent).toContain("n'y est pas le chemin réel");
+    });
+
+    it("annonce un tracé ENTIÈREMENT approché quand aucune géométrie n'existe", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([PROPRE]);
+      rendre();
+
+      await chercher();
+
+      expect(
+        await screen.findByText(/aucun tracé de voie n'est publié pour ce trajet/i),
+      ).toBeDefined();
     });
 
     it("garde les étapes lisibles EN TEXTE, carte ou pas", async () => {
@@ -896,79 +1004,60 @@ describe("/recherche", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Estimation carbone (étape 5A-6)
+  // Empreinte carbone (Phase 4 : portée par l'itinéraire lui-même)
   // ---------------------------------------------------------------------------
   describe("empreinte carbone", () => {
-    it("transmet les segments de l'itinéraire au calcul", async () => {
+    it("n'appelle JAMAIS le calcul carbone depuis cet écran", async () => {
       vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
-      vi.mocked(estimerCarbone).mockResolvedValue(CARBONE_RAPIDE);
       rendre();
 
       await chercher();
+      await screen.findByText("316 g");
 
-      await waitFor(() => expect(estimerCarbone).toHaveBeenCalledWith(RAPIDE.segments));
+      // ⚠️ L'ASSERTION CENTRALE DE CE BLOC. L'écran faisait un
+      // `POST /api/carbone` par itinéraire APRÈS la recherche. Le backend
+      // rend désormais l'empreinte AVEC chaque itinéraire : un aller-retour
+      // de moins, et surtout plus aucun risque d'attribuer une estimation au
+      // mauvais trajet.
+      expect(estimerCarbone).not.toHaveBeenCalled();
     });
 
-    it("affiche les chiffres réellement calculés", async () => {
+    it("affiche les chiffres rendus par le backend", async () => {
       vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
-      vi.mocked(estimerCarbone).mockResolvedValue(CARBONE_RAPIDE);
       rendre();
 
       await chercher();
 
-      // 316 g, 621 g économisés, éco-score arrondi.
+      // 316 g émis, 621 g économisés, éco-score arrondi à l'entier.
       expect(await screen.findByText("316 g")).toBeDefined();
       expect(screen.getByText("621 g")).toBeDefined();
       expect(screen.getByText("66/100")).toBeDefined();
     });
 
-    it("affiche un indicateur pendant l'estimation", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
-      vi.mocked(estimerCarbone).mockReturnValue(new Promise(() => {}));
+    it("garde l'itinéraire visible quand l'empreinte est indisponible", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        { ...RAPIDE, carbon: CARBONE_ABSENT },
+      ]);
       rendre();
 
       await chercher();
 
-      expect(await screen.findByText(/estimation de l'empreinte carbone/i)).toBeDefined();
-    });
-
-    it("garde l'itinéraire visible PENDANT l'estimation", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
-      vi.mocked(estimerCarbone).mockReturnValue(new Promise(() => {}));
-      rendre();
-
-      await chercher();
-
-      // Deux niveaux de données : l'itinéraire est déjà connu, il n'a aucune
-      // raison d'attendre le carbone pour s'afficher.
-      expect(await screen.findByText("Le plus rapide")).toBeDefined();
-      expect(
-        within(screen.getByRole("region", { name: /itinéraire/i })).getByText(/24 min/),
-      ).toBeDefined();
-    });
-
-    it("garde l'itinéraire visible quand l'estimation ÉCHOUE", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
-      vi.mocked(estimerCarbone).mockRejectedValue(
-        new ApiError(503, "Le service de calcul carbone est indisponible."),
-      );
-      rendre();
-
-      await chercher();
-
-      // LA RÈGLE DE L'ÉTAPE : une panne du calcul carbone ne fait pas
-      // disparaître un itinéraire valide.
+      // LA RÈGLE, INCHANGÉE DEPUIS L'ÉTAPE 4D-2 : une panne du calcul carbone
+      // ne fait pas disparaître un itinéraire valide.
       expect(await screen.findByText("Le plus rapide")).toBeDefined();
       expect(screen.getByText(/empreinte carbone indisponible/i)).toBeDefined();
     });
 
-    it("annonce un refus de calcul sans le confondre avec une panne", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
-      // 422 : un mode reconnu mais sans facteur d'émission (ESCOOTER). Le
-      // refus est légitime, et son motif doit remonter à l'usager.
-      vi.mocked(estimerCarbone).mockRejectedValue(
-        new ApiError(422, "Aucun facteur d'émission pour le mode ESCOOTER"),
-      );
+    it("affiche le motif rendu par le backend, sans le réécrire", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        {
+          ...RAPIDE,
+          carbon: {
+            ...CARBONE_ABSENT,
+            reason: "Aucun facteur d'émission pour le mode ESCOOTER.",
+          },
+        },
+      ]);
       rendre();
 
       await chercher();
@@ -977,20 +1066,10 @@ describe("/recherche", () => {
       expect(texte.parentElement?.textContent).toContain("ESCOOTER");
     });
 
-    it("reste lisible si le microservice est injoignable", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
-      vi.mocked(estimerCarbone).mockRejectedValue(new NetworkError("Le serveur est injoignable."));
-      rendre();
-
-      await chercher();
-
-      const texte = await screen.findByText(/empreinte carbone indisponible/i);
-      expect(texte.parentElement?.textContent).toContain("injoignable");
-    });
-
     it("n'affiche JAMAIS 0 g à la place d'une erreur", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
-      vi.mocked(estimerCarbone).mockRejectedValue(new ApiError(503, "Panne"));
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        { ...RAPIDE, carbon: CARBONE_ABSENT },
+      ]);
       rendre();
 
       await chercher();
@@ -1002,65 +1081,189 @@ describe("/recherche", () => {
       expect(screen.queryByText("0 g")).toBeNull();
     });
 
-    it("estime CHAQUE itinéraire séparément", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, COURT]);
-      vi.mocked(estimerCarbone)
-        .mockResolvedValueOnce(CARBONE_RAPIDE)
-        .mockResolvedValueOnce(CARBONE_COURT);
-      rendre();
-
-      await chercher();
-
-      expect(await screen.findByText("316 g")).toBeDefined();
-      expect(screen.getByText("441 g")).toBeDefined();
-      expect(estimerCarbone).toHaveBeenCalledTimes(2);
-    });
-
-    it("n'attribue JAMAIS l'estimation d'un itinéraire à un autre", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, COURT]);
-      vi.mocked(estimerCarbone)
-        .mockResolvedValueOnce(CARBONE_RAPIDE)
-        .mockResolvedValueOnce(CARBONE_COURT);
+    it("n'attribue JAMAIS l'empreinte d'un itinéraire à un autre", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, PROPRE]);
       rendre();
 
       await chercher();
       await screen.findByText("316 g");
 
       // Chaque carte est inspectée SÉPARÉMENT : les chiffres du plus rapide
-      // ne doivent pas apparaître sous le plus court.
+      // ne doivent pas apparaître sous le plus écologique.
       const cartes = screen.getAllByRole("listitem");
       const carteRapide = cartes.find((c) => c.textContent?.includes("Le plus rapide"))!;
-      const carteCourte = cartes.find((c) => c.textContent?.includes("Le plus court"))!;
+      const cartePropre = cartes.find((c) => c.textContent?.includes("Le plus écologique"))!;
 
       expect(within(carteRapide).getByText("316 g")).toBeDefined();
-      expect(within(carteRapide).queryByText("441 g")).toBeNull();
-      expect(within(carteCourte).getByText("441 g")).toBeDefined();
-      expect(within(carteCourte).queryByText("316 g")).toBeNull();
+      expect(within(carteRapide).queryByText("200 g")).toBeNull();
+      expect(within(cartePropre).getByText("200 g")).toBeDefined();
+      expect(within(cartePropre).queryByText("316 g")).toBeNull();
     });
 
-    it("laisse l'estimation réussie visible quand l'AUTRE échoue", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, COURT]);
-      vi.mocked(estimerCarbone)
-        .mockResolvedValueOnce(CARBONE_RAPIDE)
-        .mockRejectedValueOnce(new ApiError(503, "Panne"));
+    it("laisse l'empreinte disponible visible quand l'AUTRE manque", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        RAPIDE,
+        { ...PROPRE, carbon: CARBONE_ABSENT },
+      ]);
       rendre();
 
       await chercher();
 
-      // C'est ce que `allSettled` garantit et que `all` interdirait : un
-      // échec n'emporte pas le succès de l'autre.
+      // Les deux sorts sont indépendants : l'un manquant n'emporte pas
+      // l'autre.
       expect(await screen.findByText("316 g")).toBeDefined();
       expect(screen.getByText(/empreinte carbone indisponible/i)).toBeDefined();
     });
+  });
 
-    it("n'estime rien quand aucun itinéraire n'est trouvé", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([]);
+  // ---------------------------------------------------------------------------
+  // Passage au détail du trajet
+  // ---------------------------------------------------------------------------
+  describe("voir le trajet", () => {
+    beforeEach(() => {
+      window.sessionStorage.clear();
+      pousser.mockClear();
+    });
+
+    it("mémorise l'itinéraire choisi et ouvre /itineraire", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, PROPRE]);
+      rendre();
+      const utilisateur = await chercher();
+
+      await utilisateur.click(
+        await screen.findByRole("button", {
+          name: /voir le trajet le plus écologique en détail/i,
+        }),
+      );
+
+      expect(pousser).toHaveBeenCalledWith("/itineraire");
+
+      // ⚠️ C'EST BIEN L'ITINÉRAIRE CLIQUÉ qui est mémorisé, pas celui affiché
+      // sur la carte : chaque carte porte son propre bouton.
+      const memorise = JSON.parse(
+        window.sessionStorage.getItem("urbanflow.itineraire")!,
+      ) as { itineraire: { criterion: string } };
+
+      expect(memorise.itineraire.criterion).toBe("LOWEST_CO2");
+    });
+
+    it("mémorise les LIBELLÉS saisis, pas les noms d'arrêts", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+      const utilisateur = await chercher();
+
+      await utilisateur.click(
+        await screen.findByRole("button", { name: /voir le trajet le plus rapide en détail/i }),
+      );
+
+      const memorise = JSON.parse(
+        window.sessionStorage.getItem("urbanflow.itineraire")!,
+      ) as { origine: { latitude: number }; destination: { latitude: number } };
+
+      // Les coordonnées sont celles RÉELLEMENT envoyées à la recherche.
+      expect(memorise.origine.latitude).toBe(48.88);
+      expect(memorise.destination.latitude).toBe(48.853);
+    });
+
+    it("un bouton par itinéraire, nommé sans ambiguïté", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, PROPRE]);
       rendre();
 
       await chercher();
 
-      await screen.findByText(/aucun itinéraire trouvé/i);
-      expect(estimerCarbone).not.toHaveBeenCalled();
+      // Trois boutons « Voir le trajet » identiques seraient indistinguables
+      // au lecteur d'écran : chacun porte le nom de SON critère.
+      expect(
+        await screen.findByRole("button", { name: /voir le trajet le plus rapide en détail/i }),
+      ).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: /voir le trajet le plus écologique en détail/i }),
+      ).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Comparaison écologique — l'identité du produit
+  // ---------------------------------------------------------------------------
+  describe("comparaison écologique", () => {
+    it("chiffre le compromis par rapport au plus rapide", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, PROPRE]);
+      rendre();
+
+      await chercher();
+
+      // 31 − 24 = 7 minutes de plus ; 316 − 200 = 116 g de moins. C'est LA
+      // phrase qui permet de choisir.
+      // La phrase est composée de plusieurs fragments : on lit le paragraphe
+      // entier, qui est ce que l'usager voit.
+      const compromis = (await screen.findByText(/par rapport au plus rapide/i)).closest("p")!;
+      expect(compromis.textContent).toContain("7 min de plus");
+      expect(compromis.textContent).toContain("116 g");
+      expect(compromis.textContent).toContain("en moins");
+    });
+
+    it("ne compare PAS l'itinéraire de référence à lui-même", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, PROPRE]);
+      rendre();
+
+      await chercher();
+      await screen.findByText(/par rapport au plus rapide/i);
+
+      const cartes = screen.getAllByRole("listitem");
+      const carteRapide = cartes.find((c) => c.textContent?.includes("Le plus rapide"))!;
+
+      expect(within(carteRapide).queryByText(/par rapport au plus rapide/i)).toBeNull();
+    });
+
+    it("ne chiffre AUCUN écart quand une empreinte manque", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        RAPIDE,
+        { ...PROPRE, carbon: CARBONE_ABSENT },
+      ]);
+      rendre();
+
+      await chercher();
+
+      // L'écart de temps reste calculable et affiché ; l'écart de CO₂, non —
+      // le calculer sur une valeur manquante serait un chiffre inventé.
+      const compromis = (await screen.findByText(/par rapport au plus rapide/i)).closest("p")!;
+      expect(compromis.textContent).toContain("7 min de plus");
+      expect(compromis.textContent).not.toContain("de CO₂");
+    });
+
+    it("marque le trajet écologique d'un badge, et lui seul", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, PROPRE]);
+      rendre();
+
+      await chercher();
+
+      const badge = await screen.findByText(/meilleur pour le climat/i);
+      const cartes = screen.getAllByRole("listitem");
+      const cartePropre = cartes.find((c) => c.textContent?.includes("Le plus écologique"))!;
+      const carteRapide = cartes.find((c) => c.textContent?.includes("Le plus rapide"))!;
+
+      expect(cartePropre.contains(badge)).toBe(true);
+      expect(within(carteRapide).queryByText(/meilleur pour le climat/i)).toBeNull();
+    });
+
+    it("annonce le nombre de changements rendu par le backend", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        { ...RAPIDE, numberOfTransfers: 2 },
+      ]);
+      rendre();
+
+      await chercher();
+
+      expect(await screen.findByText(/2 changements/i)).toBeDefined();
+    });
+
+    it("dit « sans changement » plutôt que « 0 changement »", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      expect(await screen.findByText(/sans changement/i)).toBeDefined();
     });
   });
 
@@ -1069,7 +1272,7 @@ describe("/recherche", () => {
   // ---------------------------------------------------------------------------
   describe("enregistrement", () => {
     /// Le bouton d'UN itinéraire, désigné par son libellé.
-    const boutonEnregistrer = (critere: "rapide" | "court") =>
+    const boutonEnregistrer = (critere: "rapide" | "écologique") =>
       screen.getByRole("button", {
         name: new RegExp(`enregistrer le trajet le plus ${critere}`, "i"),
       });
@@ -1120,8 +1323,8 @@ describe("/recherche", () => {
         await chercher();
 
         // Deux boutons DISTINCTS : leur nom dit ce qu'ils enregistrent.
-        expect(await screen.findByRole("button", { name: /le plus rapide/i })).toBeDefined();
-        expect(screen.getByRole("button", { name: /le plus court/i })).toBeDefined();
+        expect(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i })).toBeDefined();
+        expect(screen.getByRole("button", { name: /enregistrer le trajet le plus écologique/i })).toBeDefined();
       });
 
       it("envoie le corps EXACT attendu par le backend", async () => {
@@ -1130,7 +1333,7 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /le plus rapide/i }));
+        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
 
         // Coordonnées des arrêts CHOISIS, et pour chaque segment le seul
         // triplet du réseau. Ni durée, ni distance, ni CO2, ni éco-score :
@@ -1166,7 +1369,7 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /le plus court/i }));
+        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus écologique/i }));
 
         await waitFor(() => {
           const corps = vi.mocked(enregistrerItineraire).mock.calls[0][0];
@@ -1187,11 +1390,11 @@ describe("/recherche", () => {
         const utilisateur = await chercher();
 
         // On clique sur le SECOND bouton.
-        await utilisateur.click(await screen.findByRole("button", { name: /le plus court/i }));
+        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus écologique/i }));
 
         await waitFor(() => {
           const corps = vi.mocked(enregistrerItineraire).mock.calls[0][0];
-          // Un seul segment, celui du plus court — jamais les deux du plus
+          // Un seul segment, celui du plus écologique — jamais les deux du plus
           // rapide. C'est ce que garantit l'absence d'état « sélection ».
           expect(corps.segments).toHaveLength(1);
           expect(corps.segments[0].lineId).toBe("ligne-38");
@@ -1204,7 +1407,7 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /le plus rapide/i }));
+        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
 
         await waitFor(() => {
           // Passage par `unknown` : le type du corps n'a pas de signature
@@ -1236,7 +1439,7 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /le plus rapide/i }));
+        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
 
         // Sans ce verrou, un double clic créerait deux trajets identiques.
         await waitFor(() =>
@@ -1257,7 +1460,7 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /le plus rapide/i }));
+        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
 
         // Pendant l'envoi : aucune confirmation.
         await screen.findByRole("button", { name: /enregistrement/i });
@@ -1274,7 +1477,7 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /le plus rapide/i }));
+        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
 
         expect(await screen.findByText(/trajet enregistré/i)).toBeDefined();
         expect(screen.getByText("Le plus rapide")).toBeDefined();
@@ -1286,11 +1489,11 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /le plus rapide/i }));
+        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
         await screen.findByText(/trajet enregistré/i);
 
         // L'autre carte garde son bouton : elle n'a pas été enregistrée.
-        expect(boutonEnregistrer("court")).toBeDefined();
+        expect(boutonEnregistrer("écologique")).toBeDefined();
         expect(enregistrerItineraire).toHaveBeenCalledTimes(1);
       });
 
@@ -1300,7 +1503,7 @@ describe("/recherche", () => {
           vi.mocked(enregistrerItineraire).mockRejectedValue(erreur);
           rendre();
           const utilisateur = await chercher();
-          await utilisateur.click(await screen.findByRole("button", { name: /le plus rapide/i }));
+          await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
           return screen.findByRole("alert");
         };
 
@@ -1796,17 +1999,25 @@ describe("/recherche", () => {
       criterion: "FASTEST",
       totalDistanceM: 4000,
       totalDurationMin: 10,
+      numberOfTransfers: 0,
+      carbon: carbone(16, 872, 856, 98.2),
       segments: Array.from({ length: 5 }, (_, i) => ({
         fromStopId: `s${i}`,
         fromStopName: `Arrêt ${i}`,
+        fromStopLat: 48.85 + i * 0.001,
+        fromStopLon: 2.35 + i * 0.001,
         toStopId: `s${i + 1}`,
         toStopName: `Arrêt ${i + 1}`,
+        toStopLat: 48.85 + (i + 1) * 0.001,
+        toStopLon: 2.35 + (i + 1) * 0.001,
         mode: "METRO" as const,
         lineName: "8",
         operator: "RATP",
         lineId: "ligne-8",
         distanceM: 800,
         durationMin: 2,
+        geometry: null,
+        geometrySource: "STRAIGHT" as const,
       })),
     };
 

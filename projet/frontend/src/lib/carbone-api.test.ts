@@ -11,14 +11,20 @@ const segment = (
 ): ItinerarySegment => ({
   fromStopId: "a",
   fromStopName: "A",
+  fromStopLat: 48.86,
+  fromStopLon: 2.34,
   toStopId: "b",
   toStopName: "B",
+  toStopLat: 48.87,
+  toStopLon: 2.35,
   mode: "BUS",
   lineName: "38",
   operator: "RATP",
   lineId: "ligne-38",
   distanceM: 3900,
   durationMin: 31,
+  geometry: null,
+  geometrySource: "STRAIGHT",
   ...surcharge,
 });
 

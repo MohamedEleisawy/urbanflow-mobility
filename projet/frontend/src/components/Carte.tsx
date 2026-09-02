@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import type { PointCarte } from "@/lib/carte";
+import type { PointCarte, TronconTrace } from "@/lib/carte";
 
 // =============================================================================
 // Carte interactive (bloc 5B)
@@ -50,6 +50,13 @@ export interface CarteProps {
   arrets: readonly PointCarte[];
   /** Trajet mis en avant, ou `null` si aucun n'est sélectionné. */
   trace?: readonly PointCarte[] | null;
+  /**
+   * Tracés réels du trajet, un par segment (Phase 4).
+   *
+   * Quand ils sont fournis, la carte dessine la voie telle que l'opérateur la
+   * publie, colorée par mode — et en pointillés là où la géométrie manque.
+   */
+  troncons?: readonly TronconTrace[] | null;
 }
 
 /**
@@ -60,7 +67,13 @@ export interface CarteProps {
  * lui fournir. La carte reste ainsi un COMPLÉMENT : la retirer ne ferait
  * perdre aucune information.
  */
-export function Carte({ titre, description, arrets, trace = null }: CarteProps) {
+export function Carte({
+  titre,
+  description,
+  arrets,
+  trace = null,
+  troncons = null,
+}: CarteProps) {
   return (
     <section aria-labelledby="carte" className="space-y-2">
       <h2 id="carte" className="text-ink text-lg font-semibold">
@@ -71,12 +84,12 @@ export function Carte({ titre, description, arrets, trace = null }: CarteProps) 
           Leaflet sans hauteur mesurable ne dessine rien du tout. Plus basse
           sur mobile, où l'écran doit rester utilisable sous la carte. */}
       <div className="h-64 w-full overflow-hidden rounded-lg border border-neutral-200 sm:h-96">
-        {arrets.length === 0 && !trace ? (
+        {arrets.length === 0 && !trace && !troncons ? (
           <p className="flex h-full w-full items-center justify-center bg-neutral-100 px-6 text-center text-sm text-neutral-600">
             Aucun arrêt à afficher sur la carte.
           </p>
         ) : (
-          <CarteLeaflet arrets={arrets} trace={trace} />
+          <CarteLeaflet arrets={arrets} trace={trace} troncons={troncons} />
         )}
       </div>
 

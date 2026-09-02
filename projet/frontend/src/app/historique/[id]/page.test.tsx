@@ -80,12 +80,6 @@ const arret = (id: string, name: string): Stop => ({
   gtfsStopId: null,
 });
 
-const ARRETS: Stop[] = [
-  arret(GARE, "Gare du Nord"),
-  arret(CHATELET, "Châtelet"),
-  arret(BASTILLE, "Bastille"),
-];
-
 /**
  * Trajet de test — construit pour PIÉGER l'alignement segments/carbone.
  *
@@ -119,6 +113,10 @@ const TRAJET: RouteDetail = {
       routeId: ID_TRAJET,
       fromStopId: GARE,
       toStopId: CHATELET,
+      // Phase 4 : les arrêts voyagent AVEC le segment. L'écran ne charge plus
+      // le référentiel du réseau pour traduire deux identifiants.
+      fromStop: arret(GARE, "Gare du Nord"),
+      toStop: arret(CHATELET, "Châtelet"),
     },
     {
       id: "seg-2",
@@ -132,6 +130,8 @@ const TRAJET: RouteDetail = {
       routeId: ID_TRAJET,
       fromStopId: CHATELET,
       toStopId: BASTILLE,
+      fromStop: arret(CHATELET, "Châtelet"),
+      toStop: arret(BASTILLE, "Bastille"),
     },
   ],
   carbonRecords: [
@@ -177,9 +177,7 @@ describe("/historique/[id]", () => {
     remplacer.mockReset();
     vi.mocked(utilisateurCourant).mockReset();
     vi.mocked(detailTrajet).mockReset();
-    vi.mocked(listerArrets).mockReset();
     vi.mocked(supprimerTrajet).mockReset();
-    vi.mocked(listerArrets).mockResolvedValue(ARRETS);
   });
 
   // ---------------------------------------------------------------------------
@@ -261,14 +259,18 @@ describe("/historique/[id]", () => {
       ).toBeDefined();
     });
 
-    it("reste lisible si le référentiel des arrêts est indisponible", async () => {
-      vi.mocked(listerArrets).mockRejectedValue(new NetworkError("Le serveur est injoignable."));
-
+    it("ne charge JAMAIS le référentiel des arrêts (Phase 4)", async () => {
       rendre();
 
-      // Le trajet s'affiche quand même : seuls les NOMS manquent.
-      expect(await screen.findByText("24 min")).toBeDefined();
-      expect(screen.getByRole("heading", { name: /trajet enregistré/i, level: 1 })).toBeDefined();
+      await screen.findByText("24 min");
+
+      // ⚠️ CETTE ASSERTION EST LE CŒUR DU CHANGEMENT. Cet écran chargeait
+      // autrefois LA TOTALITÉ des arrêts du réseau — 1 934 lignes, bientôt
+      // 35 000 — pour traduire quatre identifiants en noms. Le backend joint
+      // désormais `fromStop` et `toStop` à chaque segment.
+      expect(listerArrets).not.toHaveBeenCalled();
+      // Et les noms sont bien là, sans ce second appel.
+      expect(screen.getByText("Gare du Nord → Châtelet")).toBeDefined();
     });
   });
 
@@ -398,28 +400,26 @@ describe("/historique/[id]", () => {
       await waitFor(() => expect(traceAffiche()).toBe("Gare du Nord > Châtelet > Bastille"));
     });
 
-    it("réutilise les arrêts déjà chargés, sans appel par étape", async () => {
+    it("dessine les arrêts du TRAJET, sans aucun appel supplémentaire", async () => {
       vi.mocked(detailTrajet).mockResolvedValue(TRAJET);
 
       rendre();
 
+      // Trois arrêts distincts pour deux segments : le `toStop` du premier
+      // est le `fromStop` du second, et n'est pas dessiné deux fois.
       await waitFor(() => expect(carte().getAttribute("data-arrets")).toBe("3"));
-      // Un seul GET /api/stops : la carte ne résout pas chaque arrêt
-      // individuellement (pas de N+1 réseau).
-      expect(listerArrets).toHaveBeenCalledTimes(1);
+      expect(listerArrets).not.toHaveBeenCalled();
     });
 
-    it("ne trace RIEN si le référentiel des arrêts est indisponible", async () => {
-      vi.mocked(detailTrajet).mockResolvedValue(TRAJET);
-      vi.mocked(listerArrets).mockRejectedValue(new NetworkError("Le serveur est injoignable."));
+    it("ne trace RIEN quand le trajet ne porte aucun segment", async () => {
+      vi.mocked(detailTrajet).mockResolvedValue({ ...TRAJET, segments: [] });
 
       rendre();
 
-      // Sans positions, aucune ligne ne peut être honnête. Leaflet n'est même
+      // Sans segment, il n'y a aucune position à relier. Leaflet n'est même
       // pas chargé : il n'y a rien à dessiner, et la carte le dit.
       expect(await screen.findByText(/aucun arrêt à afficher/i)).toBeDefined();
       expect(screen.queryByTestId("carte-leaflet")).toBeNull();
-      expect(screen.getByText(/le tracé ne peut pas être dessiné/i)).toBeDefined();
       // Le trajet, lui, reste entièrement affiché.
       expect(screen.getByText("24 min")).toBeDefined();
     });

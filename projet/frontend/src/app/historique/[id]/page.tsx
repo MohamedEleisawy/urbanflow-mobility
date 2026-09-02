@@ -13,9 +13,9 @@ import { ErrorMessage } from "@/components/ErrorMessage";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Spinner } from "@/components/Spinner";
 import { ApiError, messageDErreur } from "@/lib/api";
-import { indexerArrets, pointDepuisArret, traceDepuisSegments } from "@/lib/carte";
+import type { PointCarte } from "@/lib/carte";
 import { detailTrajet } from "@/lib/espace-api";
-import { listerArrets, supprimerTrajet } from "@/lib/itineraires-api";
+import { supprimerTrajet } from "@/lib/itineraires-api";
 import {
   formaterCo2,
   formaterDate,
@@ -23,7 +23,7 @@ import {
   formaterDuree,
   LIBELLES_MODES,
 } from "@/lib/format";
-import type { RouteDetail, Stop } from "@/lib/types";
+import type { RouteDetail } from "@/lib/types";
 
 // =============================================================================
 // Détail d'un trajet enregistré (étape 5A-8)
@@ -85,8 +85,12 @@ function ContenuDetail({ id }: { id: string }) {
    * coordonnées, présentes dans la MÊME réponse : les garder évite un second
    * appel — et surtout un appel par étape, soit le N+1 que le dossier
    * proscrit.
+   *
+   * ⚠️ IL N'Y A PLUS DE SECOND APPEL DU TOUT (Phase 4). Cet écran chargeait
+   * LA TOTALITÉ des arrêts du réseau pour traduire deux identifiants en noms.
+   * Le backend joint désormais `fromStop` et `toStop` à chaque segment : la
+   * réponse du trajet se suffit à elle-même.
    */
-  const [arrets, setArrets] = useState<Stop[]>([]);
   const [erreur, setErreur] = useState<string | null>(null);
   const [introuvable, setIntrouvable] = useState(false);
 
@@ -97,48 +101,71 @@ function ContenuDetail({ id }: { id: string }) {
 
     let abandonne = false;
 
-    // Deux appels en parallèle : le trajet et le référentiel des arrêts.
-    // Le second sert uniquement à traduire des identifiants en noms, et son
-    // échec ne doit pas empêcher d'afficher le trajet — d'où `allSettled`,
-    // comme en 5A-6 pour l'empreinte carbone.
-    Promise.allSettled([detailTrajet(jeton, id), listerArrets()]).then(
-      ([sortTrajet, sortArrets]) => {
+    // UN SEUL APPEL désormais : le trajet porte tout ce que cet écran
+    // affiche, arrêts compris.
+    detailTrajet(jeton, id)
+      .then((detail) => {
         if (abandonne) return;
-
-        if (sortTrajet.status === "fulfilled") {
-          setTrajet(sortTrajet.value);
-          setErreur(null);
-          setIntrouvable(false);
-        } else {
-          const echec: unknown = sortTrajet.reason;
-          // 404 : le trajet n'existe pas, OU appartient à quelqu'un d'autre.
-          // Le backend répond délibérément la MÊME chose dans les deux cas —
-          // dire « ce trajet appartient à un autre usager » révélerait son
-          // existence. Le frontend ne doit donc pas non plus faire la
-          // différence.
-          setIntrouvable(echec instanceof ApiError && echec.status === 404);
-          setErreur(messageDErreur(echec));
-          setTrajet(null);
-        }
-
-        if (sortArrets.status === "fulfilled") {
-          setArrets(sortArrets.value);
-        }
-      },
-    );
+        setTrajet(detail);
+        setErreur(null);
+        setIntrouvable(false);
+      })
+      .catch((echec: unknown) => {
+        if (abandonne) return;
+        // 404 : le trajet n'existe pas, OU appartient à quelqu'un d'autre.
+        // Le backend répond délibérément la MÊME chose dans les deux cas —
+        // dire « ce trajet appartient à un autre usager » révélerait son
+        // existence. Le frontend ne doit donc pas non plus faire la
+        // différence.
+        setIntrouvable(echec instanceof ApiError && echec.status === 404);
+        setErreur(messageDErreur(echec));
+        setTrajet(null);
+      });
 
     return () => {
       abandonne = true;
     };
   }, [jeton, id]);
 
-  // Indexé par `id` INTERNE, car c'est lui que portent les segments
-  // (`fromStopId`, `toStopId`). Surtout PAS par `gtfsStopId` : celui-ci est
-  // nul pour tout arrêt saisi à la main, qui perdrait alors son nom.
-  const index = useMemo(() => indexerArrets(arrets), [arrets]);
-  const noms = useMemo(() => new Map(arrets.map((arret) => [arret.id, arret.name])), [arrets]);
-  const pointsReseau = useMemo(() => arrets.map(pointDepuisArret), [arrets]);
-  const trace = trajet ? traceDepuisSegments(trajet.segments, index) : null;
+  // Les arrêts viennent des SEGMENTS eux-mêmes : plus aucun référentiel à
+  // charger, plus aucun identifiant à résoudre.
+  const noms = useMemo(() => {
+    const table = new Map<string, string>();
+
+    for (const segment of trajet?.segments ?? []) {
+      table.set(segment.fromStopId, segment.fromStop.name);
+      table.set(segment.toStopId, segment.toStop.name);
+    }
+
+    return table;
+  }, [trajet]);
+
+  // Le tracé d'un trajet ENREGISTRÉ reste schématique : `Segment` ne porte pas
+  // de géométrie — seul `NetworkLink` en a une, et un trajet enregistré ne
+  // renvoie pas vers ses liaisons. On le dit dans la description plutôt que de
+  // laisser croire au chemin exact.
+  const trace = useMemo(() => {
+    const points: PointCarte[] = [];
+    const vus = new Set<string>();
+
+    const ajouter = (arret: { id: string; name: string; latitude: number; longitude: number }) => {
+      if (vus.has(arret.id)) return;
+      vus.add(arret.id);
+      points.push({
+        id: arret.id,
+        nom: arret.name,
+        latitude: arret.latitude,
+        longitude: arret.longitude,
+      });
+    };
+
+    for (const segment of trajet?.segments ?? []) {
+      ajouter(segment.fromStop);
+      ajouter(segment.toStop);
+    }
+
+    return points.length > 0 ? points : null;
+  }, [trajet]);
 
   return (
     <Container>
@@ -171,7 +198,7 @@ function ContenuDetail({ id }: { id: string }) {
             <Carte
               titre="Ce trajet sur la carte"
               description={descriptionCarte(trajet, trace !== null)}
-              arrets={pointsReseau}
+              arrets={trace ?? []}
               trace={trace}
             />
             <Segments trajet={trajet} arrets={noms} />

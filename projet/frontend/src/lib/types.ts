@@ -105,6 +105,31 @@ export interface Stop {
   gtfsStopId: string | null;
 }
 
+/**
+ * Un arrêt tel que le rend `GET /api/stops`.
+ *
+ * `distanceM` n'est renseigné que si la requête portait un point ; il vaut
+ * `null` sinon — et non zéro, qui signifierait « vous y êtes ».
+ */
+export interface StopAvecDistance extends Stop {
+  distanceM: number | null;
+}
+
+/**
+ * Réponse de `GET /api/stops` (Phase 4).
+ *
+ * ⚠️ CE N'EST PLUS UN TABLEAU. L'endpoint rendait autrefois la table entière ;
+ * il est désormais TOUJOURS borné — page, recherche par nom, ou voisinage.
+ * Le réseau compte 1 934 arrêts aujourd'hui et en comptera plus de 35 000 une
+ * fois le bus importé.
+ */
+export interface PaginatedStops {
+  items: StopAvecDistance[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
 // ---------------------------------------------------------------------------
 // Recherche d'itinéraire
 // ---------------------------------------------------------------------------
@@ -123,15 +148,50 @@ export interface SearchItineraryRequest {
   toLon: number;
 }
 
-/** Critère selon lequel un itinéraire a été optimisé. */
-export type ItineraryCriterion = "FASTEST" | "SHORTEST";
+/**
+ * Critère selon lequel un itinéraire a été optimisé.
+ *
+ * ⚠️ `SHORTEST` A DISPARU du contrat backend (Phase 4). Dans un réseau de
+ * transport, « le plus court en mètres » désignait presque toujours le même
+ * trajet que « le plus rapide ». Il est remplacé par deux critères qui
+ * répondent, eux, à des questions réelles : « je ne veux pas de
+ * correspondance » et « je veux le trajet le moins émetteur ».
+ */
+export type ItineraryCriterion = "FASTEST" | "FEWEST_TRANSFERS" | "LOWEST_CO2";
+
+/**
+ * Un tracé GeoJSON `LineString`.
+ *
+ * ⚠️ ORDRE DES COORDONNÉES : `[longitude, latitude]`, comme l'impose la
+ * RFC 7946 — l'INVERSE de Leaflet, qui attend `[lat, lon]`. Une inversion
+ * placerait Paris en Somalie sans lever la moindre erreur.
+ */
+export interface GeoJsonLineString {
+  type: "LineString";
+  coordinates: [number, number][];
+}
+
+/**
+ * D'où vient le tracé d'un segment.
+ *
+ * `SHAPE`    : géométrie réelle publiée par l'opérateur (`shapes.txt`) ;
+ * `STRAIGHT` : aucune géométrie disponible — au client de relier les deux
+ *              arrêts par une droite, QUI N'EST PAS le trajet réel.
+ *
+ * L'interface ne doit jamais présenter les deux de la même façon.
+ */
+export type GeometrySource = "SHAPE" | "STRAIGHT";
 
 /** Une portion de trajet, entre deux arrêts. */
 export interface ItinerarySegment {
   fromStopId: string;
   fromStopName: string;
+  fromStopLat: number;
+  fromStopLon: number;
   toStopId: string;
   toStopName: string;
+  toStopLat: number;
+  toStopLon: number;
   mode: TransportMode;
   /** Nom affiché de la ligne — « 38 », « A »… */
   lineName: string;
@@ -140,12 +200,44 @@ export interface ItinerarySegment {
   lineId: string;
   distanceM: number;
   durationMin: number;
+  /** Tracé réel, ou `null` quand l'opérateur n'en publie pas. */
+  geometry: GeoJsonLineString | null;
+  geometrySource: GeometrySource;
+}
+
+/**
+ * Disponibilité du calcul carbone.
+ *
+ * ⚠️ `CARBON_UNAVAILABLE` n'est pas « zéro gramme ». Tous les champs chiffrés
+ * valent alors `null`, et l'interface doit écrire « indisponible », jamais
+ * « 0 g » — ce qui annoncerait un trajet parfaitement propre.
+ */
+export type CarbonStatus = "CARBON_AVAILABLE" | "CARBON_UNAVAILABLE";
+
+export interface ItineraryCarbon {
+  status: CarbonStatus;
+  co2Grams: number | null;
+  /** Ce que le MÊME trajet aurait émis en voiture individuelle. */
+  carCo2Grams: number | null;
+  savedVsCarGrams: number | null;
+  /** 0 = voiture individuelle, 100 = mobilité douce. */
+  ecoScore: number | null;
+  /** Message destiné à l'usager quand le calcul n'a pas abouti. */
+  reason: string | null;
 }
 
 export interface Itinerary {
   criterion: ItineraryCriterion;
   totalDistanceM: number;
   totalDurationMin: number;
+  /**
+   * Changements de LIGNE — la marche n'en est pas un.
+   *
+   * ⚠️ VIENT DU BACKEND, qui en est désormais la source. Le recalculer ici
+   * ferait deux implémentations d'une même règle, qui divergeraient.
+   */
+  numberOfTransfers: number;
+  carbon: ItineraryCarbon;
   segments: ItinerarySegment[];
 }
 
@@ -190,6 +282,16 @@ export interface RouteSegment {
   routeId: string;
   fromStopId: string;
   toStopId: string;
+  /**
+   * Arrêts de départ et d'arrivée, joints par le backend (Phase 4).
+   *
+   * ⚠️ Sans eux, l'écran d'historique devait charger LA TOTALITÉ des arrêts
+   * du réseau pour retrouver deux noms — ce que la pagination de
+   * `GET /api/stops` interdit désormais, et qui coûtait de toute façon des
+   * centaines de kilo-octets pour deux libellés.
+   */
+  fromStop: Stop;
+  toStop: Stop;
 }
 
 /** Empreinte d'une portion de trajet (`model CarbonRecord`). */

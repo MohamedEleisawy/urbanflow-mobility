@@ -15,28 +15,85 @@ import type {
   Itinerary,
   ItinerarySegment,
   RouteHistoryItem,
+  PaginatedStops,
   RouteSegment,
   SearchItineraryRequest,
-  Stop,
 } from "./types";
 
 /**
- * Tous les arrêts du réseau.
+ * Paramètres de `GET /api/stops`.
  *
- * POURQUOI CHARGER LA LISTE ENTIÈRE. Le backend n'expose AUCUNE recherche
- * d'arrêt par nom : `StopsController` ne déclare que `GET /` et `GET /:id`.
- * Il n'existe pas non plus de géocodage — rien ne transforme « Gare du Nord »
- * en coordonnées.
- *
- * Charger la liste et faire choisir l'usager est donc la seule façon
- * d'obtenir des coordonnées sans inventer un contrat. C'est acceptable
- * aujourd'hui : le réseau de démonstration compte six arrêts, et un import
- * GTFS réel en mettrait quelques milliers — un champ de saisie avec
- * autocomplétion côté serveur deviendrait alors nécessaire, et c'est un
- * ajout BACKEND, pas un contournement frontend.
+ * ⚠️ `lat` et `lon` VONT ENSEMBLE : le backend refuse l'un sans l'autre (400).
  */
-export function listerArrets(): Promise<Stop[]> {
-  return apiFetch<Stop[]>("/stops");
+export interface RequeteArrets {
+  page?: number;
+  limit?: number;
+  /** Fragment de nom, au moins deux caractères. */
+  query?: string;
+  lat?: number;
+  lon?: number;
+  /** Rayon en mètres, 5 000 au maximum. */
+  radiusM?: number;
+}
+
+/**
+ * Arrêts du réseau — TOUJOURS bornés (Phase 4).
+ *
+ * ═══ CE QUI A CHANGÉ, ET POURQUOI ═══
+ *
+ * Cette fonction rendait `Stop[]` : la table ENTIÈRE. C'était acceptable tant
+ * que le réseau tenait en quelques milliers d'arrêts, et c'était même
+ * documenté comme tel. Ça ne l'est plus : le backend en compte 1 934 et en
+ * comptera plus de 35 000 une fois le bus importé — plusieurs mégaoctets de
+ * JSON à chaque chargement de page.
+ *
+ * L'endpoint est donc borné, et cette fonction rend maintenant une PAGE.
+ * Trois façons de demander, combinables :
+ *
+ *   { page, limit }        parcours ;
+ *   { query }              recherche par nom ;
+ *   { lat, lon, radiusM }  voisinage, ordonné du plus proche au plus loin.
+ *
+ * ⚠️ L'ÉCRAN DE RECHERCHE N'EN A PLUS BESOIN pour afficher un itinéraire :
+ * depuis la Phase 4, chaque segment porte les noms ET les coordonnées de ses
+ * deux arrêts. Il n'y a plus aucune résolution d'identifiant à faire côté
+ * client.
+ */
+export function listerArrets(
+  requete: RequeteArrets = {},
+  signal?: AbortSignal,
+): Promise<PaginatedStops> {
+  const parametres = new URLSearchParams();
+
+  for (const [cle, valeur] of Object.entries(requete)) {
+    if (valeur !== undefined) {
+      parametres.set(cle, String(valeur));
+    }
+  }
+
+  const suffixe = parametres.toString();
+
+  return apiFetch<PaginatedStops>(`/stops${suffixe ? `?${suffixe}` : ""}`, {
+    signal,
+  });
+}
+
+/**
+ * Arrêts autour d'un point, du plus proche au plus éloigné.
+ *
+ * Raccourci de lecture pour le cas le plus courant côté carte : « qu'y a-t-il
+ * autour de ce que je regarde ? ».
+ */
+export function arretsProches(
+  latitude: number,
+  longitude: number,
+  options: { radiusM?: number; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<PaginatedStops> {
+  return listerArrets(
+    { lat: latitude, lon: longitude, ...options },
+    signal,
+  );
 }
 
 /**
@@ -46,12 +103,19 @@ export function listerArrets(): Promise<Stop[]> {
  * cherche lui-même l'arrêt le PLUS PROCHE de chaque point, dans un rayon de
  * 2 km. Passer un `stopId` n'est pas prévu par le contrat.
  *
- * Rend 0, 1 ou 2 itinéraires :
- *   - `FASTEST` et `SHORTEST`, calculés par deux exécutions de Dijkstra ;
- *   - un SEUL quand les deux chemins sont identiques (le backend
- *     déduplique) ;
- *   - AUCUN quand les deux points tombent sur le même arrêt, quand aucun
- *     arrêt n'est à moins de 2 km, ou quand le réseau n'offre pas de chemin.
+ * Rend 0 à 3 itinéraires, un par critère :
+ *   - `FASTEST`           le plus rapide ;
+ *   - `FEWEST_TRANSFERS`  le moins de changements de ligne ;
+ *   - `LOWEST_CO2`        le moins émetteur.
+ *
+ * ⚠️ DEUX CRITÈRES PEUVENT DÉSIGNER LE MÊME TRAJET — c'est même le cas
+ * normal sur un réseau homogène. Le backend déduplique alors et ne le rend
+ * qu'une fois, sous le premier critère de cette liste. L'interface ne doit
+ * donc JAMAIS supposer que les trois sont présents.
+ *
+ * Aucun itinéraire n'est rendu quand les deux points tombent sur les mêmes
+ * quais, quand aucun arrêt n'est à moins de 2 km, ou quand le réseau n'offre
+ * pas de chemin.
  *
  * Ce dernier cas répond **200 avec un tableau vide**, jamais une erreur :
  * « aucun itinéraire » est une réponse, pas une panne.

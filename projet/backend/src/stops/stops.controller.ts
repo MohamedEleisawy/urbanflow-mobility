@@ -7,11 +7,13 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { RoleEnum } from '@prisma/client';
 import { StopsService } from './stops.service';
 import { CreateStopDto } from './dto/create-stop.dto';
+import { FindStopsQueryDto } from './dto/find-stops-query.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -52,9 +54,16 @@ export class StopsController {
   // place "UC07 Consulter la carte" et "UC01 Rechercher un itinéraire" dans
   // le bloc "Mobilité (Libre accès)". Un visiteur non connecté doit donc
   // pouvoir consulter les arrêts. Ces données ne sont pas personnelles.
+  // ⚠️ TOUJOURS BORNÉ (Phase 4). Il n'existe plus aucun moyen d'obtenir la
+  // totalité des arrêts en une requête : voir StopsService.findAll() pour la
+  // raison, et FindStopsQueryDto pour les trois façons de demander.
+  //
+  // Un paramètre non déclaré dans le DTO est rejeté en 400 par le
+  // ValidationPipe global (`forbidNonWhitelisted`), qui s'applique aussi aux
+  // paramètres d'URL.
   @Get()
-  findAll() {
-    return this.stopsService.findAll();
+  findAll(@Query() query: FindStopsQueryDto) {
+    return this.stopsService.findAll(query);
   }
 
   @Get(':id')

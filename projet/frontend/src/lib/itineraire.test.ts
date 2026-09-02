@@ -20,14 +20,23 @@ const segment = (
 ): ItinerarySegment => ({
   fromStopId: `${de}-id`,
   fromStopName: de,
+  // Coordonnées factices mais VALIDES : ces fonctions ne les lisent pas, mais
+  // le contrat les exige, et un `0, 0` placerait tout dans le golfe de Guinée
+  // si un jour quelqu'un s'en servait.
+  fromStopLat: 48.86,
+  fromStopLon: 2.34,
   toStopId: `${vers}-id`,
   toStopName: vers,
+  toStopLat: 48.87,
+  toStopLon: 2.35,
   mode,
   lineName,
   operator: "IDFM",
   lineId,
   distanceM,
   durationMin,
+  geometry: null,
+  geometrySource: "STRAIGHT",
 });
 
 /// Le cas réel qui a motivé ce module : cinq tronçons sur la ligne 8,

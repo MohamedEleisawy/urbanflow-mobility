@@ -234,7 +234,7 @@ describe('POST /api/routes/search (e2e)', () => {
       .expect(200);
   });
 
-  it('renvoie deux itinéraires : le plus rapide et le plus court', async () => {
+  it('renvoie deux itinéraires : le plus rapide et le moins émetteur', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/routes/search')
       .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
@@ -244,22 +244,39 @@ describe('POST /api/routes/search (e2e)', () => {
       criterion: string;
       totalDistanceM: number;
       totalDurationMin: number;
+      numberOfTransfers: number;
       segments: { fromStopName: string; toStopName: string }[];
     }[];
 
     expect(itineraires).toHaveLength(2);
 
     const rapide = itineraires.find((i) => i.criterion === 'FASTEST');
-    const court = itineraires.find((i) => i.criterion === 'SHORTEST');
+    const propre = itineraires.find((i) => i.criterion === 'LOWEST_CO2');
 
     // Le plus rapide passe par B (20 min) plutôt que le direct (30 min).
     expect(rapide?.totalDurationMin).toBe(20);
     expect(rapide?.totalDistanceM).toBe(3800);
     expect(rapide?.segments).toHaveLength(2);
 
-    // Le plus court est le trajet direct (3000 m).
-    expect(court?.totalDistanceM).toBe(3000);
-    expect(court?.segments).toHaveLength(1);
+    // Le moins émetteur est le trajet DIRECT, et le calcul est vérifiable à
+    // la main avec les facteurs du dossier (BUS = 113 g/km, WALK = 0) :
+    //
+    //   A→B→C : 600 m à pied (0 g) + 3 200 m de bus  = 361,6 g
+    //   A→C   :                      3 000 m de bus  = 339,0 g
+    //
+    // Il est plus lent de 10 minutes et émet 22,6 g de moins : c'est
+    // exactement le compromis que ce critère doit rendre visible.
+    expect(propre?.totalDistanceM).toBe(3000);
+    expect(propre?.totalDurationMin).toBe(30);
+    expect(propre?.segments).toHaveLength(1);
+
+    // ⚠️ AUCUN itinéraire FEWEST_TRANSFERS : le plus rapide n'en comporte
+    // déjà aucun (la marche n'est pas une correspondance), donc les deux
+    // critères désignent le même trajet, rendu une seule fois.
+    expect(rapide?.numberOfTransfers).toBe(0);
+    expect(
+      itineraires.filter((i) => i.criterion === 'FEWEST_TRANSFERS'),
+    ).toHaveLength(0);
   });
 
   it('renvoie le nom des arrêts dans chaque segment', async () => {
@@ -294,7 +311,7 @@ describe('POST /api/routes/search (e2e)', () => {
     }[];
 
     const rapide = itineraires.find((i) => i.criterion === 'FASTEST');
-    const court = itineraires.find((i) => i.criterion === 'SHORTEST');
+    const propre = itineraires.find((i) => i.criterion === 'LOWEST_CO2');
 
     // Le trajet rapide emprunte DEUX lignes différentes : la marche puis le
     // bus 12. Vérifier les valeurs, et pas seulement leur présence, est ce
@@ -313,8 +330,8 @@ describe('POST /api/routes/search (e2e)', () => {
 
     // Le trajet direct emprunte une TROISIÈME ligne, distincte des deux
     // précédentes bien qu'elle soit du même mode.
-    expect(court?.segments[0].lineName).toBe('Bus 99 E2E');
-    expect(court?.segments[0].mode).toBe('BUS');
+    expect(propre?.segments[0].lineName).toBe('Bus 99 E2E');
+    expect(propre?.segments[0].mode).toBe('BUS');
   });
 
   it('renvoie ces champs AUSSI pour un segment à pied', async () => {
@@ -345,21 +362,28 @@ describe('POST /api/routes/search (e2e)', () => {
       .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
       .expect(200);
 
-    const court = (
+    const propre = (
       response.body as { criterion: string; segments: object[] }[]
-    ).find((i) => i.criterion === 'SHORTEST');
+    ).find((i) => i.criterion === 'LOWEST_CO2');
 
-    // Non-régression : 4E-2 puis 4E-3A n'ont fait qu'AJOUTER des clés.
-    expect(Object.keys(court!.segments[0]).sort()).toEqual([
+    // Non-régression : 4E-2, 4E-3A puis la Phase 4 n'ont fait qu'AJOUTER des
+    // clés. Aucune n'a jamais été retirée ni renommée.
+    expect(Object.keys(propre!.segments[0]).sort()).toEqual([
       'distanceM',
       'durationMin',
       'fromStopId',
+      'fromStopLat',
+      'fromStopLon',
       'fromStopName',
+      'geometry',
+      'geometrySource',
       'lineId',
       'lineName',
       'mode',
       'operator',
       'toStopId',
+      'toStopLat',
+      'toStopLon',
       'toStopName',
     ]);
   });
@@ -380,13 +404,13 @@ describe('POST /api/routes/search (e2e)', () => {
     }[];
 
     const rapide = itineraires.find((i) => i.criterion === 'FASTEST');
-    const court = itineraires.find((i) => i.criterion === 'SHORTEST');
+    const propre = itineraires.find((i) => i.criterion === 'LOWEST_CO2');
 
     expect(rapide?.segments.map((s) => s.lineId)).toEqual([
       ligneMarcheId,
       ligneBus12Id,
     ]);
-    expect(court?.segments[0].lineId).toBe(ligneBus99Id);
+    expect(propre?.segments[0].lineId).toBe(ligneBus99Id);
   });
 
   it('distingue deux lignes concurrentes de MÊME nom par leur lineId', async () => {
@@ -398,19 +422,20 @@ describe('POST /api/routes/search (e2e)', () => {
       .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
       .expect(200);
 
-    const court = (
+    const propre = (
       response.body as {
         criterion: string;
         segments: { lineId: string; lineName: string; distanceM: number }[];
       }[]
-    ).find((i) => i.criterion === 'SHORTEST');
+    ).find((i) => i.criterion === 'LOWEST_CO2');
 
-    // La liaison retenue est la plus courte (3000 m), pas la concurrente.
-    expect(court?.segments[0].lineId).toBe(ligneBus99Id);
-    expect(court?.segments[0].lineId).not.toBe(ligneBus99BisId);
-    expect(court?.segments[0].distanceM).toBe(3000);
+    // La liaison retenue est la moins émettrice (3 000 m à 113 g/km, contre
+    // 5 000 m pour la concurrente), pas l'autre.
+    expect(propre?.segments[0].lineId).toBe(ligneBus99Id);
+    expect(propre?.segments[0].lineId).not.toBe(ligneBus99BisId);
+    expect(propre?.segments[0].distanceM).toBe(3000);
     // Le nom, lui, aurait été identique dans les deux cas.
-    expect(court?.segments[0].lineName).toBe('Bus 99 E2E');
+    expect(propre?.segments[0].lineName).toBe('Bus 99 E2E');
   });
 
   it('ne divulgue aucune donnée personnelle (routeId, userId, horaires)', async () => {
