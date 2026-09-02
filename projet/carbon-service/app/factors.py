@@ -54,6 +54,7 @@ class ModeTransport(StrEnum):
     BUS = "BUS"
     TRAM = "TRAM"
     METRO = "METRO"
+    TRAIN = "TRAIN"
     BIKE = "BIKE"
     ESCOOTER = "ESCOOTER"
     CAR = "CAR"
@@ -70,6 +71,12 @@ FACTEURS_G_PAR_KM: dict[ModeTransport, float] = {
     ModeTransport.BIKE: 0.0,
     ModeTransport.TRAM: 4.0,
     ModeTransport.METRO: 4.0,
+    # TRAIN (RER, Transilien). Le dossier ne le nomme pas explicitement, mais
+    # il donne 4 g/km au TRAM comme au METRO : c'est sa valeur pour le RAIL
+    # ELECTRIQUE. Le RER et le Transilien d'Ile-de-France sont du rail
+    # electrique. On applique donc la convention du dossier a un mode de meme
+    # nature, plutot que d'inventer un chiffre.
+    ModeTransport.TRAIN: 4.0,
     ModeTransport.BUS: 113.0,
     ModeTransport.CAR: 218.0,
 }

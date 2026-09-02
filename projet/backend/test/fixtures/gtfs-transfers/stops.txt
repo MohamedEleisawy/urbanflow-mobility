@@ -1,0 +1,6 @@
+stop_id,stop_name,stop_lat,stop_lon,location_type,wheelchair_boarding
+TA0,Terminus A,-34.00,19.00,0,1
+TAC,Echange quai A,-34.01,19.00,0,1
+TBC,Echange quai B,-34.0101,19.0001,0,1
+TB2,Terminus B,-34.02,19.00,0,0
+TX,Arret isole,-34.50,19.50,0,0

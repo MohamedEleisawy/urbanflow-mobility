@@ -8,10 +8,17 @@ describe('mapRouteType', () => {
     expect(mapRouteType(3)).toBe(ModeTransport.BUS);
   });
 
-  it('renvoie null pour le train et le ferry', () => {
-    // ModeTransport ne contient ni RAIL ni FERRY : l'étendre exigerait une
-    // migration, décision volontairement reportée.
-    expect(mapRouteType(2)).toBeNull();
+  it('traduit le TRAIN, ajouté avec le réseau ferré', () => {
+    // ⚠️ `route_type = 2` rendait `null` : les 24 lignes ferroviaires du flux
+    // réel — RER A à E, Transilien, TER — étaient rejetées à l'import. Le
+    // mode `TRAIN` a été ajouté avec son facteur carbone, et ces lignes sont
+    // désormais routables.
+    expect(mapRouteType(2)).toBe(ModeTransport.TRAIN);
+  });
+
+  it('renvoie null pour le ferry', () => {
+    // ModeTransport ne contient pas de FERRY, et le flux d'Île-de-France
+    // n'en publie aucun : rien ne justifierait de l'ajouter.
     expect(mapRouteType(4)).toBeNull();
   });
 

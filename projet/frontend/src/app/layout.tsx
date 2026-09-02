@@ -4,6 +4,7 @@ import "./globals.css";
 import { AuthProvider } from "@/components/AuthProvider";
 import { Header } from "@/components/Header";
 import { ServiceWorker } from "@/components/ServiceWorker";
+import { ThemeProvider } from "@/components/ThemeProvider";
 
 // Geist, la police retenue par le dossier (§2.8.4).
 //
@@ -81,6 +82,10 @@ export default function RootLayout({
           l'application ne transforme donc pas les pages en composants client.
         */}
         <AuthProvider>
+          {/* Applique le thème choisi dans les préférences (refonte mobilité).
+              À L'INTÉRIEUR d'`AuthProvider` : il lit le profil, et retombe
+              donc sur le thème système dès la déconnexion. */}
+          <ThemeProvider />
           <Header />
 
           {/* `flex-1` : le pied de page reste en bas même sur une page courte. */}

@@ -41,6 +41,8 @@ vi.mock("@/components/CarteLeaflet", () => ({
 
 // Le VRAI AuthProvider est utilisé, avec le VRAI localStorage : c'est lui qui
 // décide si l'enregistrement est proposé.
+vi.mock("@/lib/geocoding-api", () => ({ rechercherAdresses: vi.fn() }));
+
 vi.mock("@/lib/adresses-api", () => ({
   listerAdresses: vi.fn(),
   creerAdresse: vi.fn(),
@@ -67,6 +69,7 @@ const { listerArrets, rechercherItineraires, enregistrerItineraire } =
 const { estimerCarbone } = await import("@/lib/carbone-api");
 const { utilisateurCourant } = await import("@/lib/auth-api");
 const { listerAdresses } = await import("@/lib/adresses-api");
+const { rechercherAdresses } = await import("@/lib/geocoding-api");
 
 const PROFIL: User = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -193,16 +196,26 @@ const authentifier = () => {
   vi.mocked(utilisateurCourant).mockResolvedValue(PROFIL);
 };
 
+/// Les arrêts du réseau vivent désormais dans un bloc REPLIÉ (Phase 3A) : la
+/// saisie libre d'adresse est l'entrée principale, la liste d'arrêts une
+/// option secondaire. Les tests antérieurs l'ouvrent donc avant de choisir.
+const ouvrirArrets = async () => {
+  const repli = await screen.findByText("Choisir directement un arrêt du réseau");
+  if (!(repli.closest("details") as HTMLDetailsElement | null)?.open) {
+    await userEvent.setup().click(repli);
+  }
+};
+
 /// Choisit un départ et une arrivée, puis lance la recherche.
 const chercher = async (depart = "Gare du Nord", arrivee = "Bastille") => {
   const utilisateur = userEvent.setup();
 
   await utilisateur.selectOptions(
-    await screen.findByLabelText("Départ"),
+    await (await ouvrirArrets(), screen.getByLabelText("Arrêt de départ")),
     screen.getAllByRole("option", { name: new RegExp(depart) })[0],
   );
   await utilisateur.selectOptions(
-    screen.getByLabelText("Arrivée"),
+    screen.getByLabelText("Arrêt d'arrivée"),
     screen.getAllByRole("option", { name: new RegExp(arrivee) })[1],
   );
   await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
@@ -221,6 +234,7 @@ describe("/recherche", () => {
     // Par defaut : aucune adresse favorite. Les tests anterieurs au bloc 7
     // doivent se comporter exactement comme avant.
     vi.mocked(listerAdresses).mockResolvedValue([]);
+    vi.mocked(rechercherAdresses).mockReset();
     vi.mocked(listerArrets).mockResolvedValue(ARRETS);
     // Par défaut, l'estimation n'aboutit jamais : les tests qui ne parlent
     // pas de carbone ne doivent pas dépendre de son résultat.
@@ -234,22 +248,23 @@ describe("/recherche", () => {
     it("affiche les deux listes d'arrêts et le bouton", async () => {
       rendre();
 
-      expect(await screen.findByLabelText("Départ")).toBeDefined();
-      expect(screen.getByLabelText("Arrivée")).toBeDefined();
+      expect(await (await ouvrirArrets(), screen.getByLabelText("Arrêt de départ"))).toBeDefined();
+      expect(screen.getByLabelText("Arrêt d'arrivée")).toBeDefined();
       expect(screen.getByRole("button", { name: /rechercher/i })).toBeDefined();
     });
 
     it("propose les arrêts renvoyés par le backend", async () => {
       rendre();
 
-      const depart = await screen.findByLabelText("Départ");
-      // Trois arrêts + l'option d'invite + « Ma position » (bloc 5D-1).
-      expect(within(depart).getAllByRole("option")).toHaveLength(5);
+      const depart = await (await ouvrirArrets(), screen.getByLabelText("Arrêt de départ"));
+      // Trois arrêts + l'option d'invite. « Ma position » a quitté la liste
+      // pour devenir un bouton (Phase 3A).
+      expect(within(depart).getAllByRole("option")).toHaveLength(4);
       expect(within(depart).getByText(/Châtelet/)).toBeDefined();
 
       // L'ARRIVÉE, elle, n'offre PAS la position : on ne va pas là où on est
       // déjà. Trois arrêts + l'invite.
-      const arrivee = screen.getByLabelText("Arrivée");
+      const arrivee = screen.getByLabelText("Arrêt d'arrivée");
       expect(within(arrivee).getAllByRole("option")).toHaveLength(4);
       expect(within(arrivee).queryByText(/ma position/i)).toBeNull();
     });
@@ -257,7 +272,7 @@ describe("/recherche", () => {
     it("signale les arrêts accessibles en fauteuil", async () => {
       rendre();
 
-      const depart = await screen.findByLabelText("Départ");
+      const depart = await (await ouvrirArrets(), screen.getByLabelText("Arrêt de départ"));
       // `pmrAccessible` est une donnée réelle du modèle, utile à une partie
       // des usagers.
       expect(within(depart).getByText(/Gare du Nord ♿/)).toBeDefined();
@@ -287,7 +302,7 @@ describe("/recherche", () => {
   describe("validation", () => {
     it("désactive la recherche tant que les deux arrêts ne sont pas choisis", async () => {
       rendre();
-      await screen.findByLabelText("Départ");
+      await (await ouvrirArrets(), screen.getByLabelText("Arrêt de départ"));
 
       expect(screen.getByRole("button", { name: /rechercher/i }).hasAttribute("disabled")).toBe(
         true,
@@ -297,10 +312,10 @@ describe("/recherche", () => {
     it("refuse un départ et une arrivée identiques", async () => {
       rendre();
       const utilisateur = userEvent.setup();
-      const depart = await screen.findByLabelText("Départ");
+      const depart = await (await ouvrirArrets(), screen.getByLabelText("Arrêt de départ"));
 
       await utilisateur.selectOptions(depart, ARRETS[0].id);
-      await utilisateur.selectOptions(screen.getByLabelText("Arrivée"), ARRETS[0].id);
+      await utilisateur.selectOptions(screen.getByLabelText("Arrêt d'arrivée"), ARRETS[0].id);
 
       // Un aller-retour réseau pour apprendre cela serait discourtois : le
       // backend rendrait une liste vide.
@@ -382,7 +397,7 @@ describe("/recherche", () => {
   describe("résultats", () => {
     it("n'affiche rien avant la première recherche", async () => {
       rendre();
-      await screen.findByLabelText("Départ");
+      await (await ouvrirArrets(), screen.getByLabelText("Arrêt de départ"));
 
       // « Pas encore cherché » n'est pas « rien trouvé ».
       //
@@ -404,22 +419,30 @@ describe("/recherche", () => {
       // textuel de la carte reprend volontairement les mêmes chiffres, et une
       // recherche sur toute la page en trouverait donc deux.
       const liste = within(screen.getByRole("region", { name: /itinéraire/i }));
-      // 24 min, 4300 m → « 4,3 km », 2 étapes.
+      // 24 min, 4300 m → « 4,3 km ». Le nombre de tronçons a disparu de
+      // l'en-tête au profit du RÉSUMÉ des modes : « 2 étapes » n'apprenait
+      // rien, « Métro 4 + Marche » dit ce qu'on fait.
       expect(liste.getByText(/24 min/)).toBeDefined();
       expect(liste.getByText(/4,3 km/)).toBeDefined();
-      expect(liste.getByText(/2 étapes/)).toBeDefined();
+      expect(liste.getByText("Métro 4 + Marche")).toBeDefined();
     });
 
-    it("détaille chaque étape avec son mode et sa ligne", async () => {
+    it("REGROUPE les étapes par ligne", async () => {
       vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
       rendre();
 
       await chercher();
 
-      expect(await screen.findByText("Gare du Nord → Châtelet")).toBeDefined();
-      // « Métro 4 », pas « METRO » : l'exigence posée en 4E-2.
-      expect(screen.getByText(/Métro 4 · RATP/)).toBeDefined();
-      expect(screen.getByText(/Marche À pied/)).toBeDefined();
+      // ⚠️ Le titre d'une étape est la LIGNE, pas le couple d'arrêts : c'est
+      // ce qu'on lit d'abord. « Métro 4 », jamais « METRO » (exigence 4E-2).
+      expect(await screen.findByText("Métro 4")).toBeDefined();
+      // La marche n'a pas de numéro de ligne : « Marche À pied » n'aurait
+      // aucun sens pour un usager.
+      expect(screen.getByText("Marche")).toBeDefined();
+
+      // Le trajet du groupe reste lisible, avec son nombre d'arrêts.
+      expect(screen.getByText(/Gare du Nord → Châtelet/)).toBeDefined();
+      expect(screen.getByText(/1 arrêt/)).toBeDefined();
     });
 
     it("présente les deux propositions pour les comparer", async () => {
@@ -475,13 +498,15 @@ describe("/recherche", () => {
       coords: { latitude: 48.8712, longitude: 2.3501 },
     } as GeolocationPosition;
 
-    /// Choisit « Ma position » dans la liste Départ.
+    /// Demande la position via le BOUTON dédié (Phase 3A).
+    ///
+    /// C'était auparavant une option de la liste d'arrêts. La saisie libre
+    /// étant devenue l'entrée principale, la position est un bouton d'action
+    /// à côté du champ — mais le mécanisme sous-jacent est INCHANGÉ :
+    /// `getCurrentPosition`, sur geste explicite, jamais au chargement.
     const choisirMaPosition = async () => {
       const utilisateur = userEvent.setup();
-      await utilisateur.selectOptions(
-        await screen.findByLabelText("Départ"),
-        screen.getByRole("option", { name: /ma position actuelle/i }),
-      );
+      await utilisateur.click(await screen.findByRole("button", { name: "Ma position" }));
       return utilisateur;
     };
 
@@ -496,7 +521,7 @@ describe("/recherche", () => {
       const appel = installerPosition((succes) => succes(POSITION_PARIS));
 
       rendre();
-      await screen.findByLabelText("Départ");
+      await (await ouvrirArrets(), screen.getByLabelText("Arrêt de départ"));
 
       // Une invite de permission qui surgit sans geste de l'usager est une
       // invite qu'on refuse par réflexe.
@@ -529,7 +554,7 @@ describe("/recherche", () => {
       const utilisateur = await choisirMaPosition();
 
       await utilisateur.selectOptions(
-        screen.getByLabelText("Arrivée"),
+        screen.getByLabelText("Arrêt d'arrivée"),
         screen.getAllByRole("option", { name: /Bastille/ })[1],
       );
 
@@ -549,7 +574,7 @@ describe("/recherche", () => {
       await screen.findByText(/position trouvée/i);
 
       await utilisateur.selectOptions(
-        screen.getByLabelText("Arrivée"),
+        screen.getByLabelText("Arrêt d'arrivée"),
         screen.getAllByRole("option", { name: /Bastille/ })[1],
       );
       await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
@@ -609,7 +634,7 @@ describe("/recherche", () => {
         await screen.findByText(/réglages de votre navigateur/i);
 
         await utilisateur.selectOptions(
-          screen.getByLabelText("Arrivée"),
+          screen.getByLabelText("Arrêt d'arrivée"),
           screen.getAllByRole("option", { name: /Bastille/ })[1],
         );
 
@@ -645,7 +670,7 @@ describe("/recherche", () => {
       await screen.findByText(/position trouvée/i);
 
       await utilisateur.selectOptions(
-        screen.getByLabelText("Départ"),
+        screen.getByLabelText("Arrêt de départ"),
         screen.getAllByRole("option", { name: /Gare du Nord/ })[0],
       );
 
@@ -654,7 +679,7 @@ describe("/recherche", () => {
       expect(screen.queryByText(/position trouvée/i)).toBeNull();
 
       await utilisateur.selectOptions(
-        screen.getByLabelText("Arrivée"),
+        screen.getByLabelText("Arrêt d'arrivée"),
         screen.getAllByRole("option", { name: /Bastille/ })[1],
       );
       await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
@@ -675,8 +700,18 @@ describe("/recherche", () => {
 
       // Le résultat arrive de façon asynchrone : sans zone d'état, rien
       // n'expliquerait pourquoi « Rechercher » reste désactivé.
+      //
+      // ⚠️ `getAllByRole` depuis la Phase 3A : chaque champ d'adresse porte
+      // désormais sa PROPRE zone d'état — « 3 propositions », « Recherche en
+      // cours… ». Ce sont des messages distincts, attachés à des contrôles
+      // distincts, et non des annonces concurrentes.
       await waitFor(() =>
-        expect(screen.getByRole("status").textContent).toMatch(/position trouvée/i),
+        expect(
+          screen
+            .getAllByRole("status")
+            .map((zone) => zone.textContent)
+            .join(" "),
+        ).toMatch(/position trouvée/i),
       );
     });
   });
@@ -812,8 +847,12 @@ describe("/recherche", () => {
       // L'information essentielle ne dépend jamais de la carte : chaque étape
       // reste écrite, avec son mode et sa ligne.
       const liste = within(screen.getByRole("region", { name: /itinéraire/i }));
-      expect(await liste.findByText("Gare du Nord → Châtelet")).toBeDefined();
-      expect(liste.getByText(/Métro 4/)).toBeDefined();
+      // Une expression régulière : le texte du groupe porte aussi son
+      // nombre d'arrêts, il n'est donc plus une correspondance exacte.
+      expect(await liste.findByText(/Gare du Nord → Châtelet/)).toBeDefined();
+      // `getAllBy` : « Métro 4 » apparaît DEUX fois, dans le résumé du trajet
+      // et comme titre d'étape. Les deux sont légitimes.
+      expect(liste.getAllByText(/Métro 4/).length).toBeGreaterThan(0);
       expect(liste.getByText("Châtelet → Bastille")).toBeDefined();
     });
 
@@ -1065,7 +1104,7 @@ describe("/recherche", () => {
 
         // Seul l'ENREGISTREMENT demande un compte ; la recherche est publique.
         expect(await screen.findByText("Le plus rapide")).toBeDefined();
-        expect(screen.getByText("Gare du Nord → Châtelet")).toBeDefined();
+        expect(screen.getByText(/Gare du Nord → Châtelet/)).toBeDefined();
       });
     });
 
@@ -1310,7 +1349,7 @@ describe("/recherche", () => {
 
           // Une erreur d'enregistrement n'invalide pas le trajet trouvé.
           expect(screen.getByText("Le plus rapide")).toBeDefined();
-          expect(screen.getByText("Gare du Nord → Châtelet")).toBeDefined();
+          expect(screen.getByText(/Gare du Nord → Châtelet/)).toBeDefined();
         });
 
         it("laisse réessayer après un échec", async () => {
@@ -1438,7 +1477,7 @@ describe("/recherche", () => {
       // La recherche reste en libre acces : un visiteur ne doit declencher
       // AUCUN appel supplementaire sur cette page publique.
       expect(listerAdresses).not.toHaveBeenCalled();
-      expect(screen.queryByRole("group", { name: "Mes adresses favorites" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Domicile" })).toBeNull();
     });
 
     it("un usager connecte voit ses adresses dans les DEUX listes", async () => {
@@ -1446,22 +1485,21 @@ describe("/recherche", () => {
 
       // On part de chez soi le matin, on y rentre le soir : n'en offrir qu'au
       // depart obligerait a ressaisir le retour.
+      // Un bouton par favori et par champ : départ ET arrivée.
       await waitFor(() => {
-        expect(screen.getAllByRole("group", { name: "Mes adresses favorites" })).toHaveLength(2);
+        expect(screen.getAllByRole("button", { name: "Domicile" })).toHaveLength(2);
       });
-      expect(screen.getAllByRole("option", { name: /Domicile/ })).toHaveLength(2);
-      expect(screen.getAllByRole("option", { name: /Travail/ })).toHaveLength(2);
+      expect(screen.getAllByRole("button", { name: "Travail" })).toHaveLength(2);
     });
 
     it("affiche le LIBELLE francais, jamais HOME ni WORK", async () => {
       avecAdresses();
 
       await waitFor(() => {
-        expect(screen.getAllByRole("option", { name: /Domicile — 12 rue des Lilas/ })).toHaveLength(
-          2,
-        );
+        expect(screen.getAllByRole("button", { name: "Domicile" })).toHaveLength(2);
       });
-      expect(screen.queryByRole("option", { name: /HOME/ })).toBeNull();
+      // « HOME » ne se montre jamais à un usager.
+      expect(screen.queryByRole("button", { name: /HOME/ })).toBeNull();
     });
 
     it("DOMICILE en depart envoie SES coordonnees", async () => {
@@ -1470,15 +1508,12 @@ describe("/recherche", () => {
 
       const utilisateur = userEvent.setup();
       await waitFor(() => {
-        expect(screen.getAllByRole("option", { name: /Domicile/ })).toHaveLength(2);
+        expect(screen.getAllByRole("button", { name: "Domicile" })).toHaveLength(2);
       });
 
+      await utilisateur.click(screen.getAllByRole("button", { name: "Domicile" })[0]);
       await utilisateur.selectOptions(
-        screen.getByLabelText("Départ"),
-        screen.getAllByRole("option", { name: /Domicile/ })[0],
-      );
-      await utilisateur.selectOptions(
-        screen.getByLabelText("Arrivée"),
+        screen.getByLabelText("Arrêt d'arrivée"),
         screen.getAllByRole("option", { name: /Bastille/ })[1],
       );
       await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
@@ -1499,17 +1534,11 @@ describe("/recherche", () => {
 
       const utilisateur = userEvent.setup();
       await waitFor(() => {
-        expect(screen.getAllByRole("option", { name: /Travail/ })).toHaveLength(2);
+        expect(screen.getAllByRole("button", { name: "Travail" })).toHaveLength(2);
       });
 
-      await utilisateur.selectOptions(
-        screen.getByLabelText("Départ"),
-        screen.getAllByRole("option", { name: /Domicile/ })[0],
-      );
-      await utilisateur.selectOptions(
-        screen.getByLabelText("Arrivée"),
-        screen.getAllByRole("option", { name: /Travail/ })[1],
-      );
+      await utilisateur.click(screen.getAllByRole("button", { name: "Domicile" })[0]);
+      await utilisateur.click(screen.getAllByRole("button", { name: "Travail" })[1]);
       await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
 
       await waitFor(() => {
@@ -1532,17 +1561,11 @@ describe("/recherche", () => {
 
       const utilisateur = userEvent.setup();
       await waitFor(() => {
-        expect(screen.getAllByRole("option", { name: /Domicile/ })).toHaveLength(2);
+        expect(screen.getAllByRole("button", { name: "Domicile" })).toHaveLength(2);
       });
 
-      await utilisateur.selectOptions(
-        screen.getByLabelText("Départ"),
-        screen.getAllByRole("option", { name: /Domicile/ })[0],
-      );
-      await utilisateur.selectOptions(
-        screen.getByLabelText("Arrivée"),
-        screen.getAllByRole("option", { name: /Travail/ })[1],
-      );
+      await utilisateur.click(screen.getAllByRole("button", { name: "Domicile" })[0]);
+      await utilisateur.click(screen.getAllByRole("button", { name: "Travail" })[1]);
       await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
 
       await waitFor(() => {
@@ -1562,12 +1585,13 @@ describe("/recherche", () => {
       avecAdresses();
 
       await waitFor(() => {
-        expect(screen.getAllByRole("option", { name: /Domicile/ })).toHaveLength(2);
+        expect(screen.getAllByRole("button", { name: "Domicile" })).toHaveLength(2);
       });
 
-      // Les adresses S'AJOUTENT : elles ne remplacent rien.
+      // Les options S'AJOUTENT : rien de ce qui existait n'a disparu.
+      await ouvrirArrets();
       expect(screen.getAllByRole("option", { name: /Gare du Nord/ }).length).toBeGreaterThan(0);
-      expect(screen.getByRole("option", { name: /Ma position actuelle/ })).toBeDefined();
+      expect(screen.getByRole("button", { name: "Ma position" })).toBeDefined();
     });
 
     it("un echec de chargement des adresses NE CASSE PAS la recherche", async () => {
@@ -1580,8 +1604,259 @@ describe("/recherche", () => {
       await waitFor(() => {
         expect(screen.getAllByRole("option", { name: /Gare du Nord/ }).length).toBeGreaterThan(0);
       });
-      expect(screen.queryByRole("group", { name: "Mes adresses favorites" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Domicile" })).toBeNull();
       expect(screen.getByRole("button", { name: /rechercher/i })).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Recherche d'adresses en saisie libre (Phase 3A)
+  // ---------------------------------------------------------------------------
+  describe("recherche d'adresses", () => {
+    const TOUR_EIFFEL = {
+      label: "Tour Eiffel, Paris",
+      latitude: 48.8584,
+      longitude: 2.2945,
+    };
+    const GARE_DU_NORD = {
+      label: "Gare du Nord, Paris",
+      latitude: 48.8809,
+      longitude: 2.3553,
+    };
+
+    const geocoder = (items: (typeof TOUR_EIFFEL)[]) =>
+      vi.mocked(rechercherAdresses).mockResolvedValue({
+        items,
+        attribution: "© Contributeurs OpenStreetMap",
+      });
+
+    /// Saisit dans un champ, attend le débounce, et choisit une proposition.
+    const choisirAdresse = async (
+      utilisateur: ReturnType<typeof userEvent.setup>,
+      champ: "Départ" | "Arrivée",
+      texte: string,
+      libelleChoisi: string,
+    ) => {
+      await utilisateur.type(await screen.findByLabelText(champ), texte);
+      await waitFor(() => expect(rechercherAdresses).toHaveBeenCalled());
+      await utilisateur.click(await screen.findByText(libelleChoisi));
+    };
+
+    it("les DEUX champs sont des saisies libres", async () => {
+      rendre();
+
+      // La liste déroulante d'arrêts n'est plus l'entrée principale.
+      expect(await screen.findByLabelText("Départ")).toHaveProperty("tagName", "INPUT");
+      expect(screen.getByLabelText("Arrivée")).toHaveProperty("tagName", "INPUT");
+    });
+
+    it("EMPÊCHE de chercher tant qu'aucune proposition n'est choisie", async () => {
+      geocoder([TOUR_EIFFEL]);
+      const utilisateur = userEvent.setup();
+      rendre();
+
+      await utilisateur.type(await screen.findByLabelText("Départ"), "Tour Eiffel");
+      await utilisateur.type(screen.getByLabelText("Arrivée"), "Gare du Nord");
+
+      // LE POINT CENTRAL : deux champs remplis ne suffisent pas. Un texte
+      // saisi n'a aucune coordonnée tant qu'il n'a pas été résolu.
+      expect(screen.getByRole("button", { name: /rechercher/i })).toHaveProperty("disabled", true);
+    });
+
+    it("transmet les COORDONNÉES des deux adresses choisies", async () => {
+      geocoder([TOUR_EIFFEL, GARE_DU_NORD]);
+      vi.mocked(rechercherItineraires).mockResolvedValue([]);
+      const utilisateur = userEvent.setup();
+      rendre();
+
+      await choisirAdresse(utilisateur, "Départ", "Tour", "Tour Eiffel, Paris");
+      await choisirAdresse(utilisateur, "Arrivée", "Gare", "Gare du Nord, Paris");
+      await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
+
+      // ⚠️ AUCUNE INVERSION : le départ porte les coordonnées de la Tour
+      // Eiffel, l'arrivée celles de la Gare du Nord — et pas le contraire.
+      await waitFor(() => expect(rechercherItineraires).toHaveBeenCalled());
+      expect(vi.mocked(rechercherItineraires).mock.calls[0][0]).toEqual({
+        fromLat: 48.8584,
+        fromLon: 2.2945,
+        toLat: 48.8809,
+        toLon: 2.3553,
+      });
+    });
+
+    it("n'envoie NI adresse textuelle NI identifiant d'usager", async () => {
+      geocoder([TOUR_EIFFEL, GARE_DU_NORD]);
+      vi.mocked(rechercherItineraires).mockResolvedValue([]);
+      const utilisateur = userEvent.setup();
+      authentifier();
+      rendre();
+
+      await choisirAdresse(utilisateur, "Départ", "Tour", "Tour Eiffel, Paris");
+      await choisirAdresse(utilisateur, "Arrivée", "Gare", "Gare du Nord, Paris");
+      await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
+
+      await waitFor(() => expect(rechercherItineraires).toHaveBeenCalled());
+      // Le moteur n'a jamais accepté autre chose que quatre coordonnées.
+      expect(Object.keys(vi.mocked(rechercherItineraires).mock.calls[0][0]).sort()).toEqual([
+        "fromLat",
+        "fromLon",
+        "toLat",
+        "toLon",
+      ]);
+    });
+
+    it("MODIFIER le texte après sélection REDÉSACTIVE la recherche", async () => {
+      geocoder([TOUR_EIFFEL, GARE_DU_NORD]);
+      const utilisateur = userEvent.setup();
+      rendre();
+
+      await choisirAdresse(utilisateur, "Départ", "Tour", "Tour Eiffel, Paris");
+      await choisirAdresse(utilisateur, "Arrivée", "Gare", "Gare du Nord, Paris");
+
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /rechercher/i })).toHaveProperty(
+          "disabled",
+          false,
+        ),
+      );
+
+      await utilisateur.type(screen.getByLabelText("Départ"), "x");
+
+      // Sans cette règle, on partirait avec les coordonnées de la Tour Eiffel
+      // en affichant un tout autre texte à l'usager.
+      expect(screen.getByRole("button", { name: /rechercher/i })).toHaveProperty("disabled", true);
+    });
+
+    it("reste utilisable par un VISITEUR non connecté", async () => {
+      geocoder([TOUR_EIFFEL]);
+      const utilisateur = userEvent.setup();
+      rendre();
+
+      await choisirAdresse(utilisateur, "Départ", "Tour", "Tour Eiffel, Paris");
+
+      // Aucun jeton n'est requis : la recherche est en libre accès.
+      expect(rechercherAdresses).toHaveBeenCalled();
+      expect(screen.getByLabelText("Départ")).toHaveProperty("value", "Tour Eiffel, Paris");
+    });
+
+    it("un FAVORI remplit le champ SANS géocodage", async () => {
+      const DOMICILE = {
+        id: "aaaaaaaa-0000-0000-0000-000000000001",
+        type: "HOME" as const,
+        address: "12 rue des Lilas, Paris",
+        latitude: 48.11,
+        longitude: 2.11,
+        createdAt: "2026-08-30T10:00:00.000Z",
+      };
+      vi.mocked(listerAdresses).mockResolvedValue([DOMICILE]);
+      vi.mocked(rechercherItineraires).mockResolvedValue([]);
+      geocoder([GARE_DU_NORD]);
+      const utilisateur = userEvent.setup();
+      authentifier();
+      rendre();
+
+      await utilisateur.click((await screen.findAllByRole("button", { name: "Domicile" }))[0]);
+
+      // Le favori porte DÉJÀ ses coordonnées : le géocoder serait un appel
+      // réseau pour réapprendre ce qu'on sait.
+      expect(rechercherAdresses).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("Départ")).toHaveProperty("value", "12 rue des Lilas, Paris");
+
+      await choisirAdresse(utilisateur, "Arrivée", "Gare", "Gare du Nord, Paris");
+      await utilisateur.click(screen.getByRole("button", { name: /rechercher/i }));
+
+      await waitFor(() => expect(rechercherItineraires).toHaveBeenCalled());
+      expect(vi.mocked(rechercherItineraires).mock.calls[0][0]).toMatchObject({
+        fromLat: 48.11,
+        fromLon: 2.11,
+      });
+    });
+
+    it("un ARRÊT du réseau reste choisissable", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([]);
+      const utilisateur = userEvent.setup();
+      rendre();
+
+      await ouvrirArrets();
+      await utilisateur.selectOptions(screen.getByLabelText("Arrêt de départ"), ARRETS[0].id);
+
+      // Rien de ce qui existait n'a disparu : l'arrêt remplit le champ de
+      // départ avec SES coordonnées.
+      expect(screen.getByLabelText("Départ")).toHaveProperty("value", ARRETS[0].name);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Regroupement des étapes (refonte UX)
+  // ---------------------------------------------------------------------------
+  describe("regroupement des étapes", () => {
+    /// Cinq tronçons consécutifs sur la même ligne — le cas qui a motivé le
+    /// regroupement : sans lui, cinq lignes « Métro 8 » se suivaient.
+    const LIGNE_8: Itinerary = {
+      criterion: "FASTEST",
+      totalDistanceM: 4000,
+      totalDurationMin: 10,
+      segments: Array.from({ length: 5 }, (_, i) => ({
+        fromStopId: `s${i}`,
+        fromStopName: `Arrêt ${i}`,
+        toStopId: `s${i + 1}`,
+        toStopName: `Arrêt ${i + 1}`,
+        mode: "METRO" as const,
+        lineName: "8",
+        operator: "RATP",
+        lineId: "ligne-8",
+        distanceM: 800,
+        durationMin: 2,
+      })),
+    };
+
+    it("affiche UNE étape pour cinq tronçons de la même ligne", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([LIGNE_8]);
+      rendre();
+
+      await chercher();
+
+      // UNE seule étape, et non cinq : c'est le cœur du regroupement. Le
+      // groupe annonce son premier et son dernier arrêt, avec le compte
+      // entre les deux.
+      expect(await screen.findByText(/Arrêt 0 → Arrêt 5/)).toBeDefined();
+      // Deux occurrences légitimes : le compte de l'étape, et le libellé du
+      // dépliage « Voir les 5 arrêts ».
+      expect(screen.getAllByText(/5 arrêts/).length).toBeGreaterThan(0);
+      // Le détail est REPLIÉ tant qu'on ne le demande pas.
+      //
+      // ⚠️ On vérifie l'attribut `open`, PAS l'absence du texte : le contenu
+      // d'un `<details>` reste dans le DOM quand il est fermé — c'est ce qui
+      // le rend indexable et accessible. Chercher « Arrêt 3 » le trouverait.
+      const depliage = screen.getByText("Voir les 5 arrêts").closest("details");
+      expect((depliage as HTMLDetailsElement).open).toBe(false);
+    });
+
+    it("CONSERVE le détail derrière un dépliage", async () => {
+      const utilisateur = userEvent.setup();
+      vi.mocked(rechercherItineraires).mockResolvedValue([LIGNE_8]);
+      rendre();
+
+      await chercher();
+
+      // ⚠️ Le regroupement est un choix d'AFFICHAGE, pas une perte
+      // d'information : l'usager doit pouvoir savoir où il passe.
+      await utilisateur.click(await screen.findByText("Voir les 5 arrêts"));
+
+      for (const nom of ["Arrêt 1", "Arrêt 2", "Arrêt 3", "Arrêt 4", "Arrêt 5"]) {
+        expect(screen.getByText(nom)).toBeDefined();
+      }
+    });
+
+    it("NE PROPOSE PAS de dépliage pour un tronçon unique", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      await screen.findByText("Métro 4");
+      // Ouvrir un détail d'une seule ligne n'apprendrait rien.
+      expect(screen.queryByText(/Voir les 1 arrêts/)).toBeNull();
     });
   });
 });

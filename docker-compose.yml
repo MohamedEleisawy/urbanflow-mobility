@@ -9,6 +9,16 @@
 
 services:
   postgres:
+    # Redémarre AUTOMATIQUEMENT avec Docker.
+    #
+    # ⚠️ Sans cette politique, les conteneurs restent arrêtés après une mise en
+    # veille de la machine ou une fermeture de Docker Desktop — et le backend
+    # échoue alors sur « P1001 : Can't reach database server », une erreur qui
+    # ressemble à un défaut de code sans en être un.
+    #
+    # `unless-stopped` et non `always` : un `docker compose stop` volontaire
+    # doit rester respecté.
+    restart: unless-stopped
     # Image officielle PostGIS : un PostgreSQL standard avec l'extension
     # PostGIS déjà installée. Elle est activée automatiquement sur la base
     # POSTGRES_DB au premier démarrage du conteneur.
@@ -31,6 +41,16 @@ services:
       retries: 5
 
   frontend:
+    # Redémarre AUTOMATIQUEMENT avec Docker.
+    #
+    # ⚠️ Sans cette politique, les conteneurs restent arrêtés après une mise en
+    # veille de la machine ou une fermeture de Docker Desktop — et le backend
+    # échoue alors sur « P1001 : Can't reach database server », une erreur qui
+    # ressemble à un défaut de code sans en être un.
+    #
+    # `unless-stopped` et non `always` : un `docker compose stop` volontaire
+    # doit rester respecté.
+    restart: unless-stopped
     build:
       context: ./projet
       dockerfile: docker/frontend.Dockerfile
@@ -48,6 +68,16 @@ services:
       - backend
 
   backend:
+    # Redémarre AUTOMATIQUEMENT avec Docker.
+    #
+    # ⚠️ Sans cette politique, les conteneurs restent arrêtés après une mise en
+    # veille de la machine ou une fermeture de Docker Desktop — et le backend
+    # échoue alors sur « P1001 : Can't reach database server », une erreur qui
+    # ressemble à un défaut de code sans en être un.
+    #
+    # `unless-stopped` et non `always` : un `docker compose stop` volontaire
+    # doit rester respecté.
+    restart: unless-stopped
     build:
       context: ./projet
       dockerfile: docker/backend.Dockerfile
@@ -72,6 +102,16 @@ services:
         condition: service_started
 
   carbon-service:
+    # Redémarre AUTOMATIQUEMENT avec Docker.
+    #
+    # ⚠️ Sans cette politique, les conteneurs restent arrêtés après une mise en
+    # veille de la machine ou une fermeture de Docker Desktop — et le backend
+    # échoue alors sur « P1001 : Can't reach database server », une erreur qui
+    # ressemble à un défaut de code sans en être un.
+    #
+    # `unless-stopped` et non `always` : un `docker compose stop` volontaire
+    # doit rester respecté.
+    restart: unless-stopped
     build:
       context: ./projet
       dockerfile: docker/carbon-service.Dockerfile

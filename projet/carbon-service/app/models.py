@@ -79,3 +79,21 @@ class CalculationOut(BaseModel):
     #: Une seule decimale, contre deux pour les grammes : voir app/ecoscore.py.
     eco_score: float
     breakdown: list[SegmentBreakdown]
+
+
+class FactorsOut(BaseModel):
+    """Resultat renvoye par GET /factors (Phase 4).
+
+    Les cles de `factors` sont les noms de modes ("METRO", "BUS"...), leurs
+    valeurs des grammes de CO2 equivalent PAR KILOMETRE.
+
+    ⚠️ UN MODE ABSENT N'EST PAS UN MODE A ZERO. ESCOOTER ne figure pas dans
+    cette table parce qu'aucune source ne lui donne de facteur (voir
+    app/factors.py). Le client doit traiter son absence comme « incalculable »,
+    jamais comme « propre ».
+    """
+
+    factors: dict[str, float]
+    #: Reference voiture individuelle, pour repondre a « combien aurais-je
+    #: emis en voiture ? » sans que le client ait a savoir que c'est CAR.
+    car_factor_g_per_km: float

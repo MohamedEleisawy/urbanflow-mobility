@@ -44,6 +44,26 @@ export interface GtfsTrip {
   /// Sens de circulation. Conservé pour information : le graphe n'en a pas
   /// besoin, puisque le sens est porté par fromStop → toStop.
   directionId: number | null;
+  /// Parcours géographique emprunté (`shapes.txt`), ou `null`.
+  ///
+  /// Ajouté à la Phase 1B. FACULTATIF dans la spécification GTFS, et
+  /// réellement absent de certains flux — dont le jeu de démonstration du
+  /// projet. `null` n'est donc pas une anomalie : c'est un flux sans
+  /// géométrie, et l'import doit continuer sans elle.
+  shapeId: string | null;
+}
+
+/// Un point du tracé d'un parcours (`shapes.txt`).
+///
+/// ⚠️ Latitude et longitude sont lues DANS L'ORDRE DU FICHIER GTFS
+/// (`shape_pt_lat`, `shape_pt_lon`). La bascule vers l'ordre GeoJSON
+/// [longitude, latitude] n'a lieu qu'au tout dernier moment, dans
+/// `shape-geometry.ts`.
+export interface GtfsShapePoint {
+  shapeId: string;
+  latitude: number;
+  longitude: number;
+  sequence: number;
 }
 
 /// Un passage à un arrêt (stop_times.txt). C'est le fichier le plus
@@ -57,4 +77,30 @@ export interface GtfsStopTime {
   /// (25:10:00 = 1h10 le lendemain). Voir gtfs-time.util.ts.
   arrivalTimeSec: number;
   departureTimeSec: number;
+}
+
+/**
+ * Une correspondance entre deux arrêts (`transfers.txt`, Phase 1).
+ *
+ * GTFS décrit ici ce que le graphe ne peut pas deviner : qu'on peut passer à
+ * pied du quai A au quai B. Sans ces lignes, chaque ligne de métro forme un
+ * chemin ISOLÉ — un usager ne peut jamais changer.
+ */
+export interface GtfsTransfer {
+  fromStopId: string;
+  toStopId: string;
+  /**
+   * Type GTFS. Seul le **3** est disqualifiant : il signifie « correspondance
+   * IMPOSSIBLE ». Les autres (0 recommandée, 1 garantie, 2 durée minimale)
+   * décrivent tous une correspondance praticable.
+   */
+  transferType: number;
+  /**
+   * Durée minimale, en secondes — telle que l'opérateur la publie.
+   *
+   * `null` quand elle n'est pas fournie : GTFS ne l'impose que pour le type 2.
+   * Sur le flux d'Île-de-France Mobilités, les 191 816 correspondances sont
+   * toutes de type 2 et portent toutes leur durée — aucune n'est à inventer.
+   */
+  minTransferTimeSec: number | null;
 }

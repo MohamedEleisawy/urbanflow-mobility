@@ -36,10 +36,74 @@
   --color-ink: #1a1a2e;
 }
 
-/* Le mode sombre est prévu par le dossier (le bleu nuit y est destiné) mais
-   n'est PAS traité à cette étape : un thème sombre à moitié appliqué est plus
-   déroutant que pas de thème sombre du tout. À reprendre avec les préférences
-   d'affichage (UC06), qui portent déjà un champ `theme`. */
+/* ==========================================================================
+   MODE SOMBRE (refonte mobilité)
+   ==========================================================================
+   Le dossier le prévoyait, et les préférences portaient déjà un champ
+   `theme` — mais RIEN ne l'appliquait : l'usager choisissait « Sombre » et
+   l'interface restait claire. C'est cette promesse non tenue qu'on répare.
+
+   ═══ COMMENT ═══
+
+   Le thème est porté par `data-theme` sur `<html>`, posé par
+   `ThemeProvider` depuis les préférences du compte. On REDÉFINIT ici les
+   variables de couleur : aucun composant n'a été retouché, et aucun ne
+   contient de code hexadécimal en dur.
+
+   ⚠️ On redéfinit AUSSI la palette neutre de Tailwind. Les écrans emploient
+   massivement `bg-white`, `text-neutral-700`, `border-neutral-200` — des
+   couleurs FIXES. Ne redéfinir que `--color-surface` et `--color-ink`
+   aurait produit un fond sombre couvert de cartes blanches : exactement le
+   « thème à moitié appliqué » que le commentaire d'origine voulait éviter.
+
+   Tailwind 4 compile ses utilitaires en `var(--color-…)` : les redéfinir
+   dans une portée suffit donc, sans surcharge de classe.
+   ========================================================================== */
+[data-theme="dark"] {
+  /* Les deux teintes de marque sont ÉCLAIRCIES : à contraste égal, un bleu
+     nuit sur fond sombre devient illisible. */
+  --color-brand: #7aa5d2;
+  --color-brand-dark: #a8c6e6;
+  --color-eco: #5fbc7d;
+  --color-eco-dark: #86d1a0;
+
+  /* Fond principal et texte : l'inverse du thème clair. */
+  --color-surface: #14161c;
+  --color-ink: #f2f3f7;
+
+  /* `bg-white` désigne la surface des cartes : elle devient un gris très
+     sombre, légèrement plus clair que le fond pour rester détachée. */
+  --color-white: #1d2029;
+
+  /* Palette neutre INVERSÉE. `text-neutral-600` doit rester un gris
+     secondaire lisible, pas un gris foncé sur fond noir. */
+  --color-neutral-50: #1d2029;
+  --color-neutral-100: #24283340;
+  --color-neutral-200: #333846;
+  --color-neutral-300: #454b5c;
+  --color-neutral-500: #98a0b3;
+  --color-neutral-600: #b3bacb;
+  --color-neutral-700: #ccd2df;
+  --color-neutral-800: #e2e6ee;
+  --color-neutral-900: #f2f3f7;
+
+  /* Rouges d'erreur : le fond très clair deviendrait un aplat aveuglant. */
+  --color-red-50: #3a1c1f;
+  --color-red-200: #6b2f34;
+  --color-red-800: #ff9a9f;
+  --color-red-900: #ffc4c7;
+}
+
+/* `color-scheme` fait suivre les éléments NATIFS — barres de défilement,
+   sélecteurs de date, autocomplétion. Sans lui, un `<select>` reste blanc au
+   milieu d'une interface sombre. */
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+}
 
 body {
   background-color: var(--color-surface);

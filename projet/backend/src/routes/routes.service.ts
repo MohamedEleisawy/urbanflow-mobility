@@ -56,6 +56,45 @@ interface PathStep {
 // on considère qu'aucun arrêt ne dessert le point demandé.
 const RAYON_RECHERCHE_MAX_M = 2000;
 
+/**
+ * Marge ajoutée au cadre de recherche, en degrés.
+ *
+ * 0,07° ≈ 8 km sous nos latitudes — bien au-delà du rayon de rattachement de
+ * 2 km, et assez large pour absorber les détours réels d'un itinéraire
+ * urbain.
+ */
+const MARGE_CADRE_DEG = 0.07;
+
+/**
+ * Nombre maximal de quais retenus comme point d'entrée ou de sortie.
+ *
+ * Sur un pôle d'échange dense, une vingtaine de quais tombent dans le rayon
+ * de recherche. Les six plus proches couvrent tous les modes d'un même lieu —
+ * à Gare de Lyon : métro 1, métro 14, RER A, RER D, TER — sans faire grossir
+ * le graphe inutilement.
+ */
+const PLAFOND_QUAIS = 6;
+
+/**
+ * Rayon dans lequel plusieurs quais forment UN MÊME LIEU.
+ *
+ * ⚠️ BIEN PLUS PETIT que `RAYON_RECHERCHE_MAX_M`, et c'est essentiel. Le
+ * rattachement multi-quai sert à ne pas se tromper de quai DANS une station,
+ * pas à autoriser le moteur à démarrer n'importe où dans un rayon de deux
+ * kilomètres : il ferait sinon commencer un trajet à 1,5 km de l'usager sans
+ * jamais compter cette marche.
+ *
+ * 300 m est mesuré sur les données réelles : les cinq quais de Gare de Lyon
+ * s'étalent de 84 à 183 m du point d'adresse, ceux de Gare du Nord de 183 à
+ * 202 m.
+ */
+const RAYON_QUAIS_M = 300;
+
+/// Sommets fictifs du Dijkstra multi-source / multi-cible. Le préfixe rend
+/// toute collision avec un UUID d'arrêt impossible.
+const ORIGINE_VIRTUELLE = '__urbanflow_origine__';
+const DESTINATION_VIRTUELLE = '__urbanflow_destination__';
+
 // Le réseau exprime des durées en minutes, JavaScript des instants en
 // millisecondes : la conversion est isolée pour qu'elle soit visible.
 const MILLISECONDES_PAR_MINUTE = 60_000;
@@ -492,19 +531,30 @@ export class RoutesService {
    * propriétaire, supprime ces deux problèmes par construction.
    */
   async searchRoutes(dto: SearchRouteDto): Promise<ItineraryDto[]> {
-    // On charge tout en mémoire : le calcul se fait ensuite en TypeScript.
-    // Acceptable tant que le réseau reste petit (voir "limites" du carnet).
+    // ⚠️ LE GRAPHE EST BORNÉ SPATIALEMENT, et ce n'est pas une optimisation
+    // prématurée : c'est ce qui rend l'ajout du bus et du RER possible.
     //
-    // orderBy est INDISPENSABLE (étape 4C-2) : sans ORDER BY, PostgreSQL ne
+    // Ces deux requêtes chargeaient TOUT le réseau à CHAQUE recherche. Sur le
+    // périmètre métro + tram (1 383 arrêts, 4 436 liaisons) c'était mesurable
+    // mais tenable — 0,09 s. Le réseau complet d'Île-de-France compte environ
+    // 50 000 arrêts et plus de 100 000 liaisons : le même code aurait balayé
+    // trente-cinq fois plus de lignes, à chaque appel.
+    //
+    // orderBy reste INDISPENSABLE (étape 4C-2) : sans ORDER BY, PostgreSQL ne
     // garantit aucun ordre de lignes. Cet ordre se propagerait jusqu'au
     // départage des égalités dans Dijkstra, et deux recherches identiques
     // pourraient renvoyer deux chemins différents (de coût pourtant égal).
-    // include: { line: true } (étape 4C-4-1) : le mode de transport est
-    // désormais porté par la LIGNE et non plus par la liaison. Une seule
-    // requête suffit, Prisma joint les deux tables.
+    //
+    // include: { line: true } (étape 4C-4-1) : le mode est porté par la
+    // LIGNE. Une seule requête suffit, Prisma joint les deux tables.
+    const cadre = this.cadreDeRecherche(dto);
+
     const [stops, links] = await Promise.all([
-      this.prisma.stop.findMany({ orderBy: { id: 'asc' } }),
+      this.prisma.stop.findMany({ where: cadre, orderBy: { id: 'asc' } }),
       this.prisma.networkLink.findMany({
+        // Les DEUX extrémités doivent tomber dans le cadre : une liaison dont
+        // l'autre bout est hors zone mènerait à un sommet absent du graphe.
+        where: { fromStop: cadre, toStop: cadre },
         orderBy: { id: 'asc' },
         include: { line: true },
       }),
@@ -514,31 +564,55 @@ export class RoutesService {
       return [];
     }
 
-    const origin = this.findNearestStop(stops, dto.fromLat, dto.fromLon);
-    const destination = this.findNearestStop(stops, dto.toLat, dto.toLon);
+    // ⚠️ TOUS LES QUAIS D'UN MÊME LIEU SONT ACCEPTABLES, pas seulement le
+    // plus proche.
+    //
+    // Île-de-France Mobilités publie UN ARRÊT PAR QUAI : « Gare de Lyon »
+    // existe en cinq exemplaires — métro 1, métro 14, RER A, RER D, TER.
+    // Fixer le plus proche (le quai du métro 14, à 84 m) forçait le moteur à
+    // payer une correspondance de 5 minutes pour rejoindre le RER, puis une
+    // seconde à l'arrivée pour ressortir côté métro.
+    //
+    // Mesuré AVANT correction : Gare de Lyon → Gare du Nord rendait
+    // « métro 14 + métro 4 » en 15 min, alors que le RER D relie les deux
+    // gares en 7 minutes dans nos propres données. Le trajet n'était pas
+    // faux, il était artificiellement contraint.
+    const origines = this.arretsProches(stops, dto.fromLat, dto.fromLon);
+    const destinations = this.arretsProches(stops, dto.toLat, dto.toLon);
 
-    // Si les deux points sont plus proches du même arrêt, il n'y a pas de
-    // trajet à proposer.
-    if (!origin || !destination || origin.id === destination.id) {
+    if (origines.length === 0 || destinations.length === 0) {
+      return [];
+    }
+
+    // Deux points rattachés aux mêmes quais : il n'y a pas de trajet à
+    // proposer, seulement quelques pas.
+    if (origines.every((o) => destinations.some((d) => d.id === o.id))) {
       return [];
     }
 
     const graph = this.buildGraph(links);
     const stopsById = new Map(stops.map((stop) => [stop.id, stop]));
 
-    // Deux exécutions de Dijkstra, avec deux "poids" différents : c'est ce
-    // qui produit deux propositions d'itinéraire.
-    const fastest = this.dijkstra(
-      graph,
-      origin.id,
-      destination.id,
-      (edge) => edge.durationMin,
+    // Sommets VIRTUELS reliés à coût nul à chaque quai candidat : la façon la
+    // plus simple d'obtenir un Dijkstra multi-source / multi-cible sans
+    // toucher à l'algorithme lui-même.
+    this.brancherSommetsVirtuels(graph, origines, destinations);
+
+    const fastest = this.nettoyerCheminVirtuel(
+      this.dijkstra(
+        graph,
+        ORIGINE_VIRTUELLE,
+        DESTINATION_VIRTUELLE,
+        (edge) => edge.durationMin,
+      ),
     );
-    const shortest = this.dijkstra(
-      graph,
-      origin.id,
-      destination.id,
-      (edge) => edge.distanceM,
+    const shortest = this.nettoyerCheminVirtuel(
+      this.dijkstra(
+        graph,
+        ORIGINE_VIRTUELLE,
+        DESTINATION_VIRTUELLE,
+        (edge) => edge.distanceM,
+      ),
     );
 
     const itineraries: ItineraryDto[] = [];
@@ -561,6 +635,150 @@ export class RoutesService {
     }
 
     return itineraries;
+  }
+
+  /**
+   * Cadre géographique dans lequel chercher (bornage spatial).
+   *
+   * Le rectangle contenant l'origine et la destination, élargi de
+   * `MARGE_CADRE_DEG`.
+   *
+   * ⚠️ LA MARGE EST UN COMPROMIS ASSUMÉ, pas une vérité. Un itinéraire
+   * optimal peut légitimement sortir du rectangle direct — contourner la
+   * Seine, passer par une gare de correspondance excentrée. Un détour
+   * au-delà de la marge ne serait pas trouvé.
+   *
+   * La valeur retenue couvre très largement les détours réels à l'échelle
+   * d'une agglomération, tout en ramenant le graphe à une taille à peu près
+   * constante quel que soit le réseau importé.
+   */
+  private cadreDeRecherche(dto: SearchRouteDto): {
+    latitude: { gte: number; lte: number };
+    longitude: { gte: number; lte: number };
+  } {
+    return {
+      latitude: {
+        gte: Math.min(dto.fromLat, dto.toLat) - MARGE_CADRE_DEG,
+        lte: Math.max(dto.fromLat, dto.toLat) + MARGE_CADRE_DEG,
+      },
+      longitude: {
+        gte: Math.min(dto.fromLon, dto.toLon) - MARGE_CADRE_DEG,
+        lte: Math.max(dto.fromLon, dto.toLon) + MARGE_CADRE_DEG,
+      },
+    };
+  }
+
+  /**
+   * Tous les quais rattachables à un point, du plus proche au plus éloigné.
+   *
+   * ⚠️ REMPLACE `findNearestStop` dans la recherche. Un lieu comme « Gare de
+   * Lyon » compte cinq quais distincts en base ; n'en retenir qu'un obligeait
+   * le moteur à payer des correspondances qu'un voyageur ne ferait jamais —
+   * il entre directement par le quai qui l'arrange.
+   *
+   * Le rayon reste `RAYON_RECHERCHE_MAX_M` : c'est la même règle métier
+   * qu'avant, appliquée à un ensemble plutôt qu'à un singleton.
+   *
+   * `PLAFOND_QUAIS` borne le résultat : sur un pôle d'échange dense, une
+   * vingtaine de quais entreraient dans le rayon sans rien apporter — les
+   * plus proches suffisent, et le coût du Dijkstra reste maîtrisé.
+   */
+  private arretsProches(
+    stops: Stop[],
+    latitude: number,
+    longitude: number,
+  ): Stop[] {
+    const candidats = stops
+      .map((stop) => ({
+        stop,
+        distance: haversineDistanceM(
+          latitude,
+          longitude,
+          stop.latitude,
+          stop.longitude,
+        ),
+      }))
+      .filter(({ distance }) => distance <= RAYON_RECHERCHE_MAX_M)
+      // Départage par identifiant à distance égale : deux recherches
+      // identiques doivent rendre le même résultat (déterminisme, 4C-2).
+      .sort(
+        (a, b) => a.distance - b.distance || a.stop.id.localeCompare(b.stop.id),
+      );
+
+    if (candidats.length === 0) {
+      return [];
+    }
+
+    // Les quais du MÊME LIEU que le plus proche. On mesure depuis ce quai-là,
+    // et non depuis le point demandé : une adresse peut être excentrée par
+    // rapport à la station sans que ses quais cessent d'être voisins.
+    const [plusProche] = candidats;
+
+    const memeLieu = candidats.filter(
+      ({ stop }) =>
+        haversineDistanceM(
+          plusProche.stop.latitude,
+          plusProche.stop.longitude,
+          stop.latitude,
+          stop.longitude,
+        ) <= RAYON_QUAIS_M,
+    );
+
+    return memeLieu.slice(0, PLAFOND_QUAIS).map(({ stop }) => stop);
+  }
+
+  /**
+   * Relie les sommets virtuels aux quais candidats, à coût nul.
+   *
+   * Les arêtes portent un mode `WALK` et une durée nulle : elles ne
+   * représentent AUCUN déplacement réel, seulement le fait qu'entrer par
+   * l'un ou l'autre quai revient au même. `nettoyerCheminVirtuel` les retire
+   * avant que le chemin ne devienne un itinéraire.
+   */
+  private brancherSommetsVirtuels(
+    graph: Graph,
+    origines: Stop[],
+    destinations: Stop[],
+  ): void {
+    const areteNulle = (toStopId: string): GraphEdge => ({
+      toStopId,
+      mode: ModeTransport.WALK,
+      lineName: '',
+      operator: '',
+      lineId: '',
+      distanceM: 0,
+      durationMin: 0,
+    });
+
+    graph.set(
+      ORIGINE_VIRTUELLE,
+      origines.map((stop) => areteNulle(stop.id)),
+    );
+
+    for (const stop of destinations) {
+      const sortantes = graph.get(stop.id) ?? [];
+      graph.set(stop.id, [...sortantes, areteNulle(DESTINATION_VIRTUELLE)]);
+    }
+  }
+
+  /**
+   * Retire du chemin les deux arêtes fictives.
+   *
+   * Sans ce nettoyage, l'itinéraire rendu au client commencerait et finirait
+   * par un segment de zéro mètre sur une ligne sans nom.
+   */
+  private nettoyerCheminVirtuel(chemin: PathStep[] | null): PathStep[] | null {
+    if (!chemin) {
+      return null;
+    }
+
+    const reel = chemin.filter(
+      (etape) =>
+        etape.fromStopId !== ORIGINE_VIRTUELLE &&
+        etape.edge.toStopId !== DESTINATION_VIRTUELLE,
+    );
+
+    return reel.length > 0 ? reel : null;
   }
 
   /**

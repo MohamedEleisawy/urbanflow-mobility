@@ -3,6 +3,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
 import { AddressesModule } from './addresses/addresses.module';
+import { GeocodingModule } from './geocoding/geocoding.module';
 import { AdminModule } from './admin/admin.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
@@ -24,6 +25,8 @@ import { CarbonTrackingModule } from './carbon-tracking/carbon-tracking.module';
     AdminModule,
     // Adresses favorites Domicile / Travail (bloc 7).
     AddressesModule,
+    // Recherche d'adresses en saisie libre (Phase 3A). Publique.
+    GeocodingModule,
     RoutesModule,
     StopsModule,
     SegmentsModule,

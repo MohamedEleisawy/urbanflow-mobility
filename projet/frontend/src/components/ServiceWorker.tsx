@@ -3,37 +3,75 @@
 import { useEffect } from "react";
 
 // =============================================================================
-// Enregistrement du service worker (bloc 5D-2)
+// Enregistrement du service worker (bloc 5D)
 // =============================================================================
-// Composant sans rendu : il n'existe que pour son effet. Placé dans le layout,
-// il s'exécute une fois par chargement d'application.
+// ═══ ⚠️ EN PRODUCTION UNIQUEMENT, ET CE N'EST PAS UNE PRÉCAUTION DE STYLE ═══
 //
-// ⚠️ IL NE RECHARGE JAMAIS LA PAGE. Le motif répandu — écouter
-// `controllerchange` et appeler `location.reload()` — est précisément ce qui
-// produit les applications qui se rechargent en boucle. Une nouvelle version
-// prend la main à la navigation suivante, ce qui suffit largement.
+// Le service worker met `/_next/static/*` en cache SANS JAMAIS REVALIDER
+// (`sw.js` : `if (enCache) return enCache;`). Ce choix repose sur une
+// hypothèse écrite dans son propre commentaire :
+//
+//   « leur nom contient une empreinte, ils ne changent donc jamais de
+//     contenu à URL constante »
+//
+// C'est VRAI après `next build`. C'est FAUX avec `next dev` : Turbopack
+// réutilise les mêmes URL de fragments d'une recompilation à l'autre, avec un
+// contenu différent.
+//
+// Conséquence observée, et diagnostiquée sur ce projet : le navigateur
+// recevait un ancien fragment servi par le cache pendant que le serveur en
+// avait un nouveau. Next détectait l'incohérence, rechargeait la page — qui
+// recevait de nouveau le fragment périmé. **Boucle de rechargement infinie**,
+// visible côté serveur comme un flot ininterrompu de `GET /recherche 200`.
+//
+// Enregistrer le service worker en développement n'apporte par ailleurs
+// RIEN : on ne teste pas le mode hors-ligne sur un serveur qui recompile à
+// chaque frappe.
+//
+// ═══ POURQUOI ON DÉSINSTALLE ACTIVEMENT EN DÉVELOPPEMENT ═══
+//
+// Ne plus l'enregistrer ne suffit pas. Un service worker déjà installé SURVIT
+// au changement de code : il reste actif, continue de servir ses fragments
+// périmés, et la boucle persiste. Il faut donc le retirer explicitement — et
+// vider son cache, faute de quoi le prochain enregistrement le retrouverait.
 // =============================================================================
 
 export function ServiceWorker() {
   useEffect(() => {
-    // `serviceWorker` est ABSENT sur une origine non sécurisée (http hors
-    // localhost) et en navigation privée sur certains navigateurs. Le tester
-    // évite un TypeError qui remonterait jusqu'à la racine de l'application.
     if (!("serviceWorker" in navigator)) {
       return;
     }
 
-    // Enregistré APRÈS le chargement complet : le faire pendant laisse le
-    // service worker se battre avec la page pour la bande passante, ce qui
-    // retarde le premier affichage sans rien accélérer.
+    // --- Développement : on désinstalle, on ne s'enregistre pas ------------
+    if (process.env.NODE_ENV !== "production") {
+      void navigator.serviceWorker
+        .getRegistrations()
+        .then((enregistrements) => Promise.all(enregistrements.map((e) => e.unregister())))
+        .then(() =>
+          "caches" in window
+            ? caches.keys().then((noms) => Promise.all(noms.map((n) => caches.delete(n))))
+            : undefined,
+        )
+        // Un échec ici n'a rien de grave : le navigateur peut refuser l'accès
+        // aux caches selon le contexte. On ne casse pas la page pour autant.
+        .catch(() => undefined);
+
+      return;
+    }
+
+    // --- Production : enregistrement normal --------------------------------
     const enregistrer = () => {
+      // `catch` silencieux : un enregistrement refusé — navigation privée,
+      // réglage du navigateur — ne doit pas faire échouer la page. Le mode
+      // hors-ligne est un CONFORT, pas une condition de fonctionnement.
       void navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {
-        // Un échec d'enregistrement n'est PAS une panne de l'application :
-        // celle-ci fonctionne exactement pareil sans lui. On n'affiche donc
-        // rien à l'usager, qui n'aurait de toute façon rien à y faire.
+        // Ignoré volontairement.
       });
     };
 
+    // Attendre `load` : l'enregistrement déclenche le préchargement des
+    // ressources, qui entrerait sinon en concurrence avec l'affichage
+    // initial de la page.
     if (document.readyState === "complete") {
       enregistrer();
       return;

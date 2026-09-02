@@ -20,7 +20,22 @@
 // =============================================================================
 
 /// Modes de transport connus du backend (`enum ModeTransport`).
-export type TransportMode = "WALK" | "BUS" | "TRAM" | "METRO" | "BIKE" | "ESCOOTER" | "CAR";
+export type TransportMode =
+  | "WALK"
+  | "BUS"
+  | "TRAM"
+  | "METRO"
+  /**
+   * Ferroviaire — RER, Transilien, TER (GTFS `route_type = 2`).
+   *
+   * ⚠️ Ajouté avec l'import du réseau ferré : 24 lignes réelles, jusque-là
+   * REJETÉES faute d'équivalent. Les faire passer pour du métro aurait été
+   * un mensonge — un RER n'a ni la même desserte, ni la même vitesse.
+   */
+  | "TRAIN"
+  | "BIKE"
+  | "ESCOOTER"
+  | "CAR";
 
 /// Rôles (`enum RoleEnum`).
 ///
@@ -409,4 +424,33 @@ export interface FavoriteAddress {
   latitude: number;
   longitude: number;
   createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Recherche d'adresses (Phase 3A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Un lieu proposé par `GET /api/geocoding/search`.
+ *
+ * ⚠️ TROIS CHAMPS. Le backend normalise la réponse du fournisseur et n'en
+ * laisse sortir que le nécessaire : de quoi AFFICHER, et de quoi ENVOYER au
+ * moteur d'itinéraire. Aucun identifiant OSM, aucune métadonnée.
+ */
+export interface AdresseTrouvee {
+  label: string;
+  latitude: number;
+  longitude: number;
+}
+
+/** Réponse de `GET /api/geocoding/search`. */
+export interface GeocodingResponse {
+  /** Peut être VIDE — « aucun résultat » est une réponse, pas une erreur. */
+  items: AdresseTrouvee[];
+  /**
+   * Mention imposée par la licence des données, à afficher près des
+   * résultats. Elle vient du serveur plutôt que d'être écrite en dur : le
+   * jour où le fournisseur change, elle change avec lui.
+   */
+  attribution: string;
 }

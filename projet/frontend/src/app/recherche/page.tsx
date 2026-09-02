@@ -12,6 +12,13 @@ import { messageDErreur } from "@/lib/api";
 import { indexerArrets, pointDepuisArret, traceDepuisSegments } from "@/lib/carte";
 import { ErreurGeolocalisation, positionActuelle, type Coordonnees } from "@/lib/geolocalisation";
 import { listerAdresses } from "@/lib/adresses-api";
+import {
+  nombreDeChangements,
+  regrouperSegments,
+  resumerModes,
+  type GroupeEtapes,
+} from "@/lib/itineraire";
+import { ChampAdresse, type PointChoisi } from "@/components/ChampAdresse";
 import type { FavoriteAddress, FavoriteAddressType } from "@/lib/types";
 import {
   enregistrerItineraire,
@@ -82,7 +89,6 @@ type EtatPosition =
   | { statut: "echec"; message: string };
 
 /// Ce que le formulaire connaît d'un point : l'arrêt choisi.
-type Choix = string;
 
 /**
  * Sort de l'estimation carbone d'UN itinéraire (étape 5A-6).
@@ -115,9 +121,17 @@ export default function RecherchePage() {
   const [arrets, setArrets] = useState<Stop[] | null>(null);
   const [erreurArrets, setErreurArrets] = useState<string | null>(null);
 
-  const [depart, setDepart] = useState<Choix>("");
+  /**
+   * Points RÉELLEMENT retenus (Phase 3A).
+   *
+   * ⚠️ `null` tant qu'aucune proposition n'a été choisie. Le texte tapé vit
+   * dans `ChampAdresse` et n'arrive JAMAIS jusqu'ici : seule une sélection
+   * explicite produit des coordonnées. C'est ce qui rend impossible de lancer
+   * une recherche sur une saisie libre non résolue.
+   */
+  const [depart, setDepart] = useState<PointChoisi | null>(null);
   const [position, setPosition] = useState<EtatPosition>({ statut: "repos" });
-  const [arrivee, setArrivee] = useState<Choix>("");
+  const [arrivee, setArrivee] = useState<PointChoisi | null>(null);
 
   const [resultats, setResultats] = useState<Itinerary[] | null>(null);
 
@@ -206,22 +220,26 @@ export default function RecherchePage() {
    * au chargement de la page : une invite de permission qui surgit sans geste
    * de l'usager est une invite qu'on refuse par réflexe.
    */
-  const choisirDepart = (valeur: Choix) => {
-    setDepart(valeur);
-
-    if (valeur !== POSITION) {
-      // Revenir à un arrêt oublie la position : la garder en mémoire ferait
-      // conserver une donnée de géolocalisation dont plus rien n'a besoin
-      // (minimisation, C8).
-      setPosition({ statut: "repos" });
-      return;
-    }
-
+  const utiliserMaPosition = () => {
     setPosition({ statut: "localisation" });
 
+    // ⚠️ `getCurrentPosition`, JAMAIS `watchPosition` : on demande la position
+    // UNE fois, pour remplir un champ. Un suivi continu appartient à une
+    // fonctionnalité de guidage, qui n'existe pas encore.
     positionActuelle()
-      .then((coordonnees) => setPosition({ statut: "ok", coordonnees }))
+      .then((coordonnees) => {
+        setPosition({ statut: "ok", coordonnees });
+        setDepart({
+          label: "Ma position actuelle",
+          latitude: coordonnees.latitude,
+          longitude: coordonnees.longitude,
+          origine: "position",
+        });
+      })
       .catch((echec: unknown) => {
+        // La position échoue : le départ reste vide plutôt que de garder des
+        // coordonnées périmées d'une tentative précédente.
+        setDepart(null);
         setPosition({
           statut: "echec",
           message:
@@ -231,6 +249,34 @@ export default function RecherchePage() {
         });
       });
   };
+
+  /**
+   * Pose le point de départ ET oublie la position si elle n'est plus la
+   * source (bloc 5D, minimisation).
+   *
+   * ⚠️ Choisir une adresse ou un favori après avoir utilisé « Ma position »
+   * doit EFFACER la position mémorisée : la garder conserverait une donnée de
+   * géolocalisation dont plus rien n'a besoin. C'est une exigence de 5D que
+   * la refonte du champ ne doit pas emporter.
+   */
+  const poserDepart = (point: PointChoisi | null) => {
+    setDepart(point);
+
+    if (point?.origine !== "position") {
+      setPosition({ statut: "repos" });
+    }
+  };
+
+  /// Remplit un champ depuis une adresse favorite — SANS géocodage : le
+  /// favori porte déjà ses coordonnées, les redemander serait un appel réseau
+  /// pour réapprendre ce qu'on sait.
+  const choisirFavori = (poser: (point: PointChoisi) => void, adresse: FavoriteAddress) =>
+    poser({
+      label: adresse.address,
+      latitude: adresse.latitude,
+      longitude: adresse.longitude,
+      origine: "favori",
+    });
 
   const idDepart = useId();
   const idArrivee = useId();
@@ -308,24 +354,12 @@ export default function RecherchePage() {
     // L'origine est SOIT un arrêt choisi, SOIT la position de l'usager. Dans
     // les deux cas, seules des coordonnées partent au backend : le contrat de
     // `POST /api/routes/search` n'a jamais accepté autre chose.
-    // UN SEUL ENDROIT traduit un choix en coordonnées, et il sert aux DEUX
-    // champs. C'est ce qui garantit qu'« arrivée = Travail » ne peut pas
-    // recevoir par accident les coordonnées du départ : la fonction ne
-    // connaît que la valeur qu'on lui passe.
-    const resoudre = (choix: Choix): Coordonnees | undefined => {
-      if (choix === POSITION) {
-        return position.statut === "ok" ? position.coordonnees : undefined;
-      }
-
-      if (choix.startsWith(PREFIXE_ADRESSE)) {
-        return adressesFav.find((a) => a.id === choix.slice(PREFIXE_ADRESSE.length));
-      }
-
-      return arrets?.find((a) => a.id === choix);
-    };
-
-    const origine = resoudre(depart);
-    const destination = resoudre(arrivee);
+    // Phase 3A : plus aucune résolution ici. Chaque champ ne peut contenir
+    // qu'un point DÉJÀ résolu — adresse choisie, favori, ou position — et
+    // porte ses propres coordonnées. Une inversion départ / arrivée est donc
+    // structurellement impossible : ce sont deux états distincts.
+    const origine: Coordonnees | undefined = depart ?? undefined;
+    const destination: Coordonnees | undefined = arrivee ?? undefined;
 
     if (!origine || !destination) {
       return;
@@ -418,13 +452,19 @@ export default function RecherchePage() {
   // choisis, et deux arrêts DIFFÉRENTS. Le backend reste l'autorité — il
   // rendrait d'ailleurs une liste vide pour deux points identiques, mais
   // faire un aller-retour réseau pour l'apprendre serait discourtois.
-  const memeArret = depart !== "" && depart === arrivee;
+  const memeArret =
+    depart !== null &&
+    arrivee !== null &&
+    depart.latitude === arrivee.latitude &&
+    depart.longitude === arrivee.longitude;
 
   // Chercher avec « Ma position » exige que la position soit RÉELLEMENT
   // arrivée : partir pendant la localisation enverrait des coordonnées
   // absentes, et le backend répondrait 400.
-  const positionPrete = depart !== POSITION || position.statut === "ok";
-  const peutChercher = depart !== "" && arrivee !== "" && !memeArret && positionPrete;
+  // ⚠️ On exige des POINTS, pas des champs remplis. Un texte saisi sans
+  // proposition choisie ne vaut rien : il n'a aucune coordonnée, et le
+  // bouton doit rester inactif tant que l'usager n'a pas tranché.
+  const peutChercher = depart !== null && arrivee !== null && !memeArret;
 
   return (
     <Container>
@@ -445,33 +485,78 @@ export default function RecherchePage() {
           ) : (
             <Card>
               <form onSubmit={soumettre} noValidate className="space-y-5">
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-5 sm:grid-cols-2">
                   <div>
-                    <ChoixArret
-                      id={idDepart}
+                    <ChampAdresse
                       libelle="Départ"
+                      placeholder="D'où partez-vous ?"
                       valeur={depart}
-                      arrets={arrets}
-                      adresses={adressesFav}
-                      onChange={choisirDepart}
-                      decritPar={memeArret ? idErreur : undefined}
-                      // Une OPTION de la liste, et non un bouton à côté :
-                      // l'usager garde un seul contrôle, navigable au clavier
-                      // et affiché par le sélecteur natif du téléphone.
-                      optionPosition
+                      onChoisir={poserDepart}
+                      actions={
+                        <>
+                          {/* Options SECONDAIRES : la saisie libre est
+                              l'expérience principale, mais rien de ce qui
+                              existait n'a disparu. */}
+                          <BoutonSecondaire onClick={utiliserMaPosition}>
+                            Ma position
+                          </BoutonSecondaire>
+                          {adressesFav.map((favori) => (
+                            <BoutonSecondaire
+                              key={favori.id}
+                              onClick={() => choisirFavori(poserDepart, favori)}
+                            >
+                              {LIBELLES_ADRESSES[favori.type]}
+                            </BoutonSecondaire>
+                          ))}
+                        </>
+                      }
                     />
-                    <EtatDeLaPosition etat={position} onReessayer={() => choisirDepart(POSITION)} />
+                    <EtatDeLaPosition etat={position} onReessayer={utiliserMaPosition} />
                   </div>
-                  <ChoixArret
-                    id={idArrivee}
+
+                  <ChampAdresse
                     libelle="Arrivée"
+                    placeholder="Où allez-vous ?"
                     valeur={arrivee}
-                    arrets={arrets}
-                    adresses={adressesFav}
-                    onChange={setArrivee}
-                    decritPar={memeArret ? idErreur : undefined}
+                    onChoisir={setArrivee}
+                    actions={adressesFav.map((favori) => (
+                      <BoutonSecondaire
+                        key={favori.id}
+                        onClick={() => choisirFavori(setArrivee, favori)}
+                      >
+                        {LIBELLES_ADRESSES[favori.type]}
+                      </BoutonSecondaire>
+                    ))}
                   />
                 </div>
+
+                {/* Les arrêts du réseau restent accessibles, en RETRAIT : le
+                    réseau réel en compte 1 383, et une liste de cette taille
+                    ne peut pas être l'entrée principale. Repliée par défaut,
+                    elle ne coûte rien à qui ne l'ouvre pas. */}
+                {arrets.length > 0 && (
+                  <details className="rounded-md border border-neutral-200 px-3 py-2">
+                    <summary className="cursor-pointer text-sm text-neutral-700">
+                      Choisir directement un arrêt du réseau
+                    </summary>
+                    <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                      <ChoixArret
+                        id={idDepart}
+                        libelle="Arrêt de départ"
+                        valeur=""
+                        arrets={arrets}
+                        onChange={(id) => poserDepart(depuisArret(arrets, id))}
+                      />
+                      <ChoixArret
+                        id={idArrivee}
+                        libelle="Arrêt d'arrivée"
+                        valeur=""
+                        arrets={arrets}
+                        onChange={(id) => setArrivee(depuisArret(arrets, id))}
+                      />
+                    </div>
+                  </details>
+                )}
 
                 {/* Message lié aux DEUX champs par `aria-describedby` : un
                     lecteur d'écran l'annonce en atteignant l'un ou l'autre. */}
@@ -713,42 +798,44 @@ function ItineraireCarte({
   selectionne: boolean;
   onSelectionner: (critere: ItineraryCriterion) => void;
 }) {
+  // Le regroupement est une pure LECTURE des segments : aucune donnée n'est
+  // inventée, seulement présentée autrement. Le détail reste accessible.
+  const groupes = regrouperSegments(itineraire.segments);
+  const resume = resumerModes(groupes, LIBELLES_MODES);
+  const changements = nombreDeChangements(groupes);
+
   return (
     <Card>
       <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
         <h3 className="text-ink font-semibold">{CRITERES[itineraire.criterion]}</h3>
         <p className="text-sm text-neutral-700">
           <span className="text-ink font-medium">{formaterDuree(itineraire.totalDurationMin)}</span>{" "}
-          · {formaterDistance(itineraire.totalDistanceM)} · {itineraire.segments.length}{" "}
-          {itineraire.segments.length === 1 ? "étape" : "étapes"}
+          · {formaterDistance(itineraire.totalDistanceM)}
+          {changements > 0 && (
+            <>
+              {" "}
+              · {changements} changement{changements > 1 ? "s" : ""}
+            </>
+          )}
         </p>
       </div>
 
-      {/* Une liste ORDONNÉE : l'ordre des étapes est celui du trajet, ce
-          n'est pas une simple énumération. */}
+      {/* Le résumé du trajet EN UNE LIGNE — « Marche + Métro 8 ». C'est la
+          première chose qu'on lit pour comparer deux propositions, bien
+          avant le détail des arrêts. */}
+      <p className="text-ink mt-1 font-medium">{resume}</p>
+
+      {/* Une liste ORDONNÉE de GROUPES : l'ordre est celui du trajet.
+          Cinq tronçons sur la ligne 8 forment UNE étape lisible, pas cinq —
+          et un lecteur d'écran n'entend plus cinq fois « Métro 8 ». */}
       <ol className="mt-4 space-y-3">
-        {itineraire.segments.map((segment, index) => (
-          <li
-            key={`${segment.lineId}-${segment.fromStopId}-${segment.toStopId}`}
-            className="flex gap-3 border-l-2 border-neutral-200 pl-4"
-          >
-            <div className="min-w-0 flex-1">
-              <p className="text-ink text-sm font-medium">
-                {segment.fromStopName} → {segment.toStopName}
-              </p>
-              <p className="mt-0.5 text-sm text-neutral-600">
-                {/* Le mode ET la ligne : « Bus 38 » plutôt que « BUS ».
-                    C'est l'exigence posée en 4E-2 côté backend. */}
-                {LIBELLES_MODES[segment.mode]} {segment.lineName} · {segment.operator}
-              </p>
-            </div>
-            <p className="shrink-0 text-sm text-neutral-600">
-              {formaterDuree(segment.durationMin)}
-              <span className="sr-only">
-                , étape {index + 1} sur {itineraire.segments.length}
-              </span>
-            </p>
-          </li>
+        {groupes.map((groupe, index) => (
+          <EtapeGroupee
+            key={`${groupe.lineId}-${groupe.segments[0].fromStopId}-${index}`}
+            groupe={groupe}
+            rang={index + 1}
+            total={groupes.length}
+          />
         ))}
       </ol>
 
@@ -1024,5 +1111,114 @@ function EtatDeLaPosition({ etat, onReessayer }: { etat: EtatPosition; onReessay
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Un arrêt du réseau, converti en point utilisable (Phase 3A).
+ *
+ * Rend `null` sur un identifiant vide ou inconnu : le champ redevient alors
+ * non sélectionné, plutôt que de conserver un point qui ne correspond à rien.
+ */
+function depuisArret(arrets: Stop[], id: string): PointChoisi | null {
+  const arret = arrets.find((a) => a.id === id);
+
+  return arret
+    ? {
+        label: arret.name,
+        latitude: arret.latitude,
+        longitude: arret.longitude,
+        origine: "adresse",
+      }
+    : null;
+}
+
+/// Petit bouton d'option secondaire — « Ma position », « Domicile ».
+function BoutonSecondaire({
+  onClick,
+  children,
+}: {
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-ink rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium transition-colors hover:bg-neutral-50"
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Une étape regroupée — « Métro 8 · 5 arrêts », avec son détail repliable.
+ *
+ * ⚠️ LE DÉTAIL N'EST JAMAIS PERDU, seulement replié. Le regroupement est un
+ * choix d'AFFICHAGE : un usager qui veut savoir où il passe doit pouvoir le
+ * lire, et `<details>` le permet nativement — au clavier, et annoncé par un
+ * lecteur d'écran, sans une ligne de JavaScript.
+ */
+function EtapeGroupee({
+  groupe,
+  rang,
+  total,
+}: {
+  groupe: GroupeEtapes;
+  rang: number;
+  total: number;
+}) {
+  // La marche n'a pas de numéro de ligne : « Marche Correspondance » n'aurait
+  // aucun sens. Les autres modes se disent par leur ligne — « Métro 8 ».
+  const titre =
+    groupe.mode === "WALK"
+      ? LIBELLES_MODES.WALK
+      : `${LIBELLES_MODES[groupe.mode]} ${groupe.lineName}`;
+
+  return (
+    <li className="border-brand/40 border-l-2 pl-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <p className="text-ink font-medium">
+          {titre}
+          <span className="sr-only">
+            , étape {rang} sur {total}
+          </span>
+        </p>
+        <p className="text-sm text-neutral-600">{formaterDuree(groupe.durationMin)}</p>
+      </div>
+
+      <p className="mt-0.5 text-sm text-neutral-600">
+        {groupe.depart} → {groupe.arrivee}
+        {/* Le nombre d'arrêts ne s'annonce QUE pour un véhicule : « 3 arrêts
+            à pied » ne veut rien dire. */}
+        {groupe.mode !== "WALK" && (
+          <>
+            {" · "}
+            {groupe.nombreArrets} arrêt{groupe.nombreArrets > 1 ? "s" : ""}
+          </>
+        )}
+      </p>
+
+      {/* Replié au-delà d'un seul tronçon : ouvrir un détail d'une ligne
+          n'apprendrait rien. */}
+      {groupe.segments.length > 1 && (
+        <details className="mt-1">
+          <summary className="text-brand cursor-pointer text-sm">
+            Voir les {groupe.segments.length} arrêts
+          </summary>
+          <ol className="mt-2 space-y-1 pl-4">
+            {groupe.segments.map((segment) => (
+              <li
+                key={`${segment.fromStopId}-${segment.toStopId}`}
+                className="list-decimal text-sm text-neutral-600"
+              >
+                {segment.toStopName}
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+    </li>
   );
 }

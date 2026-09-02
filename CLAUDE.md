@@ -54,7 +54,7 @@
 * Ne détaillez jamais les piles d'exécution (*stack traces*), les infos de débogage ou les erreurs verbeuses en production.
 * Assurez-vous que le fichier `.gitignore` inclut le `.env`, les clés privées, les identifiants et les logs.
 * Privilégiez le HTTPS partout — redirigez le HTTP vers le HTTPS.
-* Appliquez le principe du moindre privilège sur tous les contrôles d'accès.
+* Appliquez le principe du moijandre privilège sur tous les contrôles d'accès.
 
 ---
 

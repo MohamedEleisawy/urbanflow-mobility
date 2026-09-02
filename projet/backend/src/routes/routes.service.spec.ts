@@ -1281,9 +1281,102 @@ describe('RoutesService', () => {
       expect(prisma.stop.findMany).toHaveBeenCalledTimes(1);
       expect(prisma.networkLink.findMany).toHaveBeenCalledTimes(1);
       // La liaison est chargée AVEC sa ligne, en une seule requête.
-      expect(prisma.networkLink.findMany).toHaveBeenCalledWith({
-        orderBy: { id: 'asc' },
-        include: { line: true },
+      // `objectContaining` : la requête porte désormais un `where` de
+      // BORNAGE SPATIAL (refonte mobilité). Ce test-ci vérifie qu'il n'y a
+      // qu'UNE requête, jointure comprise — pas la forme du filtre, qui a
+      // ses propres tests.
+      expect(prisma.networkLink.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: { id: 'asc' },
+          include: { line: true },
+        }),
+      );
+    });
+
+    // -------------------------------------------------------------------------
+    // Bornage spatial (refonte mobilité)
+    // -------------------------------------------------------------------------
+    describe('bornage spatial', () => {
+      it('NE CHARGE PAS tout le réseau : un cadre est imposé', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+        await service.searchRoutes({ ...depuisA, ...versC });
+
+        // C'est ce qui rend l'ajout du bus et du RER possible : sans cadre,
+        // chaque recherche balaierait ~50 000 arrêts et 100 000 liaisons.
+        const appel = (
+          prisma.stop.findMany.mock.calls as unknown[][]
+        )[0][0] as {
+          where?: { latitude?: unknown; longitude?: unknown };
+        };
+
+        expect(appel.where).toBeDefined();
+        expect(appel.where?.latitude).toBeDefined();
+        expect(appel.where?.longitude).toBeDefined();
+      });
+
+      it('encadre les DEUX points, origine comme destination', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+        await service.searchRoutes({
+          fromLat: 48.85,
+          fromLon: 2.35,
+          toLat: 48.88,
+          toLon: 2.37,
+        });
+
+        const where = (
+          (prisma.stop.findMany.mock.calls as unknown[][])[0][0] as {
+            where: { latitude: { gte: number; lte: number } };
+          }
+        ).where;
+
+        // Le cadre contient les deux extrémités, avec de la marge de part et
+        // d'autre : un itinéraire peut légitimement déborder du rectangle.
+        expect(where.latitude.gte).toBeLessThan(48.85);
+        expect(where.latitude.lte).toBeGreaterThan(48.88);
+      });
+
+      it('exige que les DEUX extrémités d’une liaison soient dans le cadre', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+        await service.searchRoutes({ ...depuisA, ...versC });
+
+        // Une liaison dont l'autre bout est hors zone mènerait à un sommet
+        // absent du graphe — Dijkstra suivrait une arête vers nulle part.
+        const appel = (
+          prisma.networkLink.findMany.mock.calls as unknown[][]
+        )[0][0] as {
+          where: { fromStop?: unknown; toStop?: unknown };
+        };
+
+        expect(appel.where.fromStop).toBeDefined();
+        expect(appel.where.toStop).toBeDefined();
+      });
+
+      it('applique le MÊME cadre aux arrêts et aux liaisons', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+        await service.searchRoutes({ ...depuisA, ...versC });
+
+        // Deux cadres différents laisseraient des arrêts sans liaison, ou
+        // l'inverse : le graphe serait incohérent.
+        const cadreArrets = (
+          (prisma.stop.findMany.mock.calls as unknown[][])[0][0] as {
+            where: unknown;
+          }
+        ).where;
+        const cadreLiaisons = (
+          (prisma.networkLink.findMany.mock.calls as unknown[][])[0][0] as {
+            where: { fromStop: unknown };
+          }
+        ).where.fromStop;
+
+        expect(cadreLiaisons).toEqual(cadreArrets);
       });
     });
 
@@ -1443,10 +1536,12 @@ describe('RoutesService', () => {
 
         // Sans include, le mode serait introuvable : cette requête est la
         // condition même du fonctionnement du graphe.
-        expect(prisma.networkLink.findMany).toHaveBeenCalledWith({
-          orderBy: { id: 'asc' },
-          include: { line: true },
-        });
+        expect(prisma.networkLink.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            orderBy: { id: 'asc' },
+            include: { line: true },
+          }),
+        );
       });
 
       it('lit le mode de transport depuis la ligne', async () => {

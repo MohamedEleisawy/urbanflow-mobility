@@ -69,11 +69,18 @@ describe('NetworkBuilderService', () => {
     departureTimeSec: departMin * 60,
   });
 
-  const trajet = (tripId: string, routeId = 'L1'): GtfsTrip => ({
+  const trajet = (
+    tripId: string,
+    routeId = 'L1',
+    shapeId: string | null = null,
+  ): GtfsTrip => ({
     tripId,
     routeId,
     serviceId: 'SEM',
     directionId: null,
+    // Phase 1B : un flux sans `shapes.txt` rend `null` ici, et l'import
+    // doit continuer sans géométrie.
+    shapeId,
   });
 
   function preparer(

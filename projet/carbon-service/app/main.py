@@ -1,8 +1,9 @@
 """Point d'entrée ASGI du microservice carbone.
 
-Le service expose deux endpoints :
+Le service expose trois endpoints :
 
   GET  /health     verifie que le service demarre (etape 1) ;
+  GET  /factors    publie les facteurs d'emission (Phase 4) ;
   POST /calculate  calcule l'empreinte carbone d'un itineraire (etape 4D-1).
 
 Le calcul est SANS ETAT : aucune base de donnees, aucun utilisateur, aucun
@@ -21,7 +22,8 @@ from pydantic import BaseModel
 from app import __version__
 from app.carbon import calculer_empreinte
 from app.config import Settings, get_settings
-from app.models import CalculationIn, CalculationOut
+from app.factors import FACTEUR_VOITURE_G_PAR_KM, FACTEURS_G_PAR_KM
+from app.models import CalculationIn, CalculationOut, FactorsOut
 
 
 class HealthResponse(BaseModel):
@@ -51,6 +53,33 @@ def create_app() -> FastAPI:
             service=settings.app_name,
             version=__version__,
             environment=settings.environment,
+        )
+
+    @app.get("/factors", response_model=FactorsOut, tags=["carbone"])
+    def factors() -> FactorsOut:
+        """Publie les facteurs d'emission, en gCO2e par kilometre.
+
+        POURQUOI CET ENDPOINT EXISTE
+        ----------------------------
+        Le backend NestJS doit pouvoir CLASSER des itineraires par emissions
+        avant meme d'en retenir un — c'est l'alternative « LOWEST_CO2 ». Il ne
+        peut pas appeler /calculate une fois par candidat : ce serait des
+        dizaines d'allers-retours par recherche.
+
+        La solution ALTERNATIVE aurait ete de recopier la table des facteurs
+        dans NestJS. C'est exactement ce que le module app/factors.py interdit :
+        « Ce fichier est volontairement le SEUL endroit ou ces valeurs
+        apparaissent ». Publier la table, plutot que la dupliquer, conserve
+        cette propriete : il reste une seule source de verite, et NestJS n'en
+        est que le lecteur.
+
+        Les modes SANS facteur (ESCOOTER) sont ABSENTS de la reponse, et non
+        presents a zero. Un client qui ne trouve pas son mode sait donc qu'il
+        n'est pas calculable, au lieu de croire qu'il n'emet rien.
+        """
+        return FactorsOut(
+            factors={mode.value: facteur for mode, facteur in FACTEURS_G_PAR_KM.items()},
+            car_factor_g_per_km=FACTEUR_VOITURE_G_PAR_KM,
         )
 
     @app.post("/calculate", response_model=CalculationOut, tags=["carbone"])

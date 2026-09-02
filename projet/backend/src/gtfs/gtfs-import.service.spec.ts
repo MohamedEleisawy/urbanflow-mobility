@@ -32,7 +32,7 @@ describe('GtfsImportService', () => {
   // le compilateur.
   type UpsertMock = jest.Mock<Promise<unknown>, [UpsertArg]>;
   let prisma: {
-    stop: { upsert: UpsertMock };
+    stop: { upsert: UpsertMock; deleteMany: jest.Mock };
     transitLine: { upsert: UpsertMock };
   };
 
@@ -47,7 +47,12 @@ describe('GtfsImportService', () => {
 
   beforeEach(() => {
     prisma = {
-      stop: { upsert: jest.fn<Promise<unknown>, [UpsertArg]>() },
+      stop: {
+        upsert: jest.fn<Promise<unknown>, [UpsertArg]>(),
+        // Phase 1 : l'élagage des arrêts non desservis clôt tout import.
+        // Il a ses propres tests plus bas ; ici, il ne doit rien casser.
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
       transitLine: { upsert: jest.fn<Promise<unknown>, [UpsertArg]>() },
     };
     networkBuilder = { buildNetwork: jest.fn().mockResolvedValue(undefined) };
@@ -115,8 +120,8 @@ describe('GtfsImportService', () => {
 
       // routes.txt contient 4 lignes valides : R1 (métro), R2 (bus),
       // R3 (train, type 2) et R4 (tram). Seule R3 n'est pas importable.
-      expect(prisma.transitLine.upsert).toHaveBeenCalledTimes(3);
-      expect(report.imported.transitLines).toBe(3);
+      expect(prisma.transitLine.upsert).toHaveBeenCalledTimes(4);
+      expect(report.imported.transitLines).toBe(4);
     });
 
     it('traduit route_type en ModeTransport', async () => {
@@ -126,9 +131,13 @@ describe('GtfsImportService', () => {
         (appelUpsert) => appelUpsert[0].create.mode,
       );
 
+      // ⚠️ R3 (route_type 2) était REJETÉ ; il est désormais traduit en
+      // TRAIN. C'est ce qui a rendu routables les 24 lignes ferroviaires du
+      // flux réel — RER A à E, Transilien, TER.
       expect(modes).toEqual([
         ModeTransport.METRO, // R1, route_type 1
         ModeTransport.BUS, // R2, route_type 3
+        ModeTransport.TRAIN, // R3, route_type 2
         ModeTransport.TRAM, // R4, route_type 0
       ]);
     });
@@ -136,8 +145,11 @@ describe('GtfsImportService', () => {
     it('compte et détaille les route_type non supportés', async () => {
       const report = await service.importReferential(FIXTURES, 'RATP');
 
-      // R3 est de type 2 (train) : comptée, jamais ignorée en silence.
-      expect(report.unsupportedRouteTypes).toEqual({ 2: 1 });
+      // ⚠️ PLUS AUCUN type non supporté dans ce jeu d'essai : R3 (type 2)
+      // est désormais traduit en TRAIN. Le compteur reste utile — le flux
+      // réel contient ferry, funiculaire et télécabine — mais il est vide
+      // ici, et c'est exactement ce qu'on veut vérifier.
+      expect(report.unsupportedRouteTypes).toEqual({});
     });
 
     it('utilise le nom court, puis le nom long en repli', async () => {
@@ -145,8 +157,9 @@ describe('GtfsImportService', () => {
 
       // R1 a un nom court "4".
       expect(appel(prisma.transitLine.upsert, 0).create.name).toBe('4');
-      // R4 n'en a pas : on retombe sur le nom long.
-      expect(appel(prisma.transitLine.upsert, 2).create.name).toBe(
+      // R4 n'en a pas : on retombe sur le nom long. Elle est désormais le
+      // QUATRIÈME appel, R3 (train) n'étant plus rejetée.
+      expect(appel(prisma.transitLine.upsert, 3).create.name).toBe(
         'Ligne sans nom court',
       );
     });
@@ -175,8 +188,10 @@ describe('GtfsImportService', () => {
       expect(report.files.routes.valid).toBe(4);
       // ...mais seulement 3 sont importables. La différence est expliquée
       // par le compteur des types non supportés.
-      expect(report.imported.transitLines).toBe(3);
-      expect(report.unsupportedRouteTypes[2]).toBe(1);
+      expect(report.imported.transitLines).toBe(4);
+      // Aucun type non supporté ici : R3 (type 2) est traduite en TRAIN
+      // depuis l'import du réseau ferré.
+      expect(report.unsupportedRouteTypes[2]).toBeUndefined();
     });
 
     it('conserve l’invariant de lecture total = valid + ignored + filtered', async () => {
@@ -190,7 +205,10 @@ describe('GtfsImportService', () => {
       const resume = report.toLines().join('\n');
 
       expect(resume).toContain('Écrits en base');
-      expect(resume).toContain('route_type 2 (train)');
+      // Le bilan ne mentionne plus le type 2 : il est supporté. La section
+      // « modes non supportés » reste utile pour ferry, funiculaire et
+      // télécabine, absents de ce jeu d'essai.
+      expect(resume).not.toContain('route_type 2 (train)');
     });
 
     it('déclenche la construction du réseau APRÈS le référentiel', async () => {
@@ -226,7 +244,7 @@ describe('GtfsImportService', () => {
       // Le traitement est identique quelle que soit la source : ce sont
       // bien les fixtures résolues qui ont été importées.
       expect(report.imported.stops).toBe(4);
-      expect(report.imported.transitLines).toBe(3);
+      expect(report.imported.transitLines).toBe(4);
     });
 
     it('nettoie les fichiers temporaires après un import réussi', async () => {

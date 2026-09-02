@@ -66,6 +66,18 @@ enum ModeTransport {
   BUS
   TRAM
   METRO
+  /// Transport FERROVIAIRE — RER, Transilien (GTFS route_type = 2).
+  ///
+  /// ⚠️ Ajouté parce que le flux réel d'Île-de-France Mobilités contient 24
+  /// lignes de ce type, jusque-là REJETÉES à l'import faute d'équivalent.
+  /// Les faire passer pour du METRO aurait été un mensonge : un RER n'a ni
+  /// la même desserte, ni la même vitesse, ni le même exploitant.
+  ///
+  /// Le facteur d'émission retenu est celui du dossier pour le rail
+  /// électrique — 4 g/km, la valeur qu'il donne déjà au tram et au métro.
+  /// Ce n'est pas une invention : c'est l'application de sa propre
+  /// convention à un mode de même nature.
+  TRAIN
   BIKE
   ESCOOTER
   CAR
@@ -371,6 +383,36 @@ model NetworkLink {
 
   toStop   Stop   @relation("LinkToStop", fields: [toStopId], references: [id], onDelete: Cascade)
   toStopId String @db.Uuid
+
+  /// Tracé RÉEL de la voie entre les deux arrêts, en GeoJSON LineString.
+  ///
+  /// ═══ D'OÙ VIENT CETTE GÉOMÉTRIE ═══
+  ///
+  /// De `shapes.txt` du flux GTFS de l'opérateur — jamais d'une
+  /// interpolation. Le trajet complet d'une ligne y est décrit point par
+  /// point ; la portion retenue ici est celle comprise entre les deux arrêts
+  /// de cette liaison.
+  ///
+  /// ⚠️ `null` est une valeur LÉGITIME : un flux GTFS n'est pas tenu de
+  /// fournir `shapes.txt`, et le jeu de démonstration n'en a pas. L'interface
+  /// retombe alors honnêtement sur un tracé arrêt → arrêt, en le disant.
+  ///
+  /// ═══ POURQUOI `Json` ET NON PostGIS `geometry` ═══
+  ///
+  /// PostGIS est installé, et `geometry(LineString, 4326)` serait le choix
+  /// canonique. Il a été écarté pour ce bloc : Prisma ne type pas `geometry`
+  /// nativement — il faudrait `Unsupported()` et du SQL brut sur une lecture
+  /// fréquente — alors qu'AUCUNE requête spatiale n'est nécessaire ici. Les
+  /// phases carte et GPS ne font que DESSINER une ligne, et Leaflet consomme
+  /// du GeoJSON tel quel.
+  ///
+  /// PostGIS redeviendra le bon choix le jour où une question spatiale se
+  /// posera : « quelles lignes traversent ce rectangle ? ».
+  ///
+  /// ⚠️ ORDRE DES COORDONNÉES : GeoJSON impose [longitude, latitude] —
+  /// l'inverse de l'usage courant et de Leaflet. Une inversion placerait
+  /// Paris en Somalie sans lever la moindre erreur : un test la verrouille.
+  geometry Json?
 
   /// Une ligne ne relie un arrêt A à un arrêt B qu'UNE SEULE FOIS.
   ///

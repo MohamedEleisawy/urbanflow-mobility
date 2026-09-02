@@ -7,13 +7,38 @@ import { pipeline } from 'node:stream/promises';
 import { Injectable, Logger } from '@nestjs/common';
 import yauzl from 'yauzl';
 
-/// Les quatre fichiers dont le pipeline a besoin. Tout le reste d'un flux
-/// GTFS (agency, calendar, shapes, fares...) est ignoré : voir le carnet.
+/// Les quatre fichiers SANS LESQUELS l'import ne peut pas avoir lieu. Leur
+/// absence interrompt la commande.
 export const FICHIERS_GTFS_REQUIS = [
   'stops.txt',
   'routes.txt',
   'trips.txt',
   'stop_times.txt',
+] as const;
+
+/// Fichiers extraits S'ILS SONT PRÉSENTS, sans jamais être exigés (Phase 1B).
+///
+/// ⚠️ `shapes.txt` était auparavant ignoré à l'extraction — le commentaire
+/// d'origine le disait explicitement. C'est ce qui a fait échouer le premier
+/// import réel avec géométrie : le fichier existait bien dans l'archive
+/// d'Île-de-France Mobilités (129 Mo), mais n'était jamais décompressé, si
+/// bien que `chargerTraces` concluait « le flux ne fournit pas shapes.txt ».
+///
+/// Il est FACULTATIF, et doit le rester : la spécification GTFS ne l'impose
+/// pas, et le jeu de démonstration du projet n'en a pas. Un flux sans
+/// géométrie s'importe donc exactement comme avant.
+export const FICHIERS_GTFS_FACULTATIFS = [
+  'shapes.txt',
+  // Ajouté Phase 1 : sans lui, aucune correspondance entre quais, et donc
+  // aucun changement de ligne possible.
+  'transfers.txt',
+] as const;
+
+/// Tout ce qu'on extrait d'une archive. Le reste est ignoré sans être
+/// décompressé — un flux réel contient des dizaines de fichiers inutiles ici.
+export const FICHIERS_GTFS_EXTRAITS = [
+  ...FICHIERS_GTFS_REQUIS,
+  ...FICHIERS_GTFS_FACULTATIFS,
 ] as const;
 
 /**
@@ -218,7 +243,9 @@ export class GtfsSourceService {
    * Tout le reste de l'archive est ignoré sans être décompressé.
    */
   private extraire(cheminZip: string, destination: string): Promise<void> {
-    const requis = new Set<string>(FICHIERS_GTFS_REQUIS);
+    // Requis ET facultatifs : `validerFichiersRequis` se chargera ensuite
+    // de n'exiger que les premiers.
+    const requis = new Set<string>(FICHIERS_GTFS_EXTRAITS);
 
     return new Promise((resolve, reject) => {
       // lazyEntries : on avance entrée par entrée, sans tout parcourir d'un

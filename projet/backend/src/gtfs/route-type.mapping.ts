@@ -32,6 +32,9 @@ import { ModeTransport } from '@prisma/client';
 const CORRESPONDANCES: Record<number, ModeTransport> = {
   0: ModeTransport.TRAM,
   1: ModeTransport.METRO,
+  // ⚠️ Ajouté avec le mode TRAIN. Auparavant rejeté, ce qui écartait les 24
+  // lignes ferroviaires du flux réel — RER et Transilien.
+  2: ModeTransport.TRAIN,
   3: ModeTransport.BUS,
 };
 

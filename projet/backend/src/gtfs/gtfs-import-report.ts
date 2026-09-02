@@ -9,7 +9,16 @@
 import { describeRouteType } from './route-type.mapping';
 
 /// Les quatre fichiers que nous lisons.
-export type GtfsFileName = 'stops' | 'routes' | 'trips' | 'stopTimes';
+export type GtfsFileName =
+  | 'stops'
+  | 'routes'
+  | 'trips'
+  | 'stopTimes'
+  /// Ajouté Phase 1B. Le fichier est FACULTATIF : un flux sans lui produit
+  /// simplement des compteurs à zéro, jamais une erreur.
+  | 'shapes'
+  /// Ajouté Phase 1 (correspondances). Facultatif comme `shapes`.
+  | 'transfers';
 
 /// Motifs pour lesquels une ligne est INVALIDE (donnée inexploitable).
 export type GtfsIgnoreReason =
@@ -19,7 +28,12 @@ export type GtfsIgnoreReason =
   | 'invalidTime'
   | 'unknownStop'
   | 'unknownTrip'
-  | 'unknownRoute';
+  | 'unknownRoute'
+  /// Ajouté Phase 1B : la ligne est valide, mais elle ne concerne pas le
+  /// périmètre demandé. Ce n'est PAS une anomalie — d'où un motif distinct,
+  /// pour qu'un tracé hors périmètre ne se confonde pas dans le bilan avec
+  /// une donnée réellement inexploitable.
+  | 'outOfScope';
 
 /// Motifs pour lesquels une ligne est CORRECTE mais volontairement écartée.
 /// À distinguer des précédents : il n'y a rien à corriger dans le flux.
@@ -58,6 +72,8 @@ export class GtfsImportReport {
     stops: compteursVides(),
     routes: compteursVides(),
     trips: compteursVides(),
+    shapes: compteursVides(),
+    transfers: compteursVides(),
     stopTimes: compteursVides(),
   };
 
@@ -69,6 +85,7 @@ export class GtfsImportReport {
     unknownStop: 0,
     unknownTrip: 0,
     unknownRoute: 0,
+    outOfScope: 0,
   };
 
   readonly filtered: Record<GtfsFilterReason, number> = {
@@ -81,12 +98,25 @@ export class GtfsImportReport {
   /// correctement LUES. Une ligne peut être parfaitement valide et ne pas
   /// être importée : c'est le cas d'une ligne de train, dont le route_type
   /// n'a pas d'équivalent dans notre enum.
-  readonly imported: Record<'stops' | 'transitLines' | 'networkLinks', number> =
-    {
-      stops: 0,
-      transitLines: 0,
-      networkLinks: 0,
-    };
+  readonly imported: Record<
+    'stops' | 'transitLines' | 'networkLinks' | 'geometries' | 'transfers',
+    number
+  > = {
+    stops: 0,
+    transitLines: 0,
+    networkLinks: 0,
+    /// Liaisons ayant reçu un tracé réel issu de `shapes.txt` (Phase 1B).
+    /// Toujours ≤ networkLinks : un flux sans géométrie laisse ce compteur
+    /// à zéro, et ce n'est pas une anomalie.
+    geometries: 0,
+    /// Correspondances écrites comme liaisons de marche (Phase 1).
+    transfers: 0,
+  };
+
+  /// Arrêts élagués après construction du réseau (Phase 1). Compté à part de
+  /// `imported.stops` : ce sont des arrêts réellement importés PUIS retirés,
+  /// et le bilan doit montrer les deux chiffres.
+  prunedStops = 0;
 
   /// Paires d'arrêts consécutifs rencontrées lors de la construction du
   /// réseau (étape 4C-4-4). Une paire est un candidat de liaison ; plusieurs
@@ -132,8 +162,16 @@ export class GtfsImportReport {
   }
 
   /// Une entité a été écrite (créée ou mise à jour) en base.
-  countImported(entity: 'stops' | 'transitLines' | 'networkLinks'): void {
+  countImported(
+    entity:
+      'stops' | 'transitLines' | 'networkLinks' | 'geometries' | 'transfers',
+  ): void {
     this.imported[entity] += 1;
+  }
+
+  /// Arrêts retirés parce qu'aucune liaison du périmètre ne les dessert.
+  countPrunedStops(nombre: number): void {
+    this.prunedStops += nombre;
   }
 
   /// Une paire d'arrêts consécutifs exploitable.

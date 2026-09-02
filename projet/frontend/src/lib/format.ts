@@ -101,6 +101,10 @@ export const LIBELLES_MODES: Record<TransportMode, string> = {
   BUS: "Bus",
   TRAM: "Tram",
   METRO: "Métro",
+  // Le flux nomme ces lignes « A », « D », « H »… sans préfixer « RER ». On
+  // affiche donc « Train A » plutôt que d'inventer « RER A » : la donnée ne
+  // dit pas laquelle des deux appellations s'applique.
+  TRAIN: "Train",
   BIKE: "Vélo",
   ESCOOTER: "Trottinette",
   CAR: "Voiture",

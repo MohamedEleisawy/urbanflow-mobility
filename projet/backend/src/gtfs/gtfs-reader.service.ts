@@ -1,7 +1,14 @@
 import { createReadStream } from 'node:fs';
 import { Injectable } from '@nestjs/common';
 import { parse } from 'csv-parse';
-import { GtfsRoute, GtfsStop, GtfsStopTime, GtfsTrip } from './gtfs-row.types';
+import {
+  GtfsRoute,
+  GtfsShapePoint,
+  GtfsTransfer,
+  GtfsStop,
+  GtfsStopTime,
+  GtfsTrip,
+} from './gtfs-row.types';
 import { GtfsFileName, GtfsImportReport } from './gtfs-import-report';
 import { parseGtfsTime } from './gtfs-time.util';
 
@@ -228,6 +235,8 @@ export class GtfsReaderService {
         routeId,
         serviceId: this.champ(ligne, 'service_id') ?? '',
         directionId,
+        // Facultatif : un flux sans `shapes.txt` n'a pas cette colonne.
+        shapeId: this.champ(ligne, 'shape_id') ?? null,
       };
     }
   }
@@ -289,6 +298,140 @@ export class GtfsReaderService {
       report.countValid(fichier);
 
       yield { tripId, stopId, stopSequence, arrivalTimeSec, departureTimeSec };
+    }
+  }
+
+  /**
+   * Lit `shapes.txt` en flux (Phase 1B).
+   *
+   * ⚠️ FICHIER FACULTATIF. La spécification GTFS ne l'impose pas, et le jeu de
+   * démonstration du projet n'en a pas. L'appelant doit donc vérifier son
+   * existence AVANT d'appeler cette méthode : un flux sans géométrie n'est
+   * pas un flux invalide.
+   *
+   * `knownShapeIds` évite de charger les tracés de lignes hors périmètre —
+   * sur le flux réel d'Île-de-France Mobilités, `shapes.txt` pèse 129 Mo
+   * pour 2 026 lignes, dont 33 seulement nous concernent.
+   *
+   * Les points sont rendus TELS QUELS, sans tri : c'est l'appelant qui les
+   * regroupe par tracé et les ordonne par `shape_pt_sequence`. Trier ici
+   * supposerait de tout garder en mémoire, ce que la lecture en flux existe
+   * précisément pour éviter.
+   */
+  async *readShapes(
+    filePath: string,
+    report: GtfsImportReport,
+    knownShapeIds: ReadonlySet<string>,
+  ): AsyncGenerator<GtfsShapePoint, void> {
+    const fichier: GtfsFileName = 'shapes';
+
+    for await (const ligne of this.readCsv(filePath)) {
+      report.countRow(fichier);
+
+      const shapeId = this.champ(ligne, 'shape_id');
+      const latBrute = this.champ(ligne, 'shape_pt_lat');
+      const lonBrute = this.champ(ligne, 'shape_pt_lon');
+      const sequenceBrute = this.champ(ligne, 'shape_pt_sequence');
+
+      if (!shapeId || latBrute === undefined || lonBrute === undefined) {
+        report.countIgnored(fichier, 'missingRequiredField');
+        continue;
+      }
+
+      if (!knownShapeIds.has(shapeId)) {
+        // Hors périmètre : ce n'est pas une anomalie, seulement un tracé qui
+        // ne nous concerne pas.
+        report.countIgnored(fichier, 'outOfScope');
+        continue;
+      }
+
+      const latitude = this.nombre(latBrute);
+      const longitude = this.nombre(lonBrute);
+      const sequence = this.nombre(sequenceBrute);
+
+      // Mêmes bornes que pour les arrêts : une coordonnée hors intervalle
+      // n'est pas un point du globe.
+      if (
+        latitude === null ||
+        longitude === null ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180
+      ) {
+        report.countIgnored(fichier, 'invalidCoordinates');
+        continue;
+      }
+
+      if (sequence === null || !Number.isInteger(sequence)) {
+        report.countIgnored(fichier, 'invalidNumber');
+        continue;
+      }
+
+      report.countValid(fichier);
+
+      yield { shapeId, latitude, longitude, sequence };
+    }
+  }
+
+  /**
+   * Lit `transfers.txt` en flux (Phase 1 — correspondances).
+   *
+   * ⚠️ FICHIER FACULTATIF, comme `shapes.txt`. L'appelant vérifie son
+   * existence avant d'appeler : un flux sans correspondances n'est pas un flux
+   * invalide, il décrit simplement un réseau où l'on ne change pas.
+   *
+   * `knownStopIds` écarte les correspondances dont l'un des deux arrêts est
+   * hors périmètre — sur le flux réel, la très grande majorité, puisque seuls
+   * métro et tram sont importés.
+   */
+  async *readTransfers(
+    filePath: string,
+    report: GtfsImportReport,
+    knownStopIds: ReadonlySet<string>,
+  ): AsyncGenerator<GtfsTransfer, void> {
+    const fichier: GtfsFileName = 'transfers';
+
+    for await (const ligne of this.readCsv(filePath)) {
+      report.countRow(fichier);
+
+      const fromStopId = this.champ(ligne, 'from_stop_id');
+      const toStopId = this.champ(ligne, 'to_stop_id');
+
+      if (!fromStopId || !toStopId) {
+        report.countIgnored(fichier, 'missingRequiredField');
+        continue;
+      }
+
+      // Une correspondance d'un arrêt vers LUI-MÊME n'apprend rien et
+      // produirait une boucle de coût nul dans le graphe.
+      if (fromStopId === toStopId) {
+        report.countIgnored(fichier, 'outOfScope');
+        continue;
+      }
+
+      if (!knownStopIds.has(fromStopId) || !knownStopIds.has(toStopId)) {
+        report.countIgnored(fichier, 'unknownStop');
+        continue;
+      }
+
+      const transferType = this.nombre(this.champ(ligne, 'transfer_type')) ?? 0;
+
+      // ⚠️ TYPE 3 = « correspondance IMPOSSIBLE ». L'importer créerait un
+      // chemin que l'opérateur déclare inexistant.
+      if (transferType === 3) {
+        report.countIgnored(fichier, 'outOfScope');
+        continue;
+      }
+
+      report.countValid(fichier);
+
+      yield {
+        fromStopId,
+        toStopId,
+        transferType,
+        minTransferTimeSec: this.nombre(this.champ(ligne, 'min_transfer_time')),
+      };
     }
   }
 }
