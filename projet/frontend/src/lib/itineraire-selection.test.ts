@@ -47,6 +47,7 @@ const ITINERAIRE: Itinerary = {
       lineName: "4",
       operator: "RATP",
       lineId: "ligne-4",
+      gtfsLineId: null,
       distanceM: 2800,
       durationMin: 9,
       geometry: null,

@@ -33,6 +33,9 @@ const segment = (
   lineName,
   operator: "IDFM",
   lineId,
+  // Ces fonctions ne rapprochent aucune alerte : l'identifiant du flux ne
+  // leur sert pas, mais le contrat l'exige.
+  gtfsLineId: null,
   distanceM,
   durationMin,
   geometry: null,

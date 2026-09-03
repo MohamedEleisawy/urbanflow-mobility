@@ -12,6 +12,7 @@ describe('StopsService', () => {
       findUnique: jest.Mock;
       count: jest.Mock;
     };
+    transitLine: { groupBy: jest.Mock };
   };
 
   const arret = (
@@ -56,6 +57,7 @@ describe('StopsService', () => {
         findUnique: jest.fn(),
         count: jest.fn().mockResolvedValue(0),
       },
+      transitLine: { groupBy: jest.fn().mockResolvedValue([]) },
     };
     service = new StopsService(prisma as unknown as PrismaService);
   });
@@ -299,5 +301,72 @@ describe('StopsService', () => {
     prisma.stop.findUnique.mockResolvedValue(null);
 
     await expect(service.findOne('inconnu')).rejects.toThrow(NotFoundException);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Modes réellement présents dans le réseau
+  // ---------------------------------------------------------------------------
+  describe('findNetworkModes', () => {
+    it('ne rend QUE les modes présents, avec leur nombre de lignes', async () => {
+      // Réseau de la CTS : du tram et du bus, rien d'autre.
+      prisma.transitLine.groupBy.mockResolvedValue([
+        { mode: 'BUS', _count: { _all: 41 } },
+        { mode: 'TRAM', _count: { _all: 6 } },
+      ]);
+
+      const reponse = await service.findNetworkModes();
+
+      expect(reponse.modes).toEqual([
+        { mode: 'BUS', lineCount: 41 },
+        { mode: 'TRAM', lineCount: 6 },
+      ]);
+    });
+
+    it("n'invente AUCUN mode absent du réseau", async () => {
+      prisma.transitLine.groupBy.mockResolvedValue([
+        { mode: 'TRAM', _count: { _all: 6 } },
+      ]);
+
+      const reponse = await service.findNetworkModes();
+
+      // ⚠️ L'enum en compte huit ; le réseau chargé n'en a qu'un. Proposer un
+      // filtre « Métro » sur un réseau qui n'en a pas ferait chercher à
+      // l'usager quelque chose qui ne rendra jamais rien.
+      expect(reponse.modes.map((m) => m.mode)).toEqual(['TRAM']);
+    });
+
+    it('rend une liste VIDE sur un réseau non importé', async () => {
+      prisma.transitLine.groupBy.mockResolvedValue([]);
+
+      // Une liste vide est une réponse — « aucun réseau chargé » — pas une
+      // panne.
+      await expect(service.findNetworkModes()).resolves.toEqual({ modes: [] });
+    });
+
+    it('BORNE le comptage au territoire desservi', async () => {
+      await service.findNetworkModes();
+
+      // ⚠️ SANS CE FILTRE, une base contenant DEUX réseaux — l'import étant
+      // additif — répondait « METRO : 16 lignes » sur une installation
+      // strasbourgeoise, et l'interface proposait un filtre qui n'aurait
+      // jamais rien rendu.
+      interface FiltreLignes {
+        where: { links: { some: { fromStop: { latitude?: unknown } } } };
+      }
+
+      const appels = prisma.transitLine.groupBy.mock.calls as FiltreLignes[][];
+
+      expect(appels[0][0].where.links.some.fromStop.latitude).toBeDefined();
+    });
+
+    it('compte les LIGNES, pas les arrêts', async () => {
+      await service.findNetworkModes();
+
+      // Un arrêt ne porte aucun mode : c'est la ligne qui en a un.
+      expect(prisma.transitLine.groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({ by: ['mode'] }),
+      );
+      expect(prisma.stop.findMany).not.toHaveBeenCalled();
+    });
   });
 });

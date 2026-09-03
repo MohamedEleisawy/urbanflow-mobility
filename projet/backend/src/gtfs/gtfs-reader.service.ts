@@ -2,6 +2,8 @@ import { createReadStream } from 'node:fs';
 import { Injectable } from '@nestjs/common';
 import { parse } from 'csv-parse';
 import {
+  GtfsCalendar,
+  GtfsCalendarDate,
   GtfsRoute,
   GtfsShapePoint,
   GtfsTransfer,
@@ -10,7 +12,7 @@ import {
   GtfsTrip,
 } from './gtfs-row.types';
 import { GtfsFileName, GtfsImportReport } from './gtfs-import-report';
-import { parseGtfsTime } from './gtfs-time.util';
+import { parseGtfsDate, parseGtfsTime } from './gtfs-time.util';
 
 /// Une ligne brute de CSV : toutes les colonnes sont des chaînes.
 type RawRow = Record<string, string>;
@@ -236,6 +238,7 @@ export class GtfsReaderService {
         serviceId: this.champ(ligne, 'service_id') ?? '',
         directionId,
         // Facultatif : un flux sans `shapes.txt` n'a pas cette colonne.
+        headsign: this.champ(ligne, 'trip_headsign') ?? null,
         shapeId: this.champ(ligne, 'shape_id') ?? null,
       };
     }
@@ -432,6 +435,103 @@ export class GtfsReaderService {
         transferType,
         minTransferTimeSec: this.nombre(this.champ(ligne, 'min_transfer_time')),
       };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // calendar.txt (sprint soutenance)
+  // ---------------------------------------------------------------------------
+  /**
+   * Les services hebdomadaires réguliers.
+   *
+   * ⚠️ UNE LIGNE MAL FORMÉE EST ÉCARTÉE, JAMAIS RÉPARÉE. Un `start_date`
+   * illisible pourrait « raisonnablement » être remplacé par aujourd'hui —
+   * et l'on afficherait alors des horaires pour un service dont on ignore la
+   * période de validité. Mieux vaut un service en moins qu'un horaire faux.
+   */
+  async *readCalendars(
+    filePath: string,
+    report: GtfsImportReport,
+  ): AsyncGenerator<GtfsCalendar, void> {
+    const fichier: GtfsFileName = 'calendar';
+
+    for await (const ligne of this.readCsv(filePath)) {
+      report.countRow(fichier);
+
+      const serviceId = this.champ(ligne, 'service_id');
+      const debut = parseGtfsDate(this.champ(ligne, 'start_date'));
+      const fin = parseGtfsDate(this.champ(ligne, 'end_date'));
+
+      if (!serviceId || debut === null || fin === null) {
+        report.countIgnored(fichier, 'missingRequiredField');
+        continue;
+      }
+
+      // ⚠️ UNE BORNE INVERSÉE N'EST PAS CORRIGÉE PAR PERMUTATION. Un flux qui
+      // annonce une fin avant son début décrit un service dont on ne sait
+      // rien ; échanger les deux inventerait une période de validité.
+      if (fin.getTime() < debut.getTime()) {
+        report.countIgnored(fichier, 'invalidValue');
+        continue;
+      }
+
+      // `'1'` et rien d'autre : la spécification n'admet que 0 ou 1, et une
+      // valeur inattendue doit valoir « non desservi » plutôt que « desservi ».
+      const jour = (nom: string) => this.champ(ligne, nom) === '1';
+
+      yield {
+        serviceId,
+        days: [
+          jour('monday'),
+          jour('tuesday'),
+          jour('wednesday'),
+          jour('thursday'),
+          jour('friday'),
+          jour('saturday'),
+          jour('sunday'),
+        ],
+        startDate: debut,
+        endDate: fin,
+      };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // calendar_dates.txt (sprint soutenance)
+  // ---------------------------------------------------------------------------
+  /**
+   * Les exceptions : jours fériés retirés, dimanches exceptionnels ajoutés.
+   *
+   * Ce sont précisément les jours où un usager vérifie ses horaires — le
+   * 1er mai, le 25 décembre. Les ignorer donnerait un calendrier faux là où
+   * il compte le plus.
+   */
+  async *readCalendarDates(
+    filePath: string,
+    report: GtfsImportReport,
+  ): AsyncGenerator<GtfsCalendarDate, void> {
+    const fichier: GtfsFileName = 'calendarDates';
+
+    for await (const ligne of this.readCsv(filePath)) {
+      report.countRow(fichier);
+
+      const serviceId = this.champ(ligne, 'service_id');
+      const date = parseGtfsDate(this.champ(ligne, 'date'));
+      const type = this.champ(ligne, 'exception_type');
+
+      if (!serviceId || date === null) {
+        report.countIgnored(fichier, 'missingRequiredField');
+        continue;
+      }
+
+      // ⚠️ AUCUNE TROISIÈME VALEUR N'EST DEVINÉE. La spécification définit 1
+      // et 2 ; tout le reste est une ligne qu'on ne sait pas interpréter.
+      if (type !== '1' && type !== '2') {
+        report.countIgnored(fichier, 'invalidValue');
+        continue;
+      }
+
+      yield { serviceId, date, added: type === '1' };
     }
   }
 }

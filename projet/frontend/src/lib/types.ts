@@ -47,7 +47,14 @@ export type TransportMode =
 export type UserRole = "USER" | "ADMIN";
 
 export type ThemePreference = "LIGHT" | "DARK" | "SYSTEM";
-export type LanguagePreference = "FR" | "EN";
+/**
+ * Langue de l'interface.
+ *
+ * ⚠️ « ES » AJOUTÉ EN PHASE 5, en même temps que la valeur correspondante de
+ * `LanguageEnum` côté base. Les deux listes doivent rester identiques : une
+ * valeur connue d'un seul côté produirait un 400 à l'enregistrement.
+ */
+export type LanguagePreference = "FR" | "EN" | "ES";
 
 // ---------------------------------------------------------------------------
 // Utilisateur et authentification
@@ -157,7 +164,43 @@ export interface SearchItineraryRequest {
  * répondent, eux, à des questions réelles : « je ne veux pas de
  * correspondance » et « je veux le trajet le moins émetteur ».
  */
-export type ItineraryCriterion = "FASTEST" | "FEWEST_TRANSFERS" | "LOWEST_CO2";
+export type ItineraryCriterion =
+  | "FASTEST"
+  | "LOWEST_CO2"
+  | "SHORTEST"
+  /**
+   * ⚠️ PLUS PRODUIT PAR AUCUNE RECHERCHE depuis le sprint soutenance, où
+   * `SHORTEST` a repris sa place. Conservé parce que des itinéraires
+   * ENREGISTRÉS par les usagers le portent : le retirer ferait échouer la
+   * relecture de leur historique.
+   */
+  | "FEWEST_TRANSFERS";
+
+/**
+ * Disponibilité des horaires d'un itinéraire.
+ *
+ *   `SCHEDULE_AVAILABLE`    heures de départ et d'arrivée établies ;
+ *   `SCHEDULE_UNKNOWN`      le réseau est horodaté, mais aucune de ces lignes
+ *                           ne passe dans les prochaines heures ;
+ *   `SCHEDULE_UNAVAILABLE`  aucun horaire n'est importé.
+ *
+ * ⚠️ TROIS PHRASES DIFFÉRENTES À L'ÉCRAN. Les confondre ferait dire « pas de
+ * passage aujourd'hui » à un usager dont le réseau n'a jamais été horodaté.
+ */
+export type ScheduleStatus =
+  | "SCHEDULE_AVAILABLE"
+  | "SCHEDULE_UNKNOWN"
+  | "SCHEDULE_UNAVAILABLE";
+
+export interface ItinerarySchedule {
+  status: ScheduleStatus;
+  departureAt: string | null;
+  /** Heure d'arrivée estimée, ATTENTE COMPRISE. */
+  arrivalAt: string | null;
+  /** Somme des attentes sur le quai. `null` — jamais 0 — si inconnue. */
+  totalWaitMin: number | null;
+  reason: string | null;
+}
 
 /**
  * Un tracé GeoJSON `LineString`.
@@ -198,11 +241,34 @@ export interface ItinerarySegment {
   operator: string;
   /** Identifiant de la LIAISON retenue, à renvoyer pour enregistrer le trajet. */
   lineId: string;
+
+  /**
+   * Identifiant de la ligne DANS LE FLUX DE L'OPÉRATEUR, ou `null`.
+   *
+   * ⚠️ C'est le SEUL moyen de rattacher une perturbation GTFS-RT à une ligne
+   * réellement empruntée : `lineId` est notre UUID interne, que les flux ne
+   * connaissent pas, et le NOM est ambigu (un « 4 » de métro et un « 4 » de
+   * bus). Voir `lib/alertes-itineraire.ts`.
+   */
+  gtfsLineId: string | null;
   distanceM: number;
   durationMin: number;
   /** Tracé réel, ou `null` quand l'opérateur n'en publie pas. */
   geometry: GeoJsonLineString | null;
   geometrySource: GeometrySource;
+
+  /**
+   * Minutes d'attente AVANT de monter dans ce segment.
+   *
+   * ⚠️ PRÉSENT SEULEMENT SUR UNE MONTÉE, et `undefined` — jamais 0 — sur les
+   * tronçons suivants d'une même ligne. Rester assis dans le tram sur cinq
+   * arrêts n'est pas une attente de zéro minute : c'est l'absence d'attente.
+   */
+  waitMin?: number;
+
+  /** Heures théoriques, en ISO 8601. Absentes si non calculables. */
+  departureAt?: string;
+  arrivalAt?: string;
 }
 
 /**
@@ -228,7 +294,30 @@ export interface ItineraryCarbon {
 
 export interface Itinerary {
   criterion: ItineraryCriterion;
+
+  /**
+   * Horaires réels, attente comprise.
+   *
+   * FACULTATIF : les itinéraires relus depuis l'historique n'en ont pas —
+   * ils décrivent un trajet passé, dont l'attente n'a plus de sens.
+   */
+  schedule?: ItinerarySchedule;
   totalDistanceM: number;
+
+  /**
+   * ⚠️ CETTE DURÉE NE CONTIENT PAS LE TEMPS D'ATTENTE.
+   *
+   * Elle additionne les durées de parcours (médianes GTFS) et les temps de
+   * correspondance à pied publiés par l'opérateur. Il y manque l'attente du
+   * véhicule à chaque montée : nous importons le réseau, pas les horaires.
+   *
+   * Mesuré sur le réseau réel depuis l'import du bus : un itinéraire peut
+   * annoncer 17 minutes avec CINQ changements de bus, là où le RER met
+   * 19 minutes sans aucun changement. Chaque durée est exacte ; c'est leur
+   * somme qui suppose cinq correspondances instantanées.
+   *
+   * L'interface DOIT donc le dire dès que `numberOfTransfers > 0`.
+   */
   totalDurationMin: number;
   /**
    * Changements de LIGNE — la marche n'en est pas un.

@@ -4,6 +4,9 @@ import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
 import { AddressesModule } from './addresses/addresses.module';
 import { GeocodingModule } from './geocoding/geocoding.module';
+import { VelibModule } from './velib/velib.module';
+import { TerritoryModule } from './territory/territory.module';
+import { ScheduleModule } from './schedule/schedule.module';
 import { AdminModule } from './admin/admin.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
@@ -27,6 +30,9 @@ import { CarbonTrackingModule } from './carbon-tracking/carbon-tracking.module';
     AddressesModule,
     // Recherche d'adresses en saisie libre (Phase 3A). Publique.
     GeocodingModule,
+    VelibModule,
+    TerritoryModule,
+    ScheduleModule,
     RoutesModule,
     StopsModule,
     SegmentsModule,

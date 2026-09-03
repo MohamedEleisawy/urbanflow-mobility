@@ -2,6 +2,7 @@
 
 import { useId, useState, type FormEvent } from "react";
 import { useAuth } from "@/components/AuthProvider";
+import { useTraduction } from "@/components/LangueProvider";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { Spinner } from "@/components/Spinner";
@@ -47,9 +48,12 @@ const THEMES: { valeur: ThemePreference; libelle: string }[] = [
   { valeur: "DARK", libelle: "Sombre" },
 ];
 
+/// Chaque langue est nommée DANS SA PROPRE LANGUE — c'est ainsi qu'on la
+/// reconnaît quand l'interface est dans une langue qu'on ne lit pas.
 const LANGUES: { valeur: LanguagePreference; libelle: string }[] = [
   { valeur: "FR", libelle: "Français" },
-  { valeur: "EN", libelle: "Anglais" },
+  { valeur: "EN", libelle: "English" },
+  { valeur: "ES", libelle: "Español" },
 ];
 
 /**
@@ -141,6 +145,8 @@ function FormulairePreferences({ utilisateur }: { utilisateur: User }) {
   const idBudget = useId();
   const idBudgetAide = useId();
   const idModes = useId();
+  const { changerLangue } = useTraduction();
+
   const idLangue = useId();
   const idTheme = useId();
 
@@ -346,7 +352,16 @@ function FormulairePreferences({ utilisateur }: { utilisateur: User }) {
                 <select
                   id={idLangue}
                   value={saisie.language}
-                  onChange={(e) => modifier("language", e.target.value as LanguagePreference)}
+                  onChange={(e) => {
+                    const choisie = e.target.value as LanguagePreference;
+                    modifier("language", choisie);
+                    // ⚠️ EFFET IMMÉDIAT, AVANT L'ENREGISTREMENT. Attendre
+                    // l'aller-retour vers le serveur ferait clignoter
+                    // l'interface, et une panne réseau la figerait dans la
+                    // mauvaise langue. La préférence, elle, part comme les
+                    // autres au moment de valider.
+                    changerLangue(choisie);
+                  }}
                   className="focus:border-brand mt-1.5 w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-base outline-none"
                 >
                   {LANGUES.map(({ valeur, libelle }) => (
@@ -368,10 +383,20 @@ function FormulairePreferences({ utilisateur }: { utilisateur: User }) {
               l'usager choisirait « Anglais », ne verrait rien changer, et
               conclurait que l'application est cassée.
             */}
+            {/*
+              CE QUE CETTE NOTE DISAIT, ET POURQUOI ELLE A CHANGÉ.
+
+              Elle annonçait honnêtement que le thème et la langue étaient
+              enregistrés sans rien changer à l'affichage. Ce n'est plus vrai :
+              `ThemeProvider` applique le thème, et `LangueProvider` la langue.
+
+              La note qui reste dit ce qui est ENCORE partiel — mieux vaut une
+              limite nommée qu'une promesse trop large.
+            */}
             <p className="rounded-md bg-neutral-100 px-4 py-3 text-sm text-neutral-700">
-              <span className="font-medium">Ces deux réglages sont enregistrés</span> mais ne
-              modifient pas encore l&apos;affichage : le thème sombre et la traduction anglaise ne
-              sont pas encore réalisés.
+              <span className="font-medium">La langue s&apos;applique immédiatement</span> aux
+              écrans de recherche, d&apos;itinéraire et de navigation. Les écrans
+              d&apos;administration et l&apos;espace personnel restent en français.
             </p>
 
             {/* --- Envoi ---------------------------------------------- */}

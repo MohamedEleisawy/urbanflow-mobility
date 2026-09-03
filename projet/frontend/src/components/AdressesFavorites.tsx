@@ -427,7 +427,7 @@ function Formulaire({
           value={saisie.address}
           onChange={(e) => modifier("address", e.target.value)}
           maxLength={255}
-          placeholder="12 rue des Lilas, 75011 Paris"
+          placeholder="12 rue des Lilas"
           className="focus:border-brand mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
         />
       </div>
@@ -444,7 +444,7 @@ function Formulaire({
             value={saisie.latitude}
             onChange={(e) => modifier("latitude", e.target.value)}
             aria-describedby={idAide}
-            placeholder="48.8566"
+            placeholder="48.5834"
             className="focus:border-brand mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
           />
         </div>
@@ -459,7 +459,7 @@ function Formulaire({
             value={saisie.longitude}
             onChange={(e) => modifier("longitude", e.target.value)}
             aria-describedby={idAide}
-            placeholder="2.3522"
+            placeholder="7.7452"
             className="focus:border-brand mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
           />
         </div>

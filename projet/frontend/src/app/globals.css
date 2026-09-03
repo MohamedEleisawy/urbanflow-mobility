@@ -117,3 +117,179 @@ body {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
 }
+
+/* ==========================================================================
+   MICRO-ANIMATIONS (sprint soutenance)
+   ==========================================================================
+   ═══ CE QU'ELLES SERVENT, ET CE QU'ELLES NE SERVENT PAS ═══
+
+   Elles servent à rendre lisible un CHANGEMENT D'ÉTAT : des résultats qui
+   arrivent, une carte qu'on sélectionne, une étape de guidage qui devient
+   courante. Sans elles, le contenu se substitue d'une frame à l'autre et
+   l'œil ne sait pas ce qui a bougé.
+
+   Elles ne servent PAS à décorer. Aucune n'excède 300 ms, aucune ne déplace
+   un élément de plus de quelques pixels, et aucune ne se répète en boucle.
+
+   ═══ AUCUNE BIBLIOTHÈQUE ═══
+
+   Ni Framer Motion, ni GSAP, ni auto-animate. Ce qui suit fait moins de
+   soixante lignes de CSS et ne coûte pas un octet de JavaScript. Charger
+   30 ko compressés pour des fondus de 200 ms serait le contraire de
+   l'éco-conception que le sujet demande (contrainte C5).
+
+   ═══ `prefers-reduced-motion` ═══
+
+   ⚠️ LA RÈGLE DE RÉDUCTION EST EN FIN DE FICHIER, ET C'EST DÉLIBÉRÉ : elle
+   doit l'emporter sur tout ce qui précède. Elle ne SUPPRIME pas les retours
+   d'état — un élément qui apparaissait apparaît toujours — elle en retire le
+   MOUVEMENT. Quelqu'un sujet au mal des transports vestibulaire doit garder
+   une interface qui répond, pas une interface muette.
+   ========================================================================== */
+
+@keyframes uf-apparition {
+  from {
+    opacity: 0;
+    /* 6 px, pas 40 : c'est un glissement, pas une entrée en scène. */
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes uf-fondu {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Apparition d'un bloc de contenu — résultats, cartes, panneaux. */
+.uf-apparait {
+  animation: uf-apparition 220ms ease-out both;
+}
+
+/* Fondu seul, pour ce qui ne doit pas bouger : un bandeau au-dessus d'une
+   carte, dont le glissement décalerait tout ce qui suit. */
+.uf-fondu {
+  animation: uf-fondu 180ms ease-out both;
+}
+
+/* ==========================================================================
+   Décalage en cascade
+   ==========================================================================
+   Trois cartes de résultats qui apparaissent EXACTEMENT ensemble se lisent
+   comme un seul bloc ; décalées de 60 ms, l'œil les compte. Au-delà de la
+   quatrième, on cesse de décaler : l'attente cumulée deviendrait perceptible.
+   ========================================================================== */
+.uf-cascade > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.uf-cascade > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+.uf-cascade > *:nth-child(3) {
+  animation-delay: 120ms;
+}
+
+/* ==========================================================================
+   RESPECT DE `prefers-reduced-motion`
+   ==========================================================================
+   ⚠️ `0.01ms` ET NON `none`. Une animation supprimée ne déclenche pas
+   `animationend` : un composant qui attendrait cet événement pour révéler son
+   contenu resterait invisible, exactement pour l'usager qui a demandé moins
+   de mouvement. Une durée quasi nulle rend l'animation imperceptible tout en
+   la faisant se terminer.
+
+   ⚠️ `!important` : ces règles doivent l'emporter sur toute déclaration plus
+   spécifique, y compris les utilitaires de transition de Tailwind posés sur
+   un élément particulier.
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ==========================================================================
+   FOND DE CARTE EN MODE SOMBRE (sprint soutenance)
+   ==========================================================================
+   ═══ LE PROBLÈME ═══
+
+   Le thème sombre s'appliquait à toute l'interface SAUF à la carte, qui
+   restait un rectangle blanc éblouissant au milieu d'un écran gris foncé.
+   C'est l'endroit exact où un mode sombre échoue : de nuit, en marchant, la
+   carte est ce qu'on regarde le plus longtemps.
+
+   ═══ POURQUOI PAS UN FOURNISSEUR DE TUILES SOMBRES ═══
+
+   CARTO publie un fond « dark_all » gratuit et sans clé, et ce serait le
+   rendu le plus soigné. Deux raisons l'ont écarté :
+
+     1. C'EST UN TIERS DE PLUS. Notre politique de confidentialité énumère
+        nommément qui reçoit quoi ; ajouter un destinataire pour une question
+        d'esthétique obligerait à la modifier, et à faire transiter les
+        coordonnées consultées par un acteur de plus.
+
+     2. LE FOND CHANGERAIT DE MAIN AVEC LE THÈME. Deux jeux de tuiles, deux
+        cartographies, deux niveaux de détail : le même quartier ne se lirait
+        pas pareil selon l'heure.
+
+   ═══ CE QUI EST FAIT À LA PLACE ═══
+
+   Une correction colorimétrique appliquée AU SEUL CALQUE DE TUILES.
+
+   ⚠️ CE N'EST PAS UN `invert(1)` NU. Inversé seul, un fond de carte devient
+   bleu-orangé : l'eau vire au sable et les parcs au violet. Le
+   `hue-rotate(180deg)` qui suit ramène chaque teinte à sa place — l'eau
+   redevient bleue, la végétation verte — parce qu'inverser puis tourner de
+   180° sur la roue chromatique se compensent exactement sur la teinte, tout
+   en laissant la luminance inversée. C'est le seul point de la recette qui
+   compte, et c'est celui qu'on oublie.
+
+   `brightness` et `saturate` finissent le travail : un fond inversé est trop
+   lumineux et trop saturé pour un écran de nuit.
+
+   ⚠️ `.leaflet-tile-pane` ET NON `.leaflet-container`. Le filtre ne doit
+   toucher QUE les tuiles : appliqué au conteneur, il inverserait aussi nos
+   propres tracés, et le trajet en bleu de marque ressortirait en orange.
+   ========================================================================== */
+[data-theme="dark"] .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) saturate(0.75);
+}
+
+/* Le même traitement quand le système est en sombre et qu'aucun choix
+   explicite n'a été fait. Guardé par `:not([data-theme="light"])` : quelqu'un
+   qui a explicitement choisi le thème clair garde une carte claire, même sur
+   un système en sombre. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .leaflet-tile-pane {
+    filter: invert(1) hue-rotate(180deg) brightness(0.92) saturate(0.75);
+  }
+}
+
+/* ⚠️ L'ATTRIBUTION EST EXCLUE DU FILTRE ET REPEINTE. Elle vit hors du calque
+   de tuiles, sur un fond blanc semi-transparent codé en dur par Leaflet :
+   sans cette règle, elle reste un bandeau clair au coin d'une carte sombre.
+   Elle est OBLIGATOIRE au titre de la licence ODbL — la masquer n'est pas une
+   option. */
+[data-theme="dark"] .leaflet-control-attribution,
+[data-theme="dark"] .leaflet-bar a,
+[data-theme="dark"] .leaflet-popup-content-wrapper,
+[data-theme="dark"] .leaflet-popup-tip {
+  background: var(--color-white);
+  color: var(--color-neutral-700);
+}
+
+[data-theme="dark"] .leaflet-control-attribution a {
+  color: var(--color-brand);
+}

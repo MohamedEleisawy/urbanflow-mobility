@@ -1,4 +1,10 @@
-import { IsLatitude, IsLongitude, IsNumber } from 'class-validator';
+import {
+  IsISO8601,
+  IsLatitude,
+  IsLongitude,
+  IsNumber,
+  IsOptional,
+} from 'class-validator';
 
 // Corps attendu par POST /api/routes/search.
 //
@@ -28,4 +34,25 @@ export class SearchRouteDto {
   @IsNumber()
   @IsLongitude()
   toLon!: number;
+
+  /**
+   * Instant de départ souhaité, en ISO 8601. Absent = maintenant.
+   *
+   * ═══ POURQUOI CE CHAMP EXISTE ═══
+   *
+   * Depuis que le calendrier GTFS est importé, la réponse DÉPEND DE L'HEURE :
+   * les lignes de nuit ne circulent pas à 14 h, et l'attente sur le quai n'est
+   * pas la même un dimanche soir qu'un mardi matin. Sans ce champ, on ne
+   * pourrait préparer un trajet que pour l'instant présent.
+   *
+   * ⚠️ FACULTATIF, ET SON ABSENCE N'EST PAS UNE ERREUR. La recherche « je pars
+   * maintenant » reste le cas courant, et doit rester la plus simple à écrire.
+   *
+   * ⚠️ `@IsISO8601` ET NON `@IsDateString` : le second accepte des formats
+   * que `new Date()` interprète différemment selon le moteur. Une date
+   * ambiguë sur un calcul d'horaires produirait un décalage silencieux.
+   */
+  @IsOptional()
+  @IsISO8601()
+  departAt?: string;
 }

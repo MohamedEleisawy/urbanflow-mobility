@@ -14,6 +14,7 @@ import { RoleEnum } from '@prisma/client';
 import { StopsService } from './stops.service';
 import { CreateStopDto } from './dto/create-stop.dto';
 import { FindStopsQueryDto } from './dto/find-stops-query.dto';
+import { NetworkModesResponseDto } from './dto/network-modes.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -64,6 +65,23 @@ export class StopsController {
   @Get()
   findAll(@Query() query: FindStopsQueryDto) {
     return this.stopsService.findAll(query);
+  }
+
+  /**
+   * Les modes REELLEMENT presents dans le reseau charge.
+   *
+   *   GET /api/stops/modes
+   *
+   * ⚠️ DECLARE AVANT `:id`. Sans cela, Nest ferait correspondre « modes » au
+   * parametre d'identifiant, `ParseUUIDPipe` repondrait 400, et la route ne
+   * serait jamais atteinte — le meme piege que `POST /routes/search`.
+   *
+   * Public, comme le reste de ce controleur : savoir quels modes circulent
+   * n'est pas une donnee personnelle.
+   */
+  @Get('modes')
+  findModes(): Promise<NetworkModesResponseDto> {
+    return this.stopsService.findNetworkModes();
   }
 
   @Get(':id')

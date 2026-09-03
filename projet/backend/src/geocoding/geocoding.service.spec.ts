@@ -363,4 +363,83 @@ describe('GeocodingService', () => {
       expect(GeocodingService).toHaveLength(0);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Bornage au territoire (Phase 6)
+  // ---------------------------------------------------------------------------
+  describe('bornage géographique', () => {
+    const parametresEnvoyes = (): URLSearchParams => {
+      const url = (appelFetch.mock.calls[0] as [string])[0];
+      return new URL(url).searchParams;
+    };
+
+    it('restreint la recherche au territoire desservi', async () => {
+      repondre([]);
+
+      await service.search({ q: 'gare' });
+
+      const parametres = parametresEnvoyes();
+
+      // ⚠️ SANS CELA, LA RECHERCHE PROPOSAIT LE MONDE ENTIER : taper « gare »
+      // rendait des gares de Berlin, qu'un usager pouvait choisir — et le
+      // moteur répondait ensuite « aucun arrêt à moins de 2 km ».
+      expect(parametres.get('viewbox')).toBeTruthy();
+      // `bounded=1` REJETTE le hors-boîte ; `viewbox` seul se contenterait de
+      // le défavoriser, et un lieu lointain remonterait faute de local.
+      expect(parametres.get('bounded')).toBe('1');
+    });
+
+    it('encadre bien le centre du territoire', async () => {
+      repondre([]);
+
+      await service.search({ q: 'kleber' });
+
+      const [ouest, nord, est, sud] = parametresEnvoyes()
+        .get('viewbox')!
+        .split(',')
+        .map(Number);
+
+      // Place Kléber, centre par défaut du territoire de démonstration.
+      expect(ouest).toBeLessThan(7.7452);
+      expect(est).toBeGreaterThan(7.7452);
+      expect(sud).toBeLessThan(48.5834);
+      expect(nord).toBeGreaterThan(48.5834);
+    });
+
+    it('élargit la boîte en LONGITUDE sous nos latitudes', async () => {
+      repondre([]);
+
+      await service.search({ q: 'kleber' });
+
+      const [ouest, nord, est, sud] = parametresEnvoyes()
+        .get('viewbox')!
+        .split(',')
+        .map(Number);
+
+      // Un degré de longitude vaut 73 km à Strasbourg contre 111 km à
+      // l'équateur : une marge identique sur les deux axes produirait une
+      // boîte trop étroite, et rejetterait des adresses pourtant proches.
+      expect(est - ouest).toBeGreaterThan(nord - sud);
+    });
+
+    it('SUIT le territoire configuré', async () => {
+      process.env.TERRITORY_CENTER_LAT = '45.7578';
+      process.env.TERRITORY_CENTER_LON = '4.8320';
+      repondre([]);
+
+      await service.search({ q: 'bellecour' });
+
+      const [ouest, , est] = parametresEnvoyes()
+        .get('viewbox')!
+        .split(',')
+        .map(Number);
+
+      // Changer de métropole ne doit demander aucune modification de code.
+      expect(ouest).toBeLessThan(4.832);
+      expect(est).toBeGreaterThan(4.832);
+
+      delete process.env.TERRITORY_CENTER_LAT;
+      delete process.env.TERRITORY_CENTER_LON;
+    });
+  });
 });

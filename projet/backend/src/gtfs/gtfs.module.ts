@@ -3,6 +3,7 @@ import { GtfsReaderService } from './gtfs-reader.service';
 import { GtfsImportService } from './gtfs-import.service';
 import { NetworkBuilderService } from './network-builder.service';
 import { GtfsSourceService } from './gtfs-source.service';
+import { ScheduleImportService } from './schedule-import.service';
 
 // Module de lecture des flux GTFS (étape 4C-4-2).
 //
@@ -20,12 +21,14 @@ import { GtfsSourceService } from './gtfs-source.service';
     GtfsImportService,
     NetworkBuilderService,
     GtfsSourceService,
+    ScheduleImportService,
   ],
   exports: [
     GtfsReaderService,
     GtfsImportService,
     NetworkBuilderService,
     GtfsSourceService,
+    ScheduleImportService,
   ],
 })
 export class GtfsModule {}

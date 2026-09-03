@@ -377,6 +377,7 @@ describe('POST /api/routes/search (e2e)', () => {
       'fromStopName',
       'geometry',
       'geometrySource',
+      'gtfsLineId',
       'lineId',
       'lineName',
       'mode',
@@ -537,6 +538,48 @@ describe('POST /api/routes/search (e2e)', () => {
       .expect(200);
 
     expect(second.body).toEqual(premier.body);
+  });
+
+  it('N’HORODATE AUCUN SEGMENT quand l’itinéraire entier n’est pas horodatable', async () => {
+    // ⚠️ TEST ÉCRIT APRÈS UN DÉFAUT RÉEL. La première version posait les
+    // heures au fil de la boucle : un abandon en cours de route laissait les
+    // premiers segments horodatés et les suivants nus, sur un itinéraire
+    // pourtant marqué `SCHEDULE_UNKNOWN`.
+    //
+    // Des heures précises sur un trajet dont on annonce ignorer l'horaire :
+    // c'est la pire des réponses, et c'est aussi ce qui rendait deux appels
+    // identiques non reproductibles, ces heures suivant l'horloge murale.
+    //
+    // Les lignes de ce test n'ont aucun passage en base : le statut ne peut
+    // donc pas être `SCHEDULE_AVAILABLE`.
+    const response = await request(app.getHttpServer())
+      .post('/api/routes/search')
+      .send({ fromLat: 0, fromLon: 0, toLat: 0.02, toLon: 0 })
+      .expect(200);
+
+    const itineraires = response.body as {
+      schedule: { status: string; arrivalAt: string | null };
+      segments: {
+        departureAt?: string;
+        arrivalAt?: string;
+        waitMin?: number;
+      }[];
+    }[];
+
+    expect(itineraires.length).toBeGreaterThan(0);
+
+    for (const itineraire of itineraires) {
+      expect(itineraire.schedule.status).not.toBe('SCHEDULE_AVAILABLE');
+      expect(itineraire.schedule.arrivalAt).toBeNull();
+
+      for (const segment of itineraire.segments) {
+        expect(segment.departureAt).toBeUndefined();
+        expect(segment.arrivalAt).toBeUndefined();
+        // ⚠️ `undefined`, JAMAIS 0. Zéro annoncerait « aucune attente », ce
+        // qui est une affirmation ; on n'en a aucune à faire.
+        expect(segment.waitMin).toBeUndefined();
+      }
+    }
   });
 
   it('renvoie des segments chaînés de l’origine vers la destination', async () => {

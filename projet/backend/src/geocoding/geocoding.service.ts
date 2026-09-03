@@ -3,6 +3,7 @@ import {
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { territoryConfig } from '../config/territory.config';
 import { GeocodingQueryDto } from './dto/geocoding-query.dto';
 import {
   GeocodingResponseDto,
@@ -67,6 +68,27 @@ const LIMITE_RESULTATS = 5;
 /// Délai au-delà duquel on cesse d'attendre le fournisseur.
 const DELAI_MS = 5_000;
 
+/**
+ * Degrés de latitude par mètre. Un degré vaut ~111 320 m partout sur le globe.
+ *
+ * Sert à traduire le rayon du territoire — exprimé en mètres — en une boîte
+ * englobante que Nominatim comprend.
+ */
+const DEGRES_LAT_PAR_METRE = 1 / 111_320;
+
+/**
+ * Marge ajoutée au rayon du territoire pour la boîte de recherche.
+ *
+ * ⚠️ LA BOÎTE EST PLUS LARGE QUE LE TERRITOIRE, ET C'EST VOULU. Quelqu'un
+ * cherche couramment une adresse juste au-delà de la limite administrative —
+ * une commune voisine, une gare de correspondance. Coller la boîte au rayon
+ * exact refuserait des lieux parfaitement légitimes.
+ *
+ * 1,8 fois le rayon couvre l'aire urbaine autour d'une métropole sans rouvrir
+ * la recherche au monde entier.
+ */
+const FACTEUR_BOITE = 1.8;
+
 const MESSAGE_INDISPONIBLE =
   "Le service de recherche d'adresses est momentanément indisponible. " +
   'Réessayez dans quelques instants.';
@@ -128,6 +150,8 @@ export class GeocodingService {
   // ---------------------------------------------------------------------------
 
   private async interroger(texte: string): Promise<Response> {
+    const territoire = territoryConfig();
+
     // `URLSearchParams` échappe le texte : une adresse contenant « & » ou
     // « # » ne peut pas altérer les autres paramètres.
     const parametres = new URLSearchParams({
@@ -139,6 +163,19 @@ export class GeocodingService {
       // moins de données personnelles manipulées.
       addressdetails: '0',
       polygon_geojson: '0',
+
+      // ═══ BORNAGE AU TERRITOIRE DESSERVI ═══
+      //
+      // ⚠️ SANS LUI, LA RECHERCHE PROPOSAIT LE MONDE ENTIER. Taper « gare »
+      // rendait des gares de Berlin ou de Buenos Aires, qu'un usager pouvait
+      // choisir — et le moteur d'itinéraires répondait alors « aucun arrêt à
+      // moins de 2 km », sans jamais expliquer pourquoi.
+      //
+      // ⚠️ `bounded=1` REJETTE ce qui est hors boîte, là où `viewbox` seul se
+      // contente de FAVORISER. La nuance est décisive : sans lui, un lieu
+      // lointain remonterait quand même faute de résultat local.
+      viewbox: this.boiteDuTerritoire(territoire),
+      bounded: '1',
     });
 
     try {
@@ -164,6 +201,40 @@ export class GeocodingService {
       );
       throw new ServiceUnavailableException(MESSAGE_INDISPONIBLE);
     }
+  }
+
+  /**
+   * Boîte englobante du territoire, au format attendu par Nominatim :
+   * `ouest,nord,est,sud` — un ordre qui ne s'invente pas et que la
+   * documentation du fournisseur impose.
+   *
+   * ⚠️ LA LONGITUDE SE RESSERRE AVEC LA LATITUDE. Un degré vaut 111 km à
+   * l'équateur mais 73 km à Strasbourg : appliquer la même marge aux deux axes
+   * produirait une boîte bien trop étroite en largeur, et rejetterait des
+   * adresses pourtant proches.
+   */
+  private boiteDuTerritoire(territoire: {
+    centerLat: number;
+    centerLon: number;
+    radiusM: number;
+  }): string {
+    const margeLat = territoire.radiusM * FACTEUR_BOITE * DEGRES_LAT_PAR_METRE;
+
+    // `Math.max(cos φ, …)` évite la division par zéro aux pôles. Aucun réseau
+    // de transport ne s'y trouve, mais un `Infinity` traversant l'URL serait
+    // une panne, pas un résultat vide.
+    const cosinus = Math.max(
+      Math.cos((territoire.centerLat * Math.PI) / 180),
+      1e-6,
+    );
+    const margeLon = margeLat / cosinus;
+
+    const ouest = territoire.centerLon - margeLon;
+    const est = territoire.centerLon + margeLon;
+    const nord = territoire.centerLat + margeLat;
+    const sud = territoire.centerLat - margeLat;
+
+    return `${ouest},${nord},${est},${sud}`;
   }
 
   private async lireCorps(reponse: Response): Promise<unknown> {

@@ -32,6 +32,12 @@ export const FICHIERS_GTFS_FACULTATIFS = [
   // Ajouté Phase 1 : sans lui, aucune correspondance entre quais, et donc
   // aucun changement de ligne possible.
   'transfers.txt',
+  // Ajoutés au sprint soutenance. FACULTATIFS au sens de la spécification —
+  // un flux peut n'avoir que l'un des deux — mais sans eux, aucun prochain
+  // passage n'est calculable, et la durée annoncée continue d'exclure
+  // l'attente.
+  'calendar.txt',
+  'calendar_dates.txt',
 ] as const;
 
 /// Tout ce qu'on extrait d'une archive. Le reste est ignoré sans être

@@ -6,6 +6,7 @@ import { GtfsImportService } from './gtfs-import.service';
 import { GtfsReaderService } from './gtfs-reader.service';
 import { NetworkBuilderService } from './network-builder.service';
 import { GtfsSourceService } from './gtfs-source.service';
+import { ScheduleImportService } from './schedule-import.service';
 
 // Le service journalise son bilan, ce qui est voulu en exploitation mais
 // noierait la sortie des tests. On coupe le logger : le contenu du bilan
@@ -65,6 +66,14 @@ describe('GtfsImportService', () => {
       new GtfsReaderService(),
       networkBuilder as unknown as NetworkBuilderService,
       sourceService as unknown as GtfsSourceService,
+      // ⚠️ UN DOUBLE INERTE, ET NON LE VRAI SERVICE. Ces tests portent sur
+      // l'import du RÉFÉRENTIEL — arrêts, lignes, correspondances. Laisser
+      // l'import des horaires s'exécuter ferait lire 710 000 lignes de
+      // `stop_times.txt` à chaque cas, sans rien vérifier de plus : les
+      // horaires ont leur propre suite.
+      {
+        importSchedules: jest.fn().mockResolvedValue(undefined),
+      } as unknown as ScheduleImportService,
     );
   });
 

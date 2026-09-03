@@ -42,7 +42,14 @@ export interface PointChoisi {
   label: string;
   latitude: number;
   longitude: number;
-  origine: "adresse" | "favori" | "position";
+  /**
+   * D'où vient ce point. Sert uniquement à l'affichage et à savoir si la
+   * géolocalisation est encore pertinente — le moteur, lui, ne reçoit que les
+   * coordonnées.
+   *
+   * `arret` : choisi d'un clic sur la carte.
+   */
+  origine: "adresse" | "favori" | "position" | "arret";
 }
 
 /// Délai après la dernière frappe avant d'interroger le serveur.

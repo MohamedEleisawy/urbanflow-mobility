@@ -83,6 +83,39 @@ export function formaterDateHeure(iso: string): string {
 }
 
 /**
+ * Date ISO → « 08:42 » (sprint soutenance).
+ *
+ * ═══ POURQUOI UN FORMATEUR DE PLUS ═══
+ *
+ * `formaterDateHeure` écrit la date ENTIÈRE. Sur un horaire de passage, elle
+ * est du bruit : personne n'a besoin de lire « 3 septembre 2026 » pour savoir
+ * que son tram part dans six minutes, et la date noierait l'heure au milieu
+ * d'une carte de résultat déjà dense.
+ *
+ * ⚠️ LE FUSEAU EST CELUI DU NAVIGATEUR, et c'est le bon choix ici. Le backend
+ * rend un INSTANT absolu en ISO 8601 ; l'usager consulte l'application là où
+ * il se trouve, donc dans le même fuseau que le réseau, sauf s'il prépare un
+ * trajet à distance — auquel cas l'heure de son téléphone reste la référence
+ * qu'il comprend.
+ *
+ * ⚠️ REND UNE CHAÎNE VIDE SUR UNE DATE ILLISIBLE, jamais « Invalid Date ».
+ * Un horaire est une donnée qu'on affiche par dizaines : une seule valeur
+ * corrompue ne doit pas écrire une erreur technique au milieu d'un trajet.
+ */
+export function formaterHeure(iso: string): string {
+  const date = new Date(iso);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
  * Libellés français des modes de transport.
  *
  * « WALK » ou « METRO » ne se montrent pas à un usager.

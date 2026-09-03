@@ -3,6 +3,7 @@ import { RoutesController } from './routes.controller';
 import { RoutesService } from './routes.service';
 import { AuthModule } from '../auth/auth.module';
 import { CarbonModule } from '../carbon/carbon.module';
+import { ScheduleModule } from '../schedule/schedule.module';
 
 @Module({
   // AuthModule est importé pour son export JwtService, dont JwtAuthGuard a
@@ -17,7 +18,9 @@ import { CarbonModule } from '../carbon/carbon.module';
   // ATTENTION pour 4E-3B : cette dépendance ne concernera QUE create().
   // searchRoutes() ne doit JAMAIS appeler FastAPI, sans quoi une panne du
   // microservice rendrait la recherche d'itinéraire indisponible.
-  imports: [AuthModule, CarbonModule],
+  // ScheduleModule (sprint soutenance) : le moteur a besoin du calendrier
+  // pour écarter les lignes qui ne circulent pas et compter l'attente.
+  imports: [AuthModule, CarbonModule, ScheduleModule],
   controllers: [RoutesController],
   providers: [RoutesService],
   // Exporté pour que SegmentsService puisse réutiliser findOneForUser() et

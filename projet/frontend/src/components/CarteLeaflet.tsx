@@ -5,6 +5,7 @@ import type { Map as CarteLeafletType, LayerGroup } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { CENTRE_DEFAUT, type PointCarte, type TronconTrace } from "@/lib/carte";
 import type { TransportMode } from "@/lib/types";
+import type { VelibStation } from "@/lib/velib-api";
 
 // =============================================================================
 // Rendu Leaflet (bloc 5B)
@@ -24,11 +25,25 @@ import type { TransportMode } from "@/lib/types";
 /// d'URL, cassée par tous les empaqueteurs). Moins d'octets, moins de code.
 const RAYON_ARRET = 5;
 const RAYON_ETAPE = 7;
+const RAYON_VELIB = 6;
 
 /// Couleurs du thème (`globals.css`) : Leaflet dessine en SVG et n'a pas accès
 /// aux classes Tailwind.
 const BLEU = "#1e3a5f";
 const VERT = "#2d7d46";
+
+/**
+ * Couleur des stations Vélib'.
+ *
+ * Volontairement DISTINCTE du bleu des arrêts de transport : les deux couches
+ * coexistent sur la même carte, et rien ne doit laisser croire qu'une station
+ * de vélos est un arrêt desservi par le moteur d'itinéraires — il ne l'est
+ * pas, le routage cyclable n'existe pas dans nos données.
+ */
+const VELIB = "#0f766e";
+
+/// Position de l'usager. Rouge : c'est le seul point qui le concerne LUI.
+const POSITION = "#b91c1c";
 
 /**
  * Couleur de chaque mode de transport.
@@ -53,6 +68,9 @@ const COULEURS_MODES: Record<TransportMode, string> = {
   CAR: "#991b1b",
 };
 
+/** Rôle donné à un arrêt choisi sur la carte. */
+export type RoleArret = "depart" | "arrivee";
+
 export interface CarteLeafletProps {
   /** Arrêts affichés en fond. */
   arrets: readonly PointCarte[];
@@ -67,18 +85,191 @@ export interface CarteLeafletProps {
    * ne représente pas le chemin réel du véhicule.
    */
   troncons?: readonly TronconTrace[] | null;
+
+  /**
+   * Appelé quand l'usager choisit un arrêt comme départ ou comme arrivée.
+   *
+   * Absent = les arrêts ne sont pas cliquables (cas de l'historique, où le
+   * trajet est déjà figé).
+   */
+  onChoisirArret?: (arret: PointCarte, role: RoleArret) => void;
+
+  /**
+   * Appelé après un déplacement ou un zoom, avec le nouveau centre.
+   *
+   * ⚠️ Sert à recharger les arrêts visibles. `GET /api/stops` étant borné, la
+   * carte ne peut pas montrer tout le réseau : elle montre ce qui entoure ce
+   * qu'on regarde.
+   */
+  onCentreDeplace?: (latitude: number, longitude: number) => void;
+
+  /**
+   * Stations Vélib' à dessiner, ou `null` si la couche est masquée.
+   *
+   * ⚠️ ELLES NE SONT PAS DES ARRÊTS. Elles ne sont pas cliquables pour définir
+   * un départ ou une arrivée : le moteur d'itinéraires ne sait pas router à
+   * vélo, et proposer « partir d'ici » depuis une station donnerait un trajet
+   * à pied déguisé en trajet cyclable.
+   */
+  velib?: readonly VelibStation[] | null;
+
+  /**
+   * Position de l'usager, ou `null` si elle n'est pas suivie.
+   *
+   * `accuracyM` dessine un cercle d'incertitude. ⚠️ `null` = l'appareil ne
+   * l'annonce pas : on ne dessine alors AUCUN cercle, plutôt qu'un cercle
+   * inventé qui donnerait une fausse impression de précision.
+   */
+  position?: {
+    latitude: number;
+    longitude: number;
+    accuracyM: number | null;
+  } | null;
+
+  /**
+   * La carte doit-elle suivre la position ?
+   *
+   * ⚠️ SÉPARÉ DE `position`, et c'est essentiel : l'usager doit pouvoir
+   * déplacer la carte pour regarder plus loin sans que le prochain relevé GPS
+   * ne la ramène de force sous ses pieds.
+   */
+  suivrePosition?: boolean;
+}
+
+/**
+ * Contenu du popup d'un arrêt : son nom, et deux façons de s'en servir.
+ *
+ * ⚠️ CONSTRUIT AVEC `textContent`, JAMAIS `innerHTML`. Les noms d'arrêts
+ * viennent du flux GTFS de l'opérateur — une donnée extérieure. Les injecter
+ * comme du HTML ouvrirait une faille XSS sur une chaîne que nous ne
+ * contrôlons pas.
+ */
+function construirePopup(
+  arret: PointCarte,
+  onChoisir: (role: RoleArret) => void,
+): HTMLElement {
+  const contenu = document.createElement("div");
+  contenu.className = "space-y-2";
+
+  const nom = document.createElement("p");
+  nom.className = "font-semibold";
+  nom.textContent = arret.nom;
+  contenu.append(nom);
+
+  const boutons = document.createElement("div");
+  boutons.className = "flex gap-2";
+
+  const bouton = (libelle: string, role: RoleArret) => {
+    const element = document.createElement("button");
+    element.type = "button";
+    element.textContent = libelle;
+    element.className =
+      "rounded border border-neutral-300 bg-white px-2 py-1 text-xs font-medium hover:bg-neutral-50";
+    // Le nom de l'arrêt est déjà dans le popup, mais un lecteur d'écran qui
+    // parcourt les boutons hors contexte n'entendrait que « Aller ici ».
+    element.setAttribute("aria-label", `${libelle} : ${arret.nom}`);
+    element.addEventListener("click", () => onChoisir(role));
+    return element;
+  };
+
+  boutons.append(bouton("Partir d'ici", "depart"), bouton("Aller ici", "arrivee"));
+  contenu.append(boutons);
+
+  return contenu;
+}
+
+/**
+ * Contenu du popup d'une station Vélib'.
+ *
+ * ⚠️ « INDISPONIBLE » N'EST PAS « 0 ». Le flux publie parfois une station sans
+ * état ; écrire « 0 vélo » ferait renoncer quelqu'un qui aurait pu en trouver.
+ * On distingue donc soigneusement les deux, ici comme dans le contrat backend.
+ *
+ * ⚠️ Construit avec `textContent`, jamais `innerHTML` : les noms de stations
+ * viennent du flux de l'exploitant, une donnée extérieure.
+ */
+function construirePopupVelib(station: VelibStation): HTMLElement {
+  const contenu = document.createElement("div");
+  contenu.className = "space-y-1";
+
+  const nom = document.createElement("p");
+  nom.className = "font-semibold";
+  nom.textContent = station.name;
+  contenu.append(nom);
+
+  const ligne = (texte: string) => {
+    const p = document.createElement("p");
+    p.className = "text-xs";
+    p.textContent = texte;
+    return p;
+  };
+
+  const compte = (valeur: number | null, libelle: string) =>
+    valeur === null ? `${libelle} : indisponible` : `${libelle} : ${valeur}`;
+
+  contenu.append(
+    ligne(compte(station.mechanical, "🚲 Mécaniques")),
+    ligne(compte(station.electric, "⚡ Électriques")),
+    ligne(compte(station.docksAvailable, "🅿 Places libres")),
+  );
+
+  if (station.isRenting === false) {
+    contenu.append(ligne("⚠ Station hors service pour la location"));
+  }
+
+  // ⚠️ LA FRAÎCHEUR EST TOUJOURS DITE. Sans elle, une donnée d'il y a une
+  // heure serait indiscernable d'une donnée de l'instant.
+  if (station.freshness === "REALTIME" && station.lastReported !== null) {
+    const heure = new Date(station.lastReported).toLocaleTimeString("fr-FR", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    contenu.append(ligne(`Actualisé à ${heure}`));
+  } else {
+    contenu.append(ligne("Disponibilité non horodatée"));
+  }
+
+  return contenu;
 }
 
 export default function CarteLeaflet({
   arrets,
   trace,
   troncons = null,
+  onChoisirArret,
+  onCentreDeplace,
+  velib = null,
+  position = null,
+  suivrePosition = false,
 }: CarteLeafletProps) {
   const conteneur = useRef<HTMLDivElement>(null);
   const carte = useRef<CarteLeafletType | null>(null);
   const couche = useRef<LayerGroup | null>(null);
   /// Arrete l'observateur de redimensionnement au demontage.
   const nettoyage = useRef<(() => void) | null>(null);
+
+  /**
+   * Les rappels, tenus dans des références.
+   *
+   * ⚠️ POURQUOI PAS DIRECTEMENT DANS LES DÉPENDANCES DE L'EFFET. Une fonction
+   * fléchée écrite dans le rendu du parent change d'identité à chaque rendu.
+   * La mettre en dépendance ferait redessiner toute la carte à chaque frappe
+   * dans le formulaire — et, comme le déplacement recharge les arrêts, cela
+   * boucherait. La référence garde le rappel À JOUR sans le faire entrer dans
+   * les dépendances.
+   */
+  const choisirArret = useRef(onChoisirArret);
+  const centreDeplace = useRef(onCentreDeplace);
+
+  // ⚠️ MISE À JOUR APRÈS LE RENDU, jamais pendant. Le compilateur React
+  // interdit d'écrire dans une référence pendant le rendu
+  // (`react-hooks/refs`), et pour une bonne raison : un rendu doit être pur et
+  // rejouable. Cet effet n'a volontairement AUCUN tableau de dépendances — il
+  // doit s'exécuter après chaque rendu pour que les rappels restent frais.
+  useEffect(() => {
+    choisirArret.current = onChoisirArret;
+    centreDeplace.current = onCentreDeplace;
+  });
 
   // --- Création de la carte, une seule fois --------------------------------
   useEffect(() => {
@@ -115,7 +306,23 @@ export default function CarteLeaflet({
       // n'apparaissent qu'à moitié. `ResizeObserver` le lui apprend.
       const observateur = new ResizeObserver(() => instance.invalidateSize());
       observateur.observe(element);
-      nettoyage.current = () => observateur.disconnect();
+
+      // Après un déplacement ou un zoom, on prévient le parent du nouveau
+      // centre pour qu'il recharge les arrêts alentour.
+      //
+      // ⚠️ `moveend` ET NON `move` : `move` se déclenche à chaque image d'un
+      // glissement, ce qui produirait des dizaines de requêtes par seconde.
+      const surDeplacement = () => {
+        const centre = instance.getCenter();
+        centreDeplace.current?.(centre.lat, centre.lng);
+      };
+
+      instance.on("moveend", surDeplacement);
+
+      nettoyage.current = () => {
+        observateur.disconnect();
+        instance.off("moveend", surDeplacement);
+      };
     });
 
     return () => {
@@ -146,15 +353,24 @@ export default function CarteLeaflet({
         // plus gros et en vert. Sinon deux cercles se superposeraient.
         if (surLeTrace.has(arret.id)) continue;
 
-        L.circleMarker([arret.latitude, arret.longitude], {
+        const marqueur = L.circleMarker([arret.latitude, arret.longitude], {
           radius: RAYON_ARRET,
           color: BLEU,
           fillColor: BLEU,
           fillOpacity: 0.7,
           weight: 1,
-        })
-          .bindTooltip(arret.nom)
-          .addTo(groupe);
+        }).bindTooltip(arret.nom);
+
+        if (choisirArret.current) {
+          marqueur.bindPopup(
+            construirePopup(arret, (role) => {
+              choisirArret.current?.(arret, role);
+              instance.closePopup();
+            }),
+          );
+        }
+
+        marqueur.addTo(groupe);
       }
 
       if (troncons && troncons.length > 0) {
@@ -202,9 +418,65 @@ export default function CarteLeaflet({
 
       // Cadrage sur ce qui compte : le trajet s'il y en a un, sinon le réseau
       // entier. `CENTRE_DEFAUT` ne sert donc que si les deux sont vides.
-      // Cadrage sur ce qui compte : les tracés réels s'il y en a, sinon les
-      // étapes, sinon le réseau. `CENTRE_DEFAUT` ne sert donc que si tout est
-      // vide.
+      for (const station of velib ?? []) {
+        L.circleMarker([station.latitude, station.longitude], {
+          radius: RAYON_VELIB,
+          color: VELIB,
+          fillColor: VELIB,
+          // Une station qui ne loue pas est dessinée en creux : l'information
+          // est portée par la FORME, pas seulement par le texte du popup.
+          fillOpacity: station.isRenting === false ? 0.15 : 0.85,
+          weight: 2,
+        })
+          .bindTooltip(station.name)
+          .bindPopup(construirePopupVelib(station))
+          .addTo(groupe);
+      }
+
+      if (position) {
+        // Le cercle d'incertitude, dessiné SOUS le point : il dit « je suis
+        // quelque part là-dedans », ce qui est plus honnête qu'un point net.
+        if (position.accuracyM !== null && position.accuracyM > 0) {
+          L.circle([position.latitude, position.longitude], {
+            radius: position.accuracyM,
+            color: POSITION,
+            fillColor: POSITION,
+            fillOpacity: 0.1,
+            weight: 1,
+          }).addTo(groupe);
+        }
+
+        L.circleMarker([position.latitude, position.longitude], {
+          radius: RAYON_ETAPE,
+          color: "#ffffff",
+          fillColor: POSITION,
+          fillOpacity: 1,
+          weight: 3,
+        })
+          .bindTooltip("Votre position")
+          .addTo(groupe);
+      }
+
+      // ⚠️ ON NE RECADRE QUE SUR UN TRAJET, JAMAIS SUR LES ARRÊTS DE FOND.
+      //
+      // Les arrêts de fond sont rechargés à chaque déplacement de la carte.
+      // Recadrer dessus déplacerait la carte, ce qui rechargerait les arrêts,
+      // ce qui recadrerait à nouveau : la carte partirait en boucle et
+      // l'usager ne pourrait plus rien regarder. Tant qu'aucun trajet n'est
+      // choisi, la vue appartient donc entièrement à l'usager.
+      // ⚠️ LE SUIVI PRIME SUR LE CADRAGE DU TRAJET. Pendant une navigation,
+      // l'usager veut voir où il EST, pas l'ensemble du trajet — et recadrer
+      // sur le trajet entier à chaque relevé GPS le dézoomerait sans cesse.
+      //
+      // `panTo` et non `setView` : on déplace SANS toucher au zoom, que
+      // l'usager a peut-être ajusté lui-même.
+      if (suivrePosition && position) {
+        instance.panTo([position.latitude, position.longitude], {
+          animate: true,
+        });
+        return;
+      }
+
       const pointsDuTrace: [number, number][] =
         troncons && troncons.length > 0
           ? troncons.flatMap((troncon) => troncon.points)
@@ -212,15 +484,8 @@ export default function CarteLeaflet({
               (point) => [point.latitude, point.longitude] as [number, number],
             );
 
-      const aCadrer: [number, number][] =
-        pointsDuTrace.length > 0
-          ? pointsDuTrace
-          : arrets.map(
-              (point) => [point.latitude, point.longitude] as [number, number],
-            );
-
-      if (aCadrer.length > 0) {
-        instance.fitBounds(L.latLngBounds(aCadrer), {
+      if (pointsDuTrace.length > 0) {
+        instance.fitBounds(L.latLngBounds(pointsDuTrace), {
           padding: [32, 32],
           maxZoom: 16,
         });
@@ -230,7 +495,7 @@ export default function CarteLeaflet({
     return () => {
       annule = true;
     };
-  }, [arrets, trace, troncons]);
+  }, [arrets, trace, troncons, velib, position, suivrePosition]);
 
   // `aria-hidden` : tout ce que la carte montre est déjà écrit en toutes
   // lettres à côté d'elle (étapes, arrêts, distances). Faire lire à un

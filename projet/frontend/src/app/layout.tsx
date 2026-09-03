@@ -5,6 +5,8 @@ import { AuthProvider } from "@/components/AuthProvider";
 import { Header } from "@/components/Header";
 import { ServiceWorker } from "@/components/ServiceWorker";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { LangueProvider } from "@/components/LangueProvider";
+import { PiedDePage } from "@/components/PiedDePage";
 
 // Geist, la police retenue par le dossier (§2.8.4).
 //
@@ -25,8 +27,16 @@ const geistSans = Geist({
 
 export const metadata: Metadata = {
   title: "UrbanFlow Mobility",
+  // ⚠️ « EN TEMPS RÉEL » A ÉTÉ RETIRÉ DE CETTE PHRASE au sprint soutenance.
+  // Elle annonçait « les perturbations du réseau en temps réel », alors
+  // qu'aucune source temps réel n'est configurée : la CTS ne publie ces
+  // informations qu'en SIRI-Lite, sous jeton nominatif.
+  //
+  // C'était le mensonge le plus large du produit — une description reprise
+  // par les moteurs de recherche, les aperçus de lien et l'écran d'accueil
+  // d'une application installée.
   description:
-    "Planifiez vos trajets multimodaux, consultez les perturbations du réseau en temps réel et mesurez l'empreinte carbone de vos déplacements.",
+    "Planifiez vos trajets multimodaux, consultez les perturbations signalées sur le réseau et mesurez l'empreinte carbone de vos déplacements.",
 
   // iOS n'implémente pas `display: standalone` du manifeste : il lui faut
   // cette métadonnée pour ouvrir l'application sans barre d'adresse une fois
@@ -82,16 +92,39 @@ export default function RootLayout({
           l'application ne transforme donc pas les pages en composants client.
         */}
         <AuthProvider>
-          {/* Applique le thème choisi dans les préférences (refonte mobilité).
-              À L'INTÉRIEUR d'`AuthProvider` : il lit le profil, et retombe
-              donc sur le thème système dès la déconnexion. */}
-          <ThemeProvider />
-          <Header />
+          {/* ⚠️ `ThemeProvider` ENVELOPPE DÉSORMAIS, au lieu de se contenter
+              de poser un attribut. Depuis le sprint soutenance, il expose un
+              contexte : le sélecteur de l'en-tête doit pouvoir lire le thème
+              courant et le changer, ce qu'un composant sans enfants ne
+              permettait pas.
 
-          {/* `flex-1` : le pied de page reste en bas même sur une page courte. */}
-          <main id="contenu" className="flex-1">
-            {children}
-          </main>
+              À L'INTÉRIEUR d'`AuthProvider` : il lit le profil pour donner la
+              priorité à la préférence du compte, et retombe sur le choix
+              local — jamais effacé — dès la déconnexion.
+
+              ⚠️ IL ENVELOPPE, il ne se contente pas d'être là. Contrairement à
+              `ThemeProvider` — qui pose un attribut sur `<html>` et ne rend
+              rien — la langue est lue par les composants via un contexte : ils
+              doivent donc se trouver DANS son arbre.
+
+              À l'intérieur d'`AuthProvider`, comme le thème : il lit la
+              préférence du compte et retombe sur le français pour un
+              visiteur. */}
+          <LangueProvider>
+            <ThemeProvider>
+              <Header />
+
+              {/* `flex-1` : le pied de page reste en bas même sur une page
+                  courte. */}
+              <main id="contenu" className="flex-1">
+                {children}
+              </main>
+
+              {/* Dans `LangueProvider` ET `AuthProvider` : ses libellés sont
+                  traduits, et « Mes données » dépend de l'état de session. */}
+              <PiedDePage />
+            </ThemeProvider>
+          </LangueProvider>
         </AuthProvider>
 
         {/* Sans rendu : enregistre le service worker exigé par la
@@ -99,14 +132,6 @@ export default function RootLayout({
             n'entre en jeu qu'une fois la page chargée. */}
         <ServiceWorker />
 
-        <footer className="border-t border-neutral-200 bg-white">
-          <div className="mx-auto w-full max-w-5xl px-4 py-6 text-sm text-neutral-600 sm:px-6">
-            <p>
-              UrbanFlow Mobility — projet de fin d&apos;études. Données de transport issues des
-              standards ouverts GTFS et GTFS-Realtime.
-            </p>
-          </div>
-        </footer>
       </body>
     </html>
   );

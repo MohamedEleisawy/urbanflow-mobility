@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider, useAuth } from "./AuthProvider";
+import { LangueProvider } from "./LangueProvider";
 import { Preferences } from "./Preferences";
 import { ApiError, NetworkError } from "@/lib/api";
 import type { User, UserPreferences } from "@/lib/types";
@@ -62,8 +63,10 @@ function Sonde() {
 const rendre = () =>
   render(
     <AuthProvider>
-      <Sonde />
-      <Preferences />
+      <LangueProvider>
+        <Sonde />
+        <Preferences />
+      </LangueProvider>
     </AuthProvider>,
   );
 
@@ -126,14 +129,27 @@ describe("Préférences", () => {
       expect(await screen.findByText(/soit 5 kg/i)).toBeDefined();
     });
 
-    it("ne PRÉTEND PAS que le thème et la langue changent l'affichage", async () => {
+    it("annonce ce que la langue change RÉELLEMENT, et ce qu'elle ne change pas", async () => {
       authentifier();
       rendre();
 
-      // L'application n'a ni traduction ni thème sombre. Le choix est
-      // enregistré, et l'interface le dit — sans quoi l'usager choisirait
-      // « Anglais », ne verrait rien changer et croirait à un bug.
-      expect(await screen.findByText(/ne modifient pas encore l'affichage/i)).toBeDefined();
+      // ⚠️ CETTE NOTE A CHANGÉ DE SENS. Elle disait que le choix était
+      // enregistré sans rien changer à l'affichage : c'était vrai, et
+      // honnête. Depuis la Phase 5, `LangueProvider` applique la langue et
+      // `ThemeProvider` le thème — la note dit donc désormais ce qui reste
+      // partiel, plutôt qu'une limite disparue.
+      expect(await screen.findByText(/s'applique immédiatement/i)).toBeDefined();
+      expect(screen.getByText(/restent en français/i)).toBeDefined();
+    });
+
+    it("propose les TROIS langues", async () => {
+      authentifier();
+      rendre();
+
+      const langue = await screen.findByLabelText("Langue");
+      const options = Array.from(langue.querySelectorAll("option")).map((o) => o.value);
+
+      expect(options).toEqual(["FR", "EN", "ES"]);
     });
 
     it("s'affiche même SANS préférences existantes", async () => {

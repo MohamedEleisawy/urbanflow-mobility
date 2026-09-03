@@ -3,7 +3,9 @@ import { Prisma, Stop } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateStopDto } from './dto/create-stop.dto';
 import { FindStopsQueryDto } from './dto/find-stops-query.dto';
+import { NetworkModesResponseDto } from './dto/network-modes.dto';
 import { haversineDistanceM } from '../common/geo/distance.util';
+import { territoryConfig } from '../config/territory.config';
 
 /**
  * Un arrêt rendu par `GET /api/stops`.
@@ -211,6 +213,64 @@ export class StopsService {
     }
 
     return { name: { contains: recherche, mode: 'insensitive' } };
+  }
+
+  /**
+   * Les modes de transport réellement présents DANS LE TERRITOIRE DESSERVI.
+   *
+   * ⚠️ COMPTE LES LIGNES, PAS LES ARRÊTS. Un arrêt ne porte aucun mode : c'est
+   * la LIGNE qui en a un, depuis l'étape 4C-4-1.
+   *
+   * ⚠️ UN MODE ABSENT N'APPARAÎT PAS DANS LA RÉPONSE. C'est ce qui permet à
+   * l'interface de n'afficher que des filtres qui rendront quelque chose —
+   * plutôt que de proposer « Métro » sur un réseau qui n'en a pas.
+   *
+   * ═══ POURQUOI LE FILTRE TERRITORIAL, ET NON UN SIMPLE `groupBy` ═══
+   *
+   * La base peut contenir PLUSIEURS réseaux : l'import est additif, et rien
+   * n'oblige à purger le précédent. Un `groupBy` nu répondait donc
+   * « METRO : 16 lignes » sur une installation strasbourgeoise, parce que le
+   * réseau d'Île-de-France y séjournait encore — et l'interface proposait un
+   * filtre « Métro » qui n'aurait jamais rien rendu.
+   *
+   * Une ligne compte donc si elle dessert AU MOINS UN ARRÊT du territoire.
+   * La réponse suit alors la configuration, sans dépendre de l'ordre des
+   * imports ni d'une purge manuelle.
+   */
+  async findNetworkModes(): Promise<NetworkModesResponseDto> {
+    const territoire = territoryConfig();
+    const marges = this.margesDuRectangle(
+      territoire.centerLat,
+      territoire.radiusM,
+    );
+
+    const cadre = {
+      latitude: {
+        gte: territoire.centerLat - marges.latitude,
+        lte: territoire.centerLat + marges.latitude,
+      },
+      longitude: {
+        gte: territoire.centerLon - marges.longitude,
+        lte: territoire.centerLon + marges.longitude,
+      },
+    };
+
+    const groupes = await this.prisma.transitLine.groupBy({
+      by: ['mode'],
+      // ⚠️ RECTANGLE, ET NON CERCLE. Le mode d'une ligne ne change pas à
+      // quelques centaines de mètres près : la précision d'un cercle exact ne
+      // servirait à rien, et coûterait un chargement en mémoire.
+      where: { links: { some: { fromStop: cadre } } },
+      _count: { _all: true },
+      orderBy: { mode: 'asc' },
+    });
+
+    return {
+      modes: groupes.map((groupe) => ({
+        mode: groupe.mode,
+        lineCount: groupe._count._all,
+      })),
+    };
   }
 
   async findOne(id: string) {

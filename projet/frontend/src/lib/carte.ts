@@ -36,13 +36,21 @@ export interface PointCarte {
 }
 
 /**
- * Centre de repli, utilisé UNIQUEMENT quand il n'y a rien à cadrer.
+ * Centre de repli, utilisé UNIQUEMENT en dernier recours.
  *
- * Dès qu'un point existe, la carte s'ajuste sur les points eux-mêmes : cette
- * valeur ne sert alors jamais. Ce n'est pas une donnée métier, c'est une
- * position de caméra par défaut.
+ * ⚠️ CE N'EST PLUS LE CENTRE DU TERRITOIRE. Il l'était — c'étaient les
+ * coordonnées de Paris, écrites en dur — et c'est précisément ce qui enfermait
+ * le produit dans une métropole. Le centre réel vient désormais du backend
+ * (`GET /api/territory`), seule source de vérité.
+ *
+ * Cette constante ne sert donc plus que dans les deux instants où le
+ * territoire n'est pas encore connu : le tout premier rendu, et un échec de
+ * l'appel. Elle vise le centre de la France métropolitaine — un repli neutre,
+ * qui n'affirme aucune ville.
+ *
+ * Ce n'est pas une donnée métier, c'est une position de caméra.
  */
-export const CENTRE_DEFAUT: [number, number] = [48.8566, 2.3522];
+export const CENTRE_DEFAUT: [number, number] = [46.6, 2.5];
 
 /** Traduit un arrêt du backend en point affichable. */
 export function pointDepuisArret(arret: Stop): PointCarte {

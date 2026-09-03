@@ -6,11 +6,17 @@ import type { Alert, AlertsResponse } from "@/lib/types";
 
 // Seul le RÉSEAU est simulé. Le tri, la mise en forme des dates, les libellés
 // de gravité et la troncature sont les vrais : c'est ce qu'on veut éprouver.
+// ⚠️ LE DOUBLE PAR DÉFAUT REFUSE : aucune source temps réel configurée. C'est
+// l'état RÉEL de l'installation de démonstration, et surtout le plus exigeant
+// pour l'écran — c'est là que ses phrases doivent rester honnêtes.
+vi.mock("@/lib/capacites-api", () => ({ capacites: vi.fn() }));
+
 vi.mock("@/lib/alertes-api", () => ({
   listerAlertes: vi.fn(),
 }));
 
 const { listerAlertes } = await import("@/lib/alertes-api");
+const { capacites } = await import("@/lib/capacites-api");
 
 const alerte = (surcharge: Partial<Alert> = {}): Alert => ({
   id: "alerte-1",
@@ -34,9 +40,19 @@ const reponse = (items: Alert[], truncated = false): AlertsResponse => ({
   truncated,
 });
 
-describe("/alertes", () => {
+describe("/perturbations", () => {
   beforeEach(() => {
     vi.mocked(listerAlertes).mockReset();
+    vi.mocked(capacites).mockResolvedValue({
+      walkRouting: { status: "NOT_CONFIGURED", provider: null },
+      bikeRouting: { status: "NOT_CONFIGURED", provider: null },
+      transitRealtime: { status: "NOT_CONFIGURED", provider: null },
+      legal: {
+        entityName: null,
+        contactEmail: null,
+        privacyContactEmail: null,
+      },
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -105,7 +121,7 @@ describe("/alertes", () => {
   // Liste vide
   // ---------------------------------------------------------------------------
   describe("aucune perturbation", () => {
-    it("formule la liste vide comme une BONNE nouvelle", async () => {
+    it("formule la liste vide comme une RÉPONSE, pas comme une erreur", async () => {
       vi.mocked(listerAlertes).mockResolvedValue(reponse([]));
 
       render(<AlertesPage />);
@@ -113,9 +129,108 @@ describe("/alertes", () => {
       // « Aucune perturbation » n'est pas une erreur : c'est une réponse.
       // Elle est dite DEUX FOIS — à l'écran, et dans la zone d'état pour les
       // lecteurs d'écran — d'où `findAllByText`.
-      expect((await screen.findAllByText(/aucune perturbation en cours/i)).length).toBe(2);
+      expect(
+        (await screen.findAllByText(/aucune perturbation signalée/i)).length,
+      ).toBe(2);
       expect(screen.queryByRole("alert")).toBeNull();
-      expect(screen.getByText(/le réseau circule normalement/i)).toBeDefined();
+    });
+
+    it("N’AFFIRME PAS que le réseau circule normalement sans temps réel", async () => {
+      // ⚠️ LE TEST QUI PORTE TOUT CE BLOC. Une page vide se lit « tout va
+      // bien ». C'est vrai quand une source temps réel répond et ne signale
+      // rien ; c'est faux quand aucune source n'est branchée — et les deux
+      // situations produisent le MÊME écran.
+      //
+      // « Le réseau circule normalement » est une AFFIRMATION : elle n'est
+      // défendable que si quelque chose l'a vérifiée.
+      vi.mocked(listerAlertes).mockResolvedValue(reponse([]));
+
+      render(<AlertesPage />);
+
+      await screen.findAllByText(/aucune perturbation signalée/i);
+
+      // ⚠️ L'ASSERTION VISE LA PHRASE AFFIRMATIVE, pas les mots « circule
+      // normalement » — ils figurent aussi dans la phrase honnête, sous une
+      // négation. Un motif trop large échouerait ici pour la bonne raison,
+      // ce qui est la pire façon d'échouer.
+      expect(
+        screen.queryByText(/circule normalement, d'après/i),
+      ).toBeNull();
+      expect(
+        screen.getByText(/cela ne garantit pas que le réseau circule/i),
+      ).toBeDefined();
+    });
+
+    it("l’affirme EN REVANCHE quand le temps réel répond", async () => {
+      vi.mocked(capacites).mockResolvedValue({
+        walkRouting: { status: "NOT_CONFIGURED", provider: null },
+        bikeRouting: { status: "NOT_CONFIGURED", provider: null },
+        transitRealtime: { status: "CONFIGURED", provider: "siri-lite" },
+        legal: {
+          entityName: null,
+          contactEmail: null,
+          privacyContactEmail: null,
+        },
+      });
+      vi.mocked(listerAlertes).mockResolvedValue(reponse([]));
+
+      render(<AlertesPage />);
+
+      expect(
+        await screen.findByText(/circule normalement, d'après/i),
+      ).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Honnêteté sur la source
+  // ---------------------------------------------------------------------------
+  describe("état de la source temps réel", () => {
+    it("DIT que le temps réel n’est pas configuré", async () => {
+      vi.mocked(listerAlertes).mockResolvedValue(reponse([alerte()]));
+
+      render(<AlertesPage />);
+
+      expect(
+        await screen.findByText(
+          /informations temps réel de transport ne sont pas configurées/i,
+        ),
+      ).toBeDefined();
+    });
+
+    it("nomme la source quand elle EST configurée", async () => {
+      vi.mocked(capacites).mockResolvedValue({
+        walkRouting: { status: "NOT_CONFIGURED", provider: null },
+        bikeRouting: { status: "NOT_CONFIGURED", provider: null },
+        transitRealtime: { status: "CONFIGURED", provider: "siri-lite" },
+        legal: {
+          entityName: null,
+          contactEmail: null,
+          privacyContactEmail: null,
+        },
+      });
+      vi.mocked(listerAlertes).mockResolvedValue(reponse([alerte()]));
+
+      render(<AlertesPage />);
+
+      expect(await screen.findByText(/temps réel actif/i)).toBeDefined();
+      expect(screen.getByText(/siri-lite/i)).toBeDefined();
+    });
+
+    it("RESTE PRUDENT si l’appel aux capacités échoue", async () => {
+      // ⚠️ UN ÉCHEC RÉSEAU NE DOIT JAMAIS FAIRE CROIRE À UNE SOURCE BRANCHÉE.
+      // Le doute se tranche du côté de l'honnêteté : annoncer un temps réel
+      // absent coûte la confiance, taire un temps réel présent ne coûte rien.
+      vi.mocked(capacites).mockRejectedValue(new NetworkError("injoignable"));
+      vi.mocked(listerAlertes).mockResolvedValue(reponse([alerte()]));
+
+      render(<AlertesPage />);
+
+      expect(
+        await screen.findByText(
+          /informations temps réel de transport ne sont pas configurées/i,
+        ),
+      ).toBeDefined();
     });
   });
 

@@ -78,6 +78,7 @@ describe('NetworkBuilderService', () => {
     routeId,
     serviceId: 'SEM',
     directionId: null,
+    headsign: null,
     // Phase 1B : un flux sans `shapes.txt` rend `null` ici, et l'import
     // doit continuer sans géométrie.
     shapeId,

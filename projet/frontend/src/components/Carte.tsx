@@ -2,6 +2,8 @@
 
 import dynamic from "next/dynamic";
 import type { PointCarte, TronconTrace } from "@/lib/carte";
+import type { RoleArret } from "./CarteLeaflet";
+import type { VelibStation } from "@/lib/velib-api";
 
 // =============================================================================
 // Carte interactive (bloc 5B)
@@ -57,6 +59,28 @@ export interface CarteProps {
    * publie, colorée par mode — et en pointillés là où la géométrie manque.
    */
   troncons?: readonly TronconTrace[] | null;
+
+  /**
+   * Appelé quand l'usager choisit un arrêt de la carte comme départ ou
+   * arrivée. Absent = les arrêts ne sont pas cliquables.
+   */
+  onChoisirArret?: (arret: PointCarte, role: RoleArret) => void;
+
+  /** Appelé après un déplacement, avec le nouveau centre de la carte. */
+  onCentreDeplace?: (latitude: number, longitude: number) => void;
+
+  /** Stations Vélib' à dessiner, ou `null` si la couche est masquée. */
+  velib?: readonly VelibStation[] | null;
+
+  /** Position de l'usager, ou `null` si elle n'est pas suivie. */
+  position?: {
+    latitude: number;
+    longitude: number;
+    accuracyM: number | null;
+  } | null;
+
+  /** La carte doit-elle suivre la position ? */
+  suivrePosition?: boolean;
 }
 
 /**
@@ -73,6 +97,11 @@ export function Carte({
   arrets,
   trace = null,
   troncons = null,
+  onChoisirArret,
+  onCentreDeplace,
+  velib = null,
+  position = null,
+  suivrePosition = false,
 }: CarteProps) {
   return (
     <section aria-labelledby="carte" className="space-y-2">
@@ -84,12 +113,21 @@ export function Carte({
           Leaflet sans hauteur mesurable ne dessine rien du tout. Plus basse
           sur mobile, où l'écran doit rester utilisable sous la carte. */}
       <div className="h-64 w-full overflow-hidden rounded-lg border border-neutral-200 sm:h-96">
-        {arrets.length === 0 && !trace && !troncons ? (
+        {arrets.length === 0 && !trace && !troncons && !velib?.length && !position ? (
           <p className="flex h-full w-full items-center justify-center bg-neutral-100 px-6 text-center text-sm text-neutral-600">
             Aucun arrêt à afficher sur la carte.
           </p>
         ) : (
-          <CarteLeaflet arrets={arrets} trace={trace} troncons={troncons} />
+          <CarteLeaflet
+            arrets={arrets}
+            trace={trace}
+            troncons={troncons}
+            onChoisirArret={onChoisirArret}
+            onCentreDeplace={onCentreDeplace}
+            velib={velib}
+            position={position}
+            suivrePosition={suivrePosition}
+          />
         )}
       </div>
 

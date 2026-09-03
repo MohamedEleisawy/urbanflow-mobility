@@ -21,6 +21,7 @@ const segment = (
   lineName: "38",
   operator: "RATP",
   lineId: "ligne-38",
+  gtfsLineId: null,
   distanceM: 3900,
   durationMin: 31,
   geometry: null,

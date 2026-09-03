@@ -44,6 +44,13 @@ export interface GtfsTrip {
   /// Sens de circulation. Conservé pour information : le graphe n'en a pas
   /// besoin, puisque le sens est porté par fromStop → toStop.
   directionId: number | null;
+  /// Destination affichée en girouette (`trip_headsign`), ou `null`.
+  ///
+  /// FACULTATIF dans la spécification. C'est pourtant ce qui distingue les
+  /// deux sens d'une même ligne sur un panneau d'horaires : « Tram D » ne dit
+  /// rien, « Tram D → Poteries » dit tout.
+  headsign: string | null;
+
   /// Parcours géographique emprunté (`shapes.txt`), ou `null`.
   ///
   /// Ajouté à la Phase 1B. FACULTATIF dans la spécification GTFS, et
@@ -103,4 +110,52 @@ export interface GtfsTransfer {
    * toutes de type 2 et portent toutes leur durée — aucune n'est à inventer.
    */
   minTransferTimeSec: number | null;
+}
+
+/**
+ * Un service au sens GTFS (`calendar.txt`) : les jours où des courses roulent.
+ *
+ * ⚠️ CE FICHIER EST FACULTATIF dans la spécification — un flux peut décrire
+ * tout son calendrier par les seules exceptions de `calendar_dates.txt`. Son
+ * absence n'est donc jamais une erreur d'import ; elle signifie seulement
+ * qu'aucun service hebdomadaire régulier n'est déclaré.
+ */
+export interface GtfsCalendar {
+  serviceId: string;
+
+  /// Du lundi au dimanche, dans cet ordre — celui du fichier.
+  days: readonly [
+    boolean,
+    boolean,
+    boolean,
+    boolean,
+    boolean,
+    boolean,
+    boolean,
+  ];
+
+  /**
+   * Bornes de validité, INCLUSES, au format `YYYYMMDD` converti en date.
+   *
+   * ⚠️ CONSTRUITES EN UTC. `new Date(2026, 8, 3)` produit un instant dans le
+   * fuseau du serveur ; stocké dans une colonne `date`, il peut basculer au
+   * 2 septembre sur un serveur à l'ouest de Greenwich. Une date de calendrier
+   * n'a pas de fuseau : on la fabrique donc à midi UTC, hors d'atteinte de
+   * tout décalage.
+   */
+  startDate: Date;
+  endDate: Date;
+}
+
+/**
+ * Une exception au calendrier (`calendar_dates.txt`).
+ *
+ * `added` traduit `exception_type` : 1 = service ajouté ce jour-là,
+ * 2 = service retiré. Toute autre valeur fait écarter la ligne — la
+ * spécification n'en définit pas d'autre, et deviner en inventerait une.
+ */
+export interface GtfsCalendarDate {
+  serviceId: string;
+  date: Date;
+  added: boolean;
 }

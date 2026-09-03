@@ -1,6 +1,7 @@
 import { BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CarbonService } from '../carbon/carbon.service';
+import { ScheduleService } from '../schedule/schedule.service';
 import { CarbonResultDto } from '../carbon/dto/carbon-result.dto';
 import { RoutesService } from './routes.service';
 import { CreateRouteDto } from './dto/create-route.dto';
@@ -16,6 +17,12 @@ beforeAll(() => {
 // les méthodes réellement utilisées sont mockées. Ce sont des tests
 // unitaires, pas des tests d'intégration.
 describe('RoutesService', () => {
+  let schedule: {
+    lignesActives: jest.Mock;
+    horairesDisponibles: jest.Mock;
+    attenteAvantLigne: jest.Mock;
+    prochainsPassages: jest.Mock;
+  };
   let service: RoutesService;
   let prisma: {
     route: {
@@ -201,9 +208,26 @@ describe('RoutesService', () => {
       }),
     };
 
+    // ⚠️ UN CALENDRIER QUI RÉPOND « JE NE SAIS PAS ».
+    //
+    // `lignesActives: null` est le comportement d'une installation SANS
+    // `calendar.txt` : le moteur n'écarte alors aucune ligne, et se comporte
+    // exactement comme avant l'ajout des horaires. C'est ce que la très
+    // grande majorité de ces tests vérifie — le graphe, les critères, la
+    // déduplication — et qu'un calendrier actif rendrait illisible.
+    //
+    // Les tests qui portent SUR les horaires, eux, remplacent ce double.
+    schedule = {
+      lignesActives: jest.fn().mockResolvedValue(null),
+      horairesDisponibles: jest.fn().mockResolvedValue(false),
+      attenteAvantLigne: jest.fn().mockResolvedValue(null),
+      prochainsPassages: jest.fn().mockResolvedValue([]),
+    };
+
     service = new RoutesService(
       prisma as unknown as PrismaService,
       carbonService as unknown as CarbonService,
+      schedule as unknown as ScheduleService,
     );
   });
 
@@ -877,7 +901,7 @@ describe('RoutesService', () => {
     const segment = (
       fromStopId: string,
       toStopId: string,
-      mode: 'WALK' | 'BUS' | 'METRO',
+      mode: 'WALK' | 'BUS' | 'METRO' | 'TRAM',
       distanceM: number,
       durationMin: number,
       lineId = 'ligne-1',
@@ -986,34 +1010,115 @@ describe('RoutesService', () => {
       expect(result[0].totalDurationMin).toBe(20);
     });
 
-    it('oppose le plus rapide au moins de changements quand ils diffèrent', async () => {
-      // Rapide  : A --métro 4--> B --bus 38--> C   8 + 4 = 12 min, 1 changement
-      // Direct  : A --bus 350--> C                 30 min, 0 changement
-      const aVersBMetro = segment(A.id, B.id, 'METRO', 1000, 8, 'ligne-metro');
-      const bVersCBus = segment(B.id, C.id, 'BUS', 900, 4, 'ligne-bus');
+    it('oppose le plus rapide au plus court quand ils diffèrent', async () => {
+      // C'est le cas STRASBOURGEOIS, et il n'a rien de théorique : le tram
+      // file en site propre mais contourne, le bus coupe au plus court mais
+      // s'arrête partout.
+      //
+      //   Rapide : A --tram--> B --tram--> C   6 000 m, 10 min, 1 changement
+      //   Court  : A --bus-----------> C       3 500 m, 30 min, 0 changement
+      //
+      // ⚠️ LE PLUS COURT EST ICI LE PLUS LENT. C'est exactement ce que le
+      // critère doit rendre visible : sans lui, un usager qui préfère marcher
+      // moins et rester au sol ne verrait jamais cette option.
+      const aVersBTram = segment(A.id, B.id, 'TRAM', 3000, 5, 'tram-b');
+      const bVersCTram = segment(B.id, C.id, 'TRAM', 3000, 5, 'tram-c');
+      const aVersCBus = segment(A.id, C.id, 'BUS', 3500, 30, 'bus-30');
 
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
       prisma.networkLink.findMany.mockResolvedValue([
-        aVersBMetro,
-        bVersCBus,
-        aVersC,
+        aVersBTram,
+        bVersCTram,
+        aVersCBus,
       ]);
 
       const result = await service.searchRoutes({ ...depuisA, ...versC });
 
       const rapide = result.find((i) => i.criterion === 'FASTEST');
-      const direct = result.find((i) => i.criterion === 'FEWEST_TRANSFERS');
+      const court = result.find((i) => i.criterion === 'SHORTEST');
 
-      // Le plus rapide gagne 18 minutes, au prix d'une correspondance.
-      expect(rapide?.totalDurationMin).toBe(12);
-      expect(rapide?.segments).toHaveLength(2);
+      // Le plus rapide gagne 20 minutes, au prix d'une correspondance et de
+      // 2 500 mètres supplémentaires.
+      expect(rapide?.totalDurationMin).toBe(10);
+      expect(rapide?.totalDistanceM).toBe(6000);
       expect(rapide?.numberOfTransfers).toBe(1);
 
-      // Le plus direct est plus lent, mais d'un seul tenant : c'est
-      // exactement le compromis que ce critère doit rendre visible.
-      expect(direct?.totalDurationMin).toBe(30);
-      expect(direct?.segments).toHaveLength(1);
-      expect(direct?.numberOfTransfers).toBe(0);
+      // Le plus court parcourt moins de sol, et c'est SA SEULE PROMESSE :
+      // il ne prétend être ni plus rapide, ni plus propre.
+      expect(court?.totalDistanceM).toBe(3500);
+      expect(court?.totalDurationMin).toBe(30);
+      expect(court?.segments).toHaveLength(1);
+    });
+
+    it('NE SACRIFIE PAS 23 MINUTES POUR UN DIXIÈME DE GRAMME', async () => {
+      // ⚠️ TEST ÉCRIT APRÈS UNE MESURE SUR LE RÉSEAU RÉEL.
+      //
+      //     Esplanade → Neuhof, un jeudi matin
+      //     « le plus rapide »      1 changement
+      //     « le plus écologique »  6 changements, 23 minutes plus tard
+      //                             …pour 0,11 gramme de moins.
+      //
+      // Le classement était exact et la proposition indéfendable. Les
+      // émissions sont désormais comparées AU GRAMME — la précision des
+      // facteurs de la Base Carbone, et l'unité affichée à l'usager.
+      //
+      // Ici : A→C direct fait 3 000 m de bus ; A→B→C en fait 3 001. L'écart
+      // d'émissions est inférieur au gramme, et le détour ne doit donc pas
+      // ressortir comme « le plus écologique ».
+      const direct = segment(A.id, C.id, 'BUS', 3000, 10, 'bus-direct');
+      const detourA = segment(A.id, B.id, 'BUS', 1500, 2, 'bus-x');
+      const detourB = segment(B.id, C.id, 'BUS', 1499, 2, 'bus-y');
+
+      prisma.stop.findMany.mockResolvedValue([A, B, C]);
+      prisma.networkLink.findMany.mockResolvedValue([direct, detourA, detourB]);
+
+      const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+      const propre = result.find((i) => i.criterion === 'LOWEST_CO2');
+
+      // Le détour émet 0,11 g de moins (1 m de bus en moins), pour une
+      // correspondance de plus. Sous le gramme, il ne gagne pas.
+      expect(propre?.segments ?? []).not.toHaveLength(2);
+    });
+
+    it('N’INVENTE PAS un troisième trajet pour remplir trois cartes', async () => {
+      // Un seul chemin possible : les trois critères le désignent tous. La
+      // réponse doit en contenir UN, pas trois copies étiquetées différemment.
+      prisma.stop.findMany.mockResolvedValue([A, C]);
+      prisma.networkLink.findMany.mockResolvedValue([aVersC]);
+
+      const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+      expect(result).toHaveLength(1);
+      expect(result[0].criterion).toBe('FASTEST');
+    });
+
+    it('DISTINGUE deux trajets qui ne diffèrent QUE par la ligne empruntée', async () => {
+      // Homme de Fer → Broglie est desservi par le tram B ET le tram F. Ce
+      // sont DEUX rames différentes, deux fréquences, deux directions : les
+      // confondre supprimerait une alternative réelle.
+      //
+      // ⚠️ CE TEST A ÉTÉ ÉCRIT APRÈS AVOIR CONSTATÉ LE BUG. La signature de
+      // déduplication ne portait que sur les arrêts et le mode ; le second
+      // tram disparaissait silencieusement.
+      const parB = segment(A.id, C.id, 'TRAM', 3000, 9, 'tram-b');
+      const parF = segment(A.id, C.id, 'TRAM', 2000, 12, 'tram-f');
+
+      prisma.stop.findMany.mockResolvedValue([A, C]);
+      prisma.networkLink.findMany.mockResolvedValue([parB, parF]);
+
+      const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+      expect(result).toHaveLength(2);
+      expect(result[0].segments[0].lineId).toBe('tram-b');
+      expect(result[1].segments[0].lineId).toBe('tram-f');
+
+      // ⚠️ LE SECOND EST ÉTIQUETÉ « LOWEST_CO2 », PAS « SHORTEST », et c'est
+      // le comportement voulu : moins de mètres à mode égal, ce sont moins de
+      // grammes, donc le critère carbone désigne le même trajet et passe
+      // AVANT dans l'ordre d'insertion. La déduplication retire ensuite le
+      // doublon `SHORTEST`. L'usager voit deux cartes honnêtes, pas trois.
+      expect(result.map((i) => i.criterion)).toEqual(['FASTEST', 'LOWEST_CO2']);
     });
 
     it('ne compte PAS la marche comme un changement de ligne', async () => {
@@ -1487,6 +1592,9 @@ describe('RoutesService', () => {
         operator: 'Transdev',
         // Ajouté à l'étape 4E-3A.
         lineId: 'ligne-express',
+        // Phase 5 : l'identifiant du flux, seul moyen de rattacher une
+        // perturbation GTFS-RT à la ligne réellement empruntée.
+        gtfsLineId: null,
         distanceM: 3000,
         durationMin: 30,
         // Ajoutés en Phase 4 : la carte doit pouvoir tracer le trajet sans

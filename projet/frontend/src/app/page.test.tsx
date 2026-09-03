@@ -1,29 +1,131 @@
-import { describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import AccueilPage from "./page";
+import { LangueProvider } from "@/components/LangueProvider";
+import { AuthProvider } from "@/components/AuthProvider";
 
-// Racine du site (refonte mobilité).
+// =============================================================================
+// Page d'accueil (sprint soutenance)
+// =============================================================================
+// ⚠️ CES TESTS ONT REMPLACÉ CEUX D'UNE REDIRECTION. `/` renvoyait vers
+// `/recherche`, et deux tests vérifiaient précisément qu'aucune page de
+// présentation n'existait.
 //
-// `redirect()` de Next.js lève une exception de contrôle interne pour
-// interrompre le rendu : on le simule donc pour observer sa CIBLE, plutôt que
-// de faire échouer le test sur un mécanisme du framework.
-vi.mock("next/navigation", () => ({
-  redirect: vi.fn((chemin: string) => {
-    throw new Error(`REDIRECT:${chemin}`);
-  }),
+// Le raisonnement d'alors valait pour un usager HABITUÉ, et échouait pour tous
+// les autres : quelqu'un qui découvre l'application doit comprendre ce qu'elle
+// fait de plus qu'un plan de réseau. Voir l'en-tête de `page.tsx`.
+//
+// Ce que ces tests protègent maintenant, c'est l'argument que la redirection
+// avait raison de défendre : NE PAS METTRE D'ÉCRAN entre l'usager et sa
+// recherche. D'où le premier test.
+// =============================================================================
+
+vi.mock("@/lib/auth-api", () => ({
+  utilisateurCourant: vi.fn(),
+  connexion: vi.fn(),
+  inscription: vi.fn(),
 }));
 
-const { redirect } = await import("next/navigation");
-const { default: AccueilPage } = await import("./page");
+vi.mock("@/lib/territoire-api", () => ({ territoire: vi.fn() }));
+
+const { territoire } = await import("@/lib/territoire-api");
+
+const TERRITOIRE = {
+  name: "strasbourg",
+  displayName: "Eurométropole de Strasbourg",
+  country: "FR",
+  centerLat: 48.5834,
+  centerLon: 7.7452,
+  radiusM: 12_000,
+  timezone: "Europe/Paris",
+};
+
+const rendre = () =>
+  render(
+    <AuthProvider>
+      <LangueProvider>
+        <AccueilPage />
+      </LangueProvider>
+    </AuthProvider>,
+  );
 
 describe("/", () => {
-  it("redirige vers l'écran de recherche", () => {
-    expect(() => AccueilPage()).toThrow("REDIRECT:/recherche");
-    expect(redirect).toHaveBeenCalledWith("/recherche");
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.mocked(territoire).mockResolvedValue(TERRITOIRE);
   });
 
-  it("n'affiche AUCUNE page de présentation", () => {
-    // L'ancienne page listait quatre encadrés décrivant l'application.
-    // UrbanFlow est une application de mobilité, pas une plaquette : l'usager
-    // qui l'ouvre veut un itinéraire.
-    expect(() => AccueilPage()).toThrow(/REDIRECT/);
+  it("mène à la recherche en UN SEUL clic", () => {
+    rendre();
+
+    // ⚠️ LE TEST LE PLUS IMPORTANT. C'est la promesse que la redirection
+    // tenait : l'accueil ne doit pas coûter une étape supplémentaire à
+    // quelqu'un qui vient chercher un itinéraire.
+    const cta = screen.getByRole("link", { name: /chercher un itinéraire/i });
+
+    expect(cta.getAttribute("href")).toBe("/recherche");
+  });
+
+  it("mène aussi aux perturbations", () => {
+    rendre();
+
+    expect(
+      screen.getByRole("link", { name: /perturbations/i }).getAttribute("href"),
+    ).toBe("/perturbations");
+  });
+
+  it("NOMME LE TERRITOIRE, depuis l’API et non en dur", async () => {
+    rendre();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { level: 1 }).textContent,
+      ).toContain("Eurométropole de Strasbourg"),
+    );
+  });
+
+  it("N’ÉCRIT AUCUN NOM DE VILLE tant que le territoire est inconnu", () => {
+    // ⚠️ Un repli codé « Strasbourg » afficherait le mauvais nom une
+    // demi-seconde sur un déploiement lyonnais — et l'erreur passerait
+    // inaperçue en développement, où l'API répond instantanément.
+    rendre();
+
+    const titre = screen.getByRole("heading", { level: 1 }).textContent ?? "";
+
+    expect(titre).not.toMatch(/strasbourg/i);
+    expect(titre).toContain("votre métropole");
+  });
+
+  it("tient debout SANS l’API du territoire", async () => {
+    vi.mocked(territoire).mockRejectedValue(new Error("réseau injoignable"));
+
+    rendre();
+
+    // Aucune erreur affichée, et l'appel à l'action reste atteignable : une
+    // page d'accueil ne doit pas dépendre d'un appel réseau pour être
+    // utilisable.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("link", { name: /chercher un itinéraire/i }),
+      ).toBeDefined(),
+    );
+  });
+
+  it("annonce le carbone comme la promesse du produit", () => {
+    rendre();
+
+    // La section carbone existe et porte l'accent : c'est ce qui distingue
+    // UrbanFlow d'un plan de réseau. Sans elle, la page n'a plus d'objet.
+    expect(screen.getByText(/Le carbone, chiffré/i)).toBeDefined();
+  });
+
+  it("assume ce que le produit NE SAIT PAS", () => {
+    // Cette section engage le produit sur ses limites. La perdre au fil des
+    // refontes reviendrait à laisser croire que tout est connu.
+    expect(rendre).not.toThrow();
+
+    expect(
+      screen.getByRole("heading", { name: /ce que nous ne savons pas/i }),
+    ).toBeDefined();
   });
 });

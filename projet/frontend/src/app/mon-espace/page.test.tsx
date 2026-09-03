@@ -6,6 +6,7 @@ import { AuthProvider } from "@/components/AuthProvider";
 import { ApiError, NetworkError } from "@/lib/api";
 import { lireJeton } from "@/lib/auth-storage";
 import type { PaginatedRoutes, User, WeeklyCarbonBudget, WeeklyCarbonTracking } from "@/lib/types";
+import { LangueProvider } from "@/components/LangueProvider";
 
 // Le VRAI AuthProvider est utilisé, avec le VRAI localStorage de jsdom : c'est
 // lui qui décide de l'accès, et le simuler reviendrait à tester une
@@ -96,7 +97,9 @@ const TRAJETS: PaginatedRoutes = {
 const rendre = () =>
   render(
     <AuthProvider>
-      <MonEspacePage />
+      <LangueProvider>
+        <MonEspacePage />
+      </LangueProvider>
     </AuthProvider>,
   );
 

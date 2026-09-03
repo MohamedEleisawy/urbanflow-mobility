@@ -1,8 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RecherchePage from "./page";
 import { AuthProvider } from "@/components/AuthProvider";
+import { LangueProvider } from "@/components/LangueProvider";
 import { ApiError, NetworkError } from "@/lib/api";
 import type {
   FavoriteAddress,
@@ -21,6 +22,7 @@ import type {
 vi.mock("@/lib/itineraires-api", async (original) => ({
   ...(await original<typeof import("@/lib/itineraires-api")>()),
   listerArrets: vi.fn(),
+  modesDuReseau: vi.fn(),
   rechercherItineraires: vi.fn(),
   enregistrerItineraire: vi.fn(),
 }));
@@ -33,16 +35,48 @@ vi.mock("@/lib/itineraires-api", async (original) => ({
 //
 // Le remplaçant EXPOSE ses propriétés dans le DOM : c'est ainsi qu'on vérifie
 // ce que la page transmet réellement à la carte.
+/**
+ * Ce que la page a transmis en dernier au composant de carte.
+ *
+ * ⚠️ C'EST LA SEULE FAÇON D'ÉPROUVER LES INTERACTIONS DE CARTE dans jsdom :
+ * Leaflet ne s'y dessine pas, donc aucun clic réel n'est possible. On capture
+ * les rappels et on les déclenche à la main — ce qui teste exactement le
+ * contrat entre la page et la carte, et rien de Leaflet.
+ */
+let derniersProps: {
+  arrets: { id: string; nom: string; latitude: number; longitude: number }[];
+  onChoisirArret?: (arret: unknown, role: "depart" | "arrivee") => void;
+  onCentreDeplace?: (latitude: number, longitude: number) => void;
+  velib?: unknown[] | null;
+} = { arrets: [] };
+
+/// Simule un clic sur le n-ième arrêt dessiné, avec le rôle choisi.
+const cliquerArret = (index: number, role: "depart" | "arrivee") => {
+  act(() => {
+    derniersProps.onChoisirArret?.(derniersProps.arrets[index], role);
+  });
+};
+
+/// Simule un déplacement de la carte vers un nouveau centre.
+const deplacerLaCarte = (latitude: number, longitude: number) => {
+  act(() => {
+    derniersProps.onCentreDeplace?.(latitude, longitude);
+  });
+};
+
 vi.mock("@/components/CarteLeaflet", () => ({
-  default: ({
-    arrets,
-    trace,
-    troncons,
-  }: {
-    arrets: unknown[];
+  default: (props: {
+    arrets: { id: string; nom: string; latitude: number; longitude: number }[];
     trace: unknown[] | null;
     troncons?: unknown[] | null;
-  }) => (
+    onChoisirArret?: (arret: unknown, role: "depart" | "arrivee") => void;
+    onCentreDeplace?: (latitude: number, longitude: number) => void;
+    velib?: unknown[] | null;
+  }) => {
+    derniersProps = props;
+    const { arrets, trace, troncons, velib } = props;
+
+    return (
     <div
       data-testid="carte-leaflet"
       data-arrets={arrets.length}
@@ -62,8 +96,10 @@ vi.mock("@/components/CarteLeaflet", () => ({
               })
               .join("|")
       }
-    />
-  ),
+      data-velib={velib == null ? "aucun" : String(velib.length)}
+      />
+    );
+  },
 }));
 
 // Le routeur de Next : `useRouter` exige un contexte que jsdom n'a pas. On le
@@ -77,6 +113,10 @@ vi.mock("next/navigation", () => ({
 // Le VRAI AuthProvider est utilisé, avec le VRAI localStorage : c'est lui qui
 // décide si l'enregistrement est proposé.
 vi.mock("@/lib/geocoding-api", () => ({ rechercherAdresses: vi.fn() }));
+
+// Le client Vélib' : la couche est masquée par défaut, donc la plupart des
+// tests ne le déclenchent jamais. Un appel inattendu se verrait ici.
+vi.mock("@/lib/velib-api", () => ({ velibProches: vi.fn() }));
 
 vi.mock("@/lib/adresses-api", () => ({
   listerAdresses: vi.fn(),
@@ -99,9 +139,10 @@ vi.mock("@/lib/carbone-api", async (original) => ({
   estimerCarbone: vi.fn(),
 }));
 
-const { listerArrets, rechercherItineraires, enregistrerItineraire } =
+const { listerArrets, modesDuReseau, rechercherItineraires, enregistrerItineraire } =
   await import("@/lib/itineraires-api");
 const { estimerCarbone } = await import("@/lib/carbone-api");
+const { velibProches } = await import("@/lib/velib-api");
 const { utilisateurCourant } = await import("@/lib/auth-api");
 const { listerAdresses } = await import("@/lib/adresses-api");
 const { rechercherAdresses } = await import("@/lib/geocoding-api");
@@ -200,6 +241,7 @@ const RAPIDE: Itinerary = {
       lineName: "4",
       operator: "RATP",
       lineId: "ligne-4",
+      gtfsLineId: null,
       distanceM: 2800,
       durationMin: 9,
       // Tracé RÉEL : ce segment doit être dessiné en trait plein.
@@ -227,6 +269,7 @@ const RAPIDE: Itinerary = {
       lineName: "À pied",
       operator: "—",
       lineId: "ligne-marche",
+      gtfsLineId: null,
       distanceM: 1500,
       durationMin: 15,
       // Aucune géométrie publiée : droite, et l'interface doit le dire.
@@ -262,6 +305,7 @@ const PROPRE: Itinerary = {
       lineName: "38",
       operator: "RATP",
       lineId: "ligne-38",
+      gtfsLineId: null,
       distanceM: 3900,
       durationMin: 31,
       geometry: null,
@@ -273,10 +317,20 @@ const PROPRE: Itinerary = {
 /// Ancien nom, conservé pour ne pas réécrire des dizaines de tests.
 const COURT = PROPRE;
 
+/**
+ * ⚠️ `LangueProvider` DANS `AuthProvider`, comme dans la vraie mise en page :
+ * il lit la préférence de langue du compte. L'inverse ferait lire un profil
+ * absent, et le français par défaut masquerait le bogue.
+ *
+ * La langue par défaut restant le français, tous les tests écrits avant
+ * l'internationalisation continuent d'attendre les mêmes textes.
+ */
 const rendre = () =>
   render(
     <AuthProvider>
-      <RecherchePage />
+      <LangueProvider>
+        <RecherchePage />
+      </LangueProvider>
     </AuthProvider>,
   );
 
@@ -325,6 +379,16 @@ describe("/recherche", () => {
     // doivent se comporter exactement comme avant.
     vi.mocked(listerAdresses).mockResolvedValue([]);
     vi.mocked(rechercherAdresses).mockReset();
+    vi.mocked(velibProches).mockReset();
+    vi.mocked(modesDuReseau).mockReset();
+    // Le réseau de démonstration : du tram et du bus, comme la CTS.
+    vi.mocked(modesDuReseau).mockResolvedValue({
+      modes: [
+        { mode: "TRAM", lineCount: 6 },
+        { mode: "BUS", lineCount: 41 },
+        { mode: "WALK", lineCount: 1 },
+      ],
+    });
     // ⚠️ UNE PAGE, PAS UN TABLEAU (Phase 4) : `GET /api/stops` est borné.
     vi.mocked(listerArrets).mockResolvedValue({
       items: ARRETS.map((arret) => ({ ...arret, distanceM: null })),
@@ -533,9 +597,15 @@ describe("/recherche", () => {
       // ⚠️ Le titre d'une étape est la LIGNE, pas le couple d'arrêts : c'est
       // ce qu'on lit d'abord. « Métro 4 », jamais « METRO » (exigence 4E-2).
       expect(await screen.findByText("Métro 4")).toBeDefined();
+
+      // ⚠️ PORTÉE À LA ZONE DES RÉSULTATS. Le filtre de modes porte lui aussi
+      // un bouton « Marche » : chercher dans toute la page confondrait
+      // l'étape et le filtre.
+      const resultats = within(screen.getByRole("region", { name: /itinéraire/i }));
+
       // La marche n'a pas de numéro de ligne : « Marche À pied » n'aurait
       // aucun sens pour un usager.
-      expect(screen.getByText("Marche")).toBeDefined();
+      expect(resultats.getByText("Marche")).toBeDefined();
 
       // Le trajet du groupe reste lisible, avec son nombre d'arrêts.
       expect(screen.getByText(/Gare du Nord → Châtelet/)).toBeDefined();
@@ -825,8 +895,15 @@ describe("/recherche", () => {
     it("est présente dès le chargement, avant toute recherche", async () => {
       rendre();
 
-      expect(await screen.findByRole("heading", { name: /^carte$/i })).toBeDefined();
-      expect(screen.getByText(/lancez une recherche pour voir un trajet/i)).toBeDefined();
+      expect(
+        await screen.findByRole("heading", { name: /les arrêts autour de vous/i }),
+      ).toBeDefined();
+
+      // ⚠️ LA CARTE MONTRE QUELQUE CHOSE AVANT TOUTE RECHERCHE : les arrêts
+      // du voisinage, cliquables. C'est ce qui manquait — l'écran s'ouvrait
+      // sur un cadre vide.
+      expect(await screen.findByTestId("carte-leaflet")).toBeDefined();
+      expect(screen.getByText(/cliquez sur l'un d'eux/i)).toBeDefined();
     });
 
     it("ne dessine QUE les arrêts du trajet, jamais le réseau entier", async () => {
@@ -844,10 +921,66 @@ describe("/recherche", () => {
     it("ne trace RIEN tant qu'aucune recherche n'a eu lieu", async () => {
       rendre();
 
-      // Avant toute recherche il n'y a rien à montrer, et la carte le dit
-      // plutôt que d'afficher un fond vide sans explication.
-      expect(await screen.findByText(/aucun arrêt à afficher/i)).toBeDefined();
-      expect(screen.queryByTestId("carte-leaflet")).toBeNull();
+      // Les arrêts sont dessinés, mais aucun TRAJET ne l'est : il n'y en a
+      // pas encore.
+      await screen.findByTestId("carte-leaflet");
+      expect(traceAffiche()).toBe("aucun");
+    });
+
+    it("charge les arrêts AUTOUR du centre, jamais tout le réseau", async () => {
+      rendre();
+
+      await waitFor(() => expect(listerArrets).toHaveBeenCalled());
+
+      // ⚠️ `GET /api/stops` est borné : la carte demande un VOISINAGE. Sans
+      // `lat`/`lon`, elle retomberait sur un début d'alphabet sans rapport
+      // avec ce qu'elle montre.
+      expect(listerArrets).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lat: expect.any(Number),
+          lon: expect.any(Number),
+          radiusM: expect.any(Number),
+        }),
+      );
+    });
+
+    it("recharge les arrêts quand la carte est déplacée", async () => {
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+      await waitFor(() => expect(listerArrets).toHaveBeenCalledTimes(1));
+
+      // Le composant Leaflet simulé expose le rappel de déplacement.
+      deplacerLaCarte(45.75, 4.85);
+
+      await waitFor(() =>
+        expect(listerArrets).toHaveBeenCalledWith(
+          expect.objectContaining({ lat: 45.75, lon: 4.85 }),
+        ),
+      );
+    });
+
+    it("fait d'un arrêt cliqué la DESTINATION", async () => {
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+
+      cliquerArret(0, "arrivee");
+
+      // Le champ du formulaire porte le nom de l'arrêt : la carte n'impose
+      // jamais un point que le formulaire ne montrerait pas.
+      await waitFor(() =>
+        expect(screen.getByLabelText("Arrivée")).toHaveProperty("value", ARRETS[0].name),
+      );
+    });
+
+    it("fait d'un arrêt cliqué le DÉPART quand on le demande", async () => {
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+
+      cliquerArret(1, "depart");
+
+      await waitFor(() =>
+        expect(screen.getByLabelText("Départ")).toHaveProperty("value", ARRETS[1].name),
+      );
     });
 
     it("trace l'itinéraire retenu après une recherche", async () => {
@@ -1117,6 +1250,402 @@ describe("/recherche", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Couche Vélib' (Phase 5)
+  // ---------------------------------------------------------------------------
+  describe("vélos en libre-service", () => {
+    const STATION = {
+      stationId: "213688169",
+      stationCode: "16107",
+      name: "Lobau - Hôtel de Ville",
+      latitude: 48.8566,
+      longitude: 2.3522,
+      capacity: 55,
+      mechanical: 35,
+      electric: 0,
+      bikesAvailable: 35,
+      docksAvailable: 24,
+      isRenting: true,
+      isReturning: true,
+      isInstalled: true,
+      lastReported: "2026-09-02T21:50:00.000Z",
+      freshness: "REALTIME" as const,
+      distanceM: 88,
+    };
+
+    const reponse = (stations: (typeof STATION)[]) => ({
+      stations,
+      total: stations.length,
+      fetchedAt: "2026-09-02T21:54:28.893Z",
+      attribution: "Source : Vélib’ Métropole (Smovengo) — Licence Ouverte",
+    });
+
+    const activer = async () => {
+      const utilisateur = userEvent.setup();
+      await utilisateur.click(
+        await screen.findByRole("button", { name: /vélos en libre-service/i }),
+      );
+      return utilisateur;
+    };
+
+    it("ne charge RIEN tant que la couche est masquée", async () => {
+      rendre();
+
+      await screen.findByTestId("carte-leaflet");
+
+      // ⚠️ Charger 1 519 stations pour quelqu'un qui cherche un trajet en
+      // métro serait un appel inutile et une carte illisible.
+      expect(velibProches).not.toHaveBeenCalled();
+      expect(screen.getByTestId("carte-leaflet").getAttribute("data-velib")).toBe("aucun");
+    });
+
+    it("charge les stations AUTOUR du centre quand on active la couche", async () => {
+      vi.mocked(velibProches).mockResolvedValue(reponse([STATION]));
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+
+      await activer();
+
+      await waitFor(() =>
+        expect(velibProches).toHaveBeenCalledWith(
+          expect.any(Number),
+          expect.any(Number),
+          expect.objectContaining({ radiusM: expect.any(Number) }),
+          expect.anything(),
+        ),
+      );
+    });
+
+    it("dessine les stations et annonce l'heure du relevé", async () => {
+      vi.mocked(velibProches).mockResolvedValue(reponse([STATION]));
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+
+      await activer();
+
+      await waitFor(() =>
+        expect(screen.getByTestId("carte-leaflet").getAttribute("data-velib")).toBe("1"),
+      );
+      // ⚠️ La fraîcheur est TOUJOURS dite : sans elle, une donnée d'il y a une
+      // heure serait indiscernable d'une donnée de l'instant.
+      expect(screen.getByText(/relevé lu à/i)).toBeDefined();
+    });
+
+    it("affiche l'attribution imposée par la licence", async () => {
+      vi.mocked(velibProches).mockResolvedValue(reponse([STATION]));
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+
+      await activer();
+
+      // ⚠️ L'attribution vient du FLUX (`system_information.json`), pas du
+      // code : on vérifie qu'elle est affichée, sans présumer du nom de
+      // l'exploitant — il change avec le territoire.
+      expect(await screen.findByText(reponse([STATION]).attribution)).toBeDefined();
+    });
+
+    it("dit franchement qu'il n'y a aucune station ici", async () => {
+      vi.mocked(velibProches).mockResolvedValue(reponse([]));
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+
+      await activer();
+
+      expect(await screen.findByText(/aucune station de vélos/i)).toBeDefined();
+    });
+
+    it("annonce une panne du fournisseur SANS inventer de station", async () => {
+      vi.mocked(velibProches).mockRejectedValue(
+        new ApiError(503, "Les données Vélib’ sont momentanément indisponibles."),
+      );
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+
+      await activer();
+
+      expect(await screen.findByText(/données des vélos en libre-service indisponibles/i)).toBeDefined();
+      // La couche reste VIDE : aucune station fictive.
+      expect(screen.getByTestId("carte-leaflet").getAttribute("data-velib")).toBe("aucun");
+    });
+
+    it("masque la couche et cesse de charger quand on la désactive", async () => {
+      vi.mocked(velibProches).mockResolvedValue(reponse([STATION]));
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+
+      const utilisateur = await activer();
+      await waitFor(() =>
+        expect(screen.getByTestId("carte-leaflet").getAttribute("data-velib")).toBe("1"),
+      );
+
+      await utilisateur.click(screen.getByRole("button", { name: /vélos en libre-service/i }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("carte-leaflet").getAttribute("data-velib")).toBe("aucun"),
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Honnêteté sur la durée annoncée
+  // ---------------------------------------------------------------------------
+  describe("horaires et temps d'attente", () => {
+    // ⚠️ CE BLOC A ÉTÉ RÉÉCRIT AU SPRINT SOUTENANCE, et le changement mérite
+    // d'être expliqué.
+    //
+    // Il vérifiait auparavant qu'une PHRASE D'EXCUSE apparaissait dès qu'il y
+    // avait une correspondance : « durée hors temps d'attente ». Elle était
+    // honnête et impuissante — elle nommait un manque sans le combler.
+    //
+    // Depuis l'import du calendrier GTFS, l'attente est CONNUE. Ce qu'on
+    // vérifie n'est donc plus qu'on avertit d'un manque, mais qu'on affiche
+    // la bonne heure — et qu'on retombe sur la bonne phrase dans chacun des
+    // deux cas où l'horaire reste inconnu.
+
+    it("affiche l’HEURE D’ARRIVÉE, attente comprise", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        {
+          ...RAPIDE,
+          schedule: {
+            status: "SCHEDULE_AVAILABLE",
+            departureAt: "2026-09-03T06:00:00.000Z",
+            arrivalAt: "2026-09-03T06:25:00.000Z",
+            totalWaitMin: 7,
+            reason: null,
+          },
+        },
+      ]);
+      rendre();
+
+      await chercher();
+
+      // L'attente est DITE, et non fondue dans le total : un usager doit
+      // pouvoir savoir combien de temps il passera sur le quai.
+      expect(
+        await screen.findByText(/dont 7 min d’attente/i),
+      ).toBeDefined();
+    });
+
+    it("distingue « ces lignes ne passent pas » de « pas d’horaires »", async () => {
+      // ⚠️ LES DEUX PHRASES APPELLENT DEUX DÉCISIONS OPPOSÉES. « Aucun passage
+      // dans les prochaines heures » veut dire « ne partez pas maintenant » ;
+      // « les horaires ne sont pas importés » veut dire « nous n'en savons
+      // rien, le tram passe peut-être ». Les confondre est un mensonge par
+      // imprécision.
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        {
+          ...RAPIDE,
+          schedule: {
+            status: "SCHEDULE_UNKNOWN",
+            departureAt: null,
+            arrivalAt: null,
+            totalWaitMin: null,
+            reason: "Aucun passage prévu.",
+          },
+        },
+      ]);
+      rendre();
+
+      await chercher();
+
+      expect(
+        await screen.findByText(/aucun horaire n’est connu pour ces lignes/i),
+      ).toBeDefined();
+      expect(
+        screen.queryByText(/ne sont pas importés pour ce réseau/i),
+      ).toBeNull();
+    });
+
+    it("le dit quand le réseau n’a AUCUN horaire importé", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        {
+          ...RAPIDE,
+          schedule: {
+            status: "SCHEDULE_UNAVAILABLE",
+            departureAt: null,
+            arrivalAt: null,
+            totalWaitMin: null,
+            reason: "Aucun horaire importé.",
+          },
+        },
+      ]);
+      rendre();
+
+      await chercher();
+
+      expect(
+        await screen.findByText(/ne sont pas importés pour ce réseau/i),
+      ).toBeDefined();
+    });
+
+    it("N’AFFICHE AUCUNE HEURE quand le backend n’en fournit pas", async () => {
+      // Un itinéraire relu depuis l'historique n'a pas de champ `schedule` :
+      // il décrit un trajet passé, dont l'attente n'a plus de sens. Le bloc
+      // doit alors se taire, et surtout ne pas inventer « arrivée à ».
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+      await screen.findByText("Le plus rapide");
+
+      expect(screen.queryByText(/arrivée prévue/i)).toBeNull();
+      expect(screen.queryByText(/horaire/i)).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Filtres de modes (Phase 7)
+  // ---------------------------------------------------------------------------
+  describe("filtres de modes", () => {
+    it("n'affiche AUCUN filtre avant une recherche", async () => {
+      rendre();
+
+      await screen.findByRole("heading", { name: /rechercher un itinéraire/i });
+
+      // Des boutons de filtre sans rien à filtrer seraient du bruit.
+      expect(screen.queryByRole("heading", { name: /modes de transport/i })).toBeNull();
+    });
+
+    it("propose les modes RÉELLEMENT présents dans le réseau", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      // Le réseau simulé porte tram, bus et marche.
+      expect(await screen.findByRole("button", { name: "Tram" })).toBeDefined();
+      expect(screen.getByRole("button", { name: "Bus" })).toBeDefined();
+    });
+
+    it("N’OFFRE AUCUN BOUTON pour un mode absent du réseau", async () => {
+      // ⚠️ CE TEST A ÉTÉ INVERSÉ AU SPRINT SOUTENANCE. Il vérifiait
+      // auparavant qu'un bouton GRISÉ portait son motif. À l'usage, sur
+      // l'Eurométropole, cela donnait quatre boutons gris sur six — l'usager
+      // y lisait une application à moitié cassée.
+      //
+      // Les modes absents sont donc passés dans un repli explicatif, avec
+      // leur motif. Ce que ce test protège, c'est qu'ils ne sont ni proposés
+      // comme filtres, ni effacés en silence.
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+      await screen.findByRole("button", { name: /bus/i });
+
+      expect(
+        screen.queryByRole("button", { name: /^🚇 Métro$/ }),
+      ).toBeNull();
+    });
+
+    it("DIT POURQUOI un mode absent l’est, sans le masquer", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      // Le repli est fermé, mais son contenu est dans le DOM : c'est ce qui
+      // permet à un lecteur d'écran de le parcourir, et à cette assertion de
+      // le trouver.
+      // `findAllByText` : le réseau simulé n'a ni métro ni train, et chacun
+      // porte le même motif. Un `findByText` échouerait sur l'ambiguïté — et
+      // pour la bonne raison, ce qui est la pire façon d'échouer.
+      expect(
+        (await screen.findAllByText(/n’existe pas sur le réseau de ce territoire/i))
+          .length,
+      ).toBeGreaterThan(0);
+    });
+
+    it("EXPLIQUE que le vélo attend un routeur, pas une ligne", async () => {
+      // ⚠️ DEUX MANQUES DIFFÉRENTS, DEUX PHRASES DIFFÉRENTES. Le métro
+      // n'existe pas sur ce territoire ; le vélo existerait si un routeur
+      // cyclable était configuré. Le même gris les confondait.
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      expect(
+        await screen.findByText(/routage détaillé n’est pas configuré/i),
+      ).toBeDefined();
+    });
+
+    it("MASQUE les itinéraires qui empruntent un mode écarté", async () => {
+      // RAPIDE emprunte le métro ; PROPRE le bus.
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE, PROPRE]);
+      vi.mocked(modesDuReseau).mockResolvedValue({
+        modes: [
+          { mode: "METRO", lineCount: 4 },
+          { mode: "BUS", lineCount: 41 },
+          { mode: "WALK", lineCount: 1 },
+        ],
+      });
+      rendre();
+
+      const utilisateur = await chercher();
+      await screen.findByText("Le plus rapide");
+
+      await utilisateur.click(screen.getByRole("button", { name: "Bus" }));
+
+      await waitFor(() =>
+        expect(screen.queryByText("Le plus écologique")).toBeNull(),
+      );
+      // L'autre reste : le filtre masque, il ne vide pas.
+      expect(screen.getByText("Le plus rapide")).toBeDefined();
+    });
+
+    it("N’OFFRE PAS D’ÉCARTER LA MARCHE — elle est inécartable", async () => {
+      // ⚠️ La marche relie l'origine à l'arrêt et l'arrêt à la destination :
+      // tout itinéraire en comporte, et l'exclure viderait la liste quoi
+      // qu'on choisisse.
+      //
+      // La version précédente affichait un bouton « Marche » GRISÉ, ce qui
+      // laissait croire à une panne. Elle figure désormais dans le repli
+      // explicatif, avec sa vraie raison — qui n'est pas une indisponibilité.
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+      await screen.findByText("Le plus rapide");
+
+      expect(screen.queryByRole("button", { name: /^🚶 Marche$/ })).toBeNull();
+      expect(
+        screen.getByText(/fait partie de tout itinéraire/i),
+      ).toBeDefined();
+    });
+
+    it("distingue « rien trouvé » de « tout masqué »", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([PROPRE]);
+      vi.mocked(modesDuReseau).mockResolvedValue({
+        modes: [
+          { mode: "BUS", lineCount: 41 },
+          { mode: "WALK", lineCount: 1 },
+        ],
+      });
+      rendre();
+
+      const utilisateur = await chercher();
+      await screen.findByText("Le plus écologique");
+
+      await utilisateur.click(screen.getByRole("button", { name: "Bus" }));
+
+      // ⚠️ DEUX VIDES, DEUX GESTES OPPOSÉS : reformuler la recherche, ou
+      // réactiver un mode. Les confondre ferait chercher un trajet qui
+      // existe déjà.
+      expect(await screen.findByText(/réactivez-en un/i)).toBeDefined();
+    });
+
+    it("dit ce que le filtre fait RÉELLEMENT", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      // Sans cette phrase, décocher « Bus » laisserait attendre de meilleures
+      // propositions sans bus, qui ne viendront pas.
+      expect(await screen.findByText(/ne relancent pas la recherche/i)).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Passage au détail du trajet
   // ---------------------------------------------------------------------------
   describe("voir le trajet", () => {
@@ -1132,7 +1661,7 @@ describe("/recherche", () => {
 
       await utilisateur.click(
         await screen.findByRole("button", {
-          name: /voir le trajet le plus écologique en détail/i,
+          name: /voir le trajet — le plus écologique/i,
         }),
       );
 
@@ -1153,7 +1682,7 @@ describe("/recherche", () => {
       const utilisateur = await chercher();
 
       await utilisateur.click(
-        await screen.findByRole("button", { name: /voir le trajet le plus rapide en détail/i }),
+        await screen.findByRole("button", { name: /voir le trajet — le plus rapide/i }),
       );
 
       const memorise = JSON.parse(
@@ -1174,10 +1703,10 @@ describe("/recherche", () => {
       // Trois boutons « Voir le trajet » identiques seraient indistinguables
       // au lecteur d'écran : chacun porte le nom de SON critère.
       expect(
-        await screen.findByRole("button", { name: /voir le trajet le plus rapide en détail/i }),
+        await screen.findByRole("button", { name: /voir le trajet — le plus rapide/i }),
       ).toBeDefined();
       expect(
-        screen.getByRole("button", { name: /voir le trajet le plus écologique en détail/i }),
+        screen.getByRole("button", { name: /voir le trajet — le plus écologique/i }),
       ).toBeDefined();
     });
   });
@@ -2014,6 +2543,7 @@ describe("/recherche", () => {
         lineName: "8",
         operator: "RATP",
         lineId: "ligne-8",
+        gtfsLineId: null,
         distanceM: 800,
         durationMin: 2,
         geometry: null,

@@ -39,9 +39,22 @@ enum ThemeEnum {
   SYSTEM
 }
 
+/// Langues de l'interface.
+///
+/// ⚠️ `ES` AJOUTÉ EN PHASE 5, et c'est la SEULE raison de cette migration.
+/// Le dossier de conception ne nomme que le français ; l'anglais existait
+/// déjà. L'espagnol est demandé par le cahier des charges du sprint final.
+///
+/// Une valeur d'enum PostgreSQL ne peut pas être ajoutée par une simple mise
+/// à jour de données : il faut un `ALTER TYPE`. C'est donc l'un des rares cas
+/// où une migration est réellement nécessaire, et non un confort.
+///
+/// Les DTO n'ont RIEN à changer : ils valident par `@IsEnum(LanguageEnum)`,
+/// qui suit le schéma.
 enum LanguageEnum {
   FR
   EN
+  ES
 }
 
 /// Type d'adresse favorite (bloc 7).
@@ -297,6 +310,9 @@ model Stop {
   linksFrom NetworkLink[] @relation("LinkFromStop")
   linksTo   NetworkLink[] @relation("LinkToStop")
 
+  // Passages théoriques à cet arrêt (sprint soutenance).
+  departures StopDeparture[] @relation("StopDepartures")
+
   @@map("stops")
 }
 
@@ -334,7 +350,8 @@ model TransitLine {
   /// Exploitant de la ligne (agency.txt).
   operator String
 
-  links NetworkLink[]
+  links      NetworkLink[]
+  departures StopDeparture[]
 
   @@map("transit_lines")
 }
@@ -538,4 +555,149 @@ model Alert {
   gtfsAlertId String @unique
 
   @@map("alerts")
+}
+
+// -----------------------------------------------------------------------------
+// Calendrier de service et horaires de passage (sprint soutenance)
+// -----------------------------------------------------------------------------
+// ═══ LE MENSONGE QUE CES TROIS TABLES SUPPRIMENT ═══
+//
+// Jusqu'ici, le modèle ne connaissait que des DURÉES TYPIQUES : « le tram D
+// relie Gare Centrale à Homme de Fer en 4 minutes ». C'était une règle de
+// réseau, sans aucune notion de temps.
+//
+// Deux conséquences, toutes deux visibles à l'écran :
+//
+//   1. La durée annoncée EXCLUAIT L'ATTENTE. « 12 min » pour un trajet qui en
+//      demande 20 un dimanche soir, parce que le bus passe toutes les heures.
+//
+//   2. Les lignes de NUIT étaient proposées EN PLEIN JOUR. Le graphe ne savait
+//      pas que leur service n'était pas actif : la ligne existait, donc elle
+//      était empruntable. Un usager envoyé à 14 h vers un arrêt desservi
+//      uniquement entre 0 h 30 et 5 h aurait attendu longtemps.
+//
+// ═══ POURQUOI CES DONNÉES NE VONT PAS DANS `NetworkLink` ═══
+//
+// `NetworkLink` est une RÈGLE, sans propriétaire ni horaire — c'est ce qui
+// garantit qu'aucune donnée personnelle ne peut fuiter par la recherche
+// publique. Y ajouter 710 000 horaires détruirait à la fois son unicité
+// `(lineId, fromStopId, toStopId)` et sa lisibilité.
+//
+// `StopDeparture` est donc une table SÉPARÉE et, comme `NetworkLink`, sans
+// aucune colonne `userId` : elle décrit le réseau, jamais quelqu'un.
+// -----------------------------------------------------------------------------
+
+/// Un service au sens GTFS : « du lundi au vendredi, du 31/08 au 26/02 ».
+///
+/// Correspond à une ligne de `calendar.txt`. Le flux de la CTS en publie 78 —
+/// semaine, samedi, dimanche, vacances scolaires, jours fériés.
+model TransitService {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// `service_id` du flux, PRÉFIXÉ par le code exploitant.
+  ///
+  /// ⚠️ LE PRÉFIXE N'EST PAS DÉCORATIF. Deux réseaux importés côte à côte
+  /// publient des `service_id` qui se ressemblent (« Semaine », « 1 ») ;
+  /// sans préfixe, l'import du second écraserait les services du premier.
+  /// C'est la même convention que `gtfsStopId` et `gtfsRouteId`.
+  gtfsServiceId String @unique
+
+  /// Jours de la semaine desservis, du lundi au dimanche.
+  ///
+  /// SEPT BOOLÉENS ET NON UN MASQUE BINAIRE : `monday` se lit dans une
+  /// requête SQL et dans une inspection de base ; `days & 1` ne se lit nulle
+  /// part. Le gain d'octets serait de six par ligne, sur 78 lignes.
+  monday    Boolean
+  tuesday   Boolean
+  wednesday Boolean
+  thursday  Boolean
+  friday    Boolean
+  saturday  Boolean
+  sunday    Boolean
+
+  /// Période de validité, bornes INCLUSES (c'est la règle GTFS).
+  ///
+  /// `@db.Date` et non `DateTime` complet : un service commence un JOUR, pas
+  /// à un instant. Stocker une heure inviterait un décalage de fuseau à
+  /// faire basculer une date d'un jour.
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+
+  exceptions TransitServiceException[]
+  departures StopDeparture[]
+
+  @@map("transit_services")
+}
+
+/// Une exception au calendrier : jour férié retiré, dimanche exceptionnel
+/// ajouté. Correspond à `calendar_dates.txt`.
+///
+/// ⚠️ SANS ELLES, LE CALENDRIER EST FAUX LES JOURS OÙ ÇA COMPTE LE PLUS.
+/// Le 1er mai, le 25 décembre, le 14 juillet : précisément les jours où un
+/// usager vérifie ses horaires. Le flux de la CTS en publie 1 071.
+model TransitServiceException {
+  id String @id @default(uuid()) @db.Uuid
+
+  service   TransitService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  serviceId String         @db.Uuid
+
+  date DateTime @db.Date
+
+  /// `true` = service ajouté ce jour-là (exception_type 1)
+  /// `false` = service retiré ce jour-là (exception_type 2)
+  ///
+  /// UN BOOLÉEN ET NON L'ENTIER GTFS : « added » se comprend sans la
+  /// spécification sous les yeux, « exceptionType: 2 » non.
+  added Boolean
+
+  /// Une exception par service et par date : réimporter le flux met à jour
+  /// au lieu d'empiler.
+  @@unique([serviceId, date])
+  @@map("transit_service_exceptions")
+}
+
+/// Un passage théorique : « la ligne D part de Homme de Fer à 08:42, les
+/// jours où le service Semaine est actif ».
+///
+/// Correspond à une ligne de `stop_times.txt`, jointe à son `trip`.
+///
+/// ═══ POURQUOI ON NE STOCKE QUE LE DÉPART ═══
+///
+/// `stop_times.txt` porte une heure d'arrivée ET une heure de départ. Elles
+/// sont identiques sur l'immense majorité des arrêts urbains, et seule
+/// l'heure de DÉPART répond à la question posée : « dans combien de temps
+/// puis-je monter ? ». Stocker les deux doublerait le volume pour rien.
+model StopDeparture {
+  id String @id @default(uuid()) @db.Uuid
+
+  line   TransitLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  lineId String      @db.Uuid
+
+  stop   Stop   @relation("StopDepartures", fields: [stopId], references: [id], onDelete: Cascade)
+  stopId String @db.Uuid
+
+  service   TransitService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  serviceId String         @db.Uuid
+
+  /// Heure de départ, en SECONDES DEPUIS MINUIT du jour de service.
+  ///
+  /// ⚠️ PEUT DÉPASSER 86 400, ET CE N'EST PAS UNE ERREUR. GTFS écrit
+  /// « 25:10:00 » pour un passage à 1 h 10 du matin appartenant encore au
+  /// service de la veille — c'est ainsi qu'un service de nuit reste d'un
+  /// seul tenant. Un `@db.Time` refuserait la valeur ; un entier l'accepte
+  /// et rend l'arithmétique triviale.
+  departureSec Int
+
+  /// Destination affichée en girouette (`trip_headsign`), quand le flux la
+  /// donne. C'est ce qui distingue les deux sens d'une même ligne à l'écran.
+  headsign String?
+
+  /// L'index qui porte la requête « prochains passages à cet arrêt ».
+  ///
+  /// `(stopId, departureSec)` et non `(stopId)` seul : la requête filtre sur
+  /// l'arrêt PUIS ordonne par heure. Sans la seconde colonne, PostgreSQL
+  /// trierait en mémoire les quelques centaines de passages quotidiens d'un
+  /// arrêt — à chaque appel.
+  @@index([stopId, departureSec])
+  @@map("stop_departures")
 }

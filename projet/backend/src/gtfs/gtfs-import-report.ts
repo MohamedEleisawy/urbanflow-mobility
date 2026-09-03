@@ -18,7 +18,13 @@ export type GtfsFileName =
   /// simplement des compteurs à zéro, jamais une erreur.
   | 'shapes'
   /// Ajouté Phase 1 (correspondances). Facultatif comme `shapes`.
-  | 'transfers';
+  | 'transfers'
+  /// Ajoutés au sprint soutenance. Facultatifs tous les deux : la
+  /// spécification autorise un flux à décrire son calendrier par l'un OU
+  /// l'autre. Leur absence conjointe, en revanche, prive le produit des
+  /// prochains passages — et l'interface le dit alors explicitement.
+  | 'calendar'
+  | 'calendarDates';
 
 /// Motifs pour lesquels une ligne est INVALIDE (donnée inexploitable).
 export type GtfsIgnoreReason =
@@ -33,7 +39,11 @@ export type GtfsIgnoreReason =
   /// périmètre demandé. Ce n'est PAS une anomalie — d'où un motif distinct,
   /// pour qu'un tracé hors périmètre ne se confonde pas dans le bilan avec
   /// une donnée réellement inexploitable.
-  | 'outOfScope';
+  | 'outOfScope'
+  /// Ajouté au sprint soutenance : la ligne est lisible mais porte une
+  /// valeur que la spécification ne définit pas (`exception_type: 7`), ou
+  /// contradictoire (une fin de validité antérieure au début).
+  | 'invalidValue';
 
 /// Motifs pour lesquels une ligne est CORRECTE mais volontairement écartée.
 /// À distinguer des précédents : il n'y a rien à corriger dans le flux.
@@ -75,6 +85,8 @@ export class GtfsImportReport {
     shapes: compteursVides(),
     transfers: compteursVides(),
     stopTimes: compteursVides(),
+    calendar: compteursVides(),
+    calendarDates: compteursVides(),
   };
 
   readonly errors: Record<GtfsIgnoreReason, number> = {
@@ -86,6 +98,7 @@ export class GtfsImportReport {
     unknownTrip: 0,
     unknownRoute: 0,
     outOfScope: 0,
+    invalidValue: 0,
   };
 
   readonly filtered: Record<GtfsFilterReason, number> = {

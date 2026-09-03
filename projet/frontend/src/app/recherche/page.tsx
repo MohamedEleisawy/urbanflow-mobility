@@ -12,9 +12,15 @@ import { Spinner } from "@/components/Spinner";
 import { messageDErreur } from "@/lib/api";
 import {
   arretsDItineraire,
+  CENTRE_DEFAUT,
+  pointDepuisArret,
   tronconsDItineraire,
+  type PointCarte,
   type TronconTrace,
 } from "@/lib/carte";
+import type { RoleArret } from "@/components/CarteLeaflet";
+import { velibProches, type VelibStation } from "@/lib/velib-api";
+import { territoire, type Territoire } from "@/lib/territoire-api";
 import { ErreurGeolocalisation, positionActuelle, type Coordonnees } from "@/lib/geolocalisation";
 import { listerAdresses } from "@/lib/adresses-api";
 import { regrouperSegments, resumerModes, type GroupeEtapes } from "@/lib/itineraire";
@@ -24,13 +30,30 @@ import type { FavoriteAddress, FavoriteAddressType } from "@/lib/types";
 import {
   enregistrerItineraire,
   listerArrets,
+  modesDuReseau,
   rechercherItineraires,
   versRequeteEnregistrement,
 } from "@/lib/itineraires-api";
+import { FiltresModes } from "@/components/FiltresModes";
+import { capacites, type Capacites } from "@/lib/capacites-api";
 import { useAuth } from "@/components/AuthProvider";
+import { useTraduction } from "@/components/LangueProvider";
+import type { Textes } from "@/lib/i18n/dictionnaire";
 import { ButtonLink } from "@/components/Button";
-import { formaterCo2, formaterDistance, formaterDuree, LIBELLES_MODES } from "@/lib/format";
-import type { Itinerary, ItineraryCarbon, ItineraryCriterion, Stop } from "@/lib/types";
+import {
+  formaterCo2,
+  formaterDistance,
+  formaterDuree,
+  formaterHeure,
+  LIBELLES_MODES,
+} from "@/lib/format";
+import type {
+  Itinerary,
+  ItineraryCarbon,
+  ItineraryCriterion,
+  Stop,
+  TransportMode,
+} from "@/lib/types";
 
 // =============================================================================
 // Recherche d'itinéraire (étape 5A-5, UC01)
@@ -68,6 +91,36 @@ const POSITION = "__ma-position__";
  * nature — un arrêt, sa position, ou son domicile.
  */
 const PREFIXE_ADRESSE = "adresse:";
+
+/**
+ * Rayon des arrêts chargés autour du centre de la carte, en mètres.
+ *
+ * ⚠️ IL FAUT UN RAYON, ET NON « TOUS LES ARRÊTS ». `GET /api/stops` est borné
+ * depuis la Phase 4 : le réseau compte 1 934 arrêts aujourd'hui et en comptera
+ * plus de 35 000 avec le bus. La carte montre donc ce qui entoure ce qu'on
+ * regarde, et se recharge quand on la déplace.
+ *
+ * 1 500 m couvre largement la vue par défaut sans ramener un pâté d'arrêts
+ * illisible ; le backend plafonne de toute façon à 5 km.
+ */
+const RAYON_CARTE_M = 1500;
+
+/**
+ * Délai d'inactivité après un déplacement de carte avant de recharger.
+ *
+ * Un glissement produit un `moveend` par relâchement, mais un usager qui
+ * explore en enchaîne plusieurs par seconde. Sans ce délai, chacun
+ * déclencherait une requête dont la réponse arriverait déjà périmée.
+ */
+const DELAI_RECHARGEMENT_MS = 400;
+
+/**
+ * Rayon des stations Vélib' chargées autour du centre de la carte.
+ *
+ * Plus serré que celui des arrêts : le réseau compte 1 519 stations, bien plus
+ * denses que les gares. 800 m couvre un quartier sans noyer la carte.
+ */
+const RAYON_VELIB_M = 800;
 
 /// Libellés français des deux emplacements. `HOME` ne se montre pas.
 const LIBELLES_ADRESSES: Record<FavoriteAddressType, string> = {
@@ -110,6 +163,126 @@ export default function RecherchePage() {
    */
   const [adressesFav, setAdressesFav] = useState<FavoriteAddress[]>([]);
   const [arrets, setArrets] = useState<Stop[] | null>(null);
+
+  /**
+   * Centre courant de la carte. Il commande le chargement des arrêts affichés.
+   *
+   * Initialisé sur `CENTRE_DEFAUT` : la carte doit montrer quelque chose AVANT
+   * toute recherche et sans demander la position de l'usager — une invite de
+   * permission au chargement est une invite qu'on refuse par réflexe.
+   */
+  const [centreCarte, setCentreCarte] = useState({
+    latitude: CENTRE_DEFAUT[0],
+    longitude: CENTRE_DEFAUT[1],
+  });
+
+  /**
+   * Le territoire desservi, ou `null` tant qu'on ne le sait pas.
+   *
+   * ⚠️ IL COMMANDE LE CENTRE DE LA CARTE. Sans lui, celle-ci s'ouvrirait sur
+   * une ville codée en dur — le défaut que ce recadrage corrige.
+   */
+  const [zone, setZone] = useState<Territoire | null>(null);
+
+  /**
+   * Modes présents dans le réseau, ou `null` tant qu'on ne les connaît pas.
+   *
+   * ⚠️ VIENT DU BACKEND, jamais de l'enum. `TransportMode` compte huit
+   * valeurs ; le réseau chargé n'en a peut-être que deux.
+   */
+  const [modesReseau, setModesReseau] = useState<TransportMode[] | null>(null);
+
+  /**
+   * Ce que cette installation sait faire, ou `null` tant qu'on l'ignore.
+   *
+   * ⚠️ DISTINCT DES MODES DU RÉSEAU, et il faut le garder distinct. Le tram
+   * dépend du GTFS importé ; le vélo dépend d'un routeur cyclable configuré.
+   * Les confondre ferait apparaître un filtre vélo parce que le tram circule.
+   */
+  const [capacitesInstallation, setCapacites] = useState<Capacites | null>(
+    null,
+  );
+
+  useEffect(() => {
+    const controleur = new AbortController();
+
+    capacites(controleur.signal)
+      .then(setCapacites)
+      .catch(() => {
+        // Silencieux, et surtout PAS OPTIMISTE : `null` est traité comme
+        // « rien n'est configuré ». Un échec réseau ne doit jamais faire
+        // apparaître un filtre dont la source est absente.
+      });
+
+    return () => controleur.abort();
+  }, []);
+
+  /**
+   * Modes que l'usager a écartés.
+   *
+   * ⚠️ UN FILTRE D'AFFICHAGE, PAS UN CRITÈRE DE RECHERCHE. Il masque des
+   * itinéraires DÉJÀ calculés — il ne relance rien. Le dire est indispensable :
+   * sans cela, décocher « Bus » laisserait attendre de meilleures propositions
+   * sans bus, qui ne viendront pas.
+   */
+  const [modesExclus, setModesExclus] = useState<ReadonlySet<TransportMode>>(
+    new Set(),
+  );
+
+  useEffect(() => {
+    const controleur = new AbortController();
+
+    modesDuReseau(controleur.signal)
+      .then((reponse) => setModesReseau(reponse.modes.map((m) => m.mode)))
+      .catch(() => {
+        // Silencieux : sans cette liste, les filtres ne s'affichent pas. Un
+        // message d'erreur pour une commodité n'apprendrait rien.
+      });
+
+    return () => controleur.abort();
+  }, []);
+
+  useEffect(() => {
+    const controleur = new AbortController();
+
+    territoire(controleur.signal)
+      .then((trouve) => {
+        setZone(trouve);
+        setCentreCarte({
+          latitude: trouve.centerLat,
+          longitude: trouve.centerLon,
+        });
+      })
+      .catch(() => {
+        // Silencieux : la carte reste sur son repli, et l'usager peut la
+        // déplacer. Un message d'erreur pour un centrage n'apprendrait rien.
+      });
+
+    return () => controleur.abort();
+  }, []);
+
+  /**
+   * Couche Vélib' : masquée par défaut.
+   *
+   * ⚠️ MASQUÉE, ET C'EST DÉLIBÉRÉ. Charger 1 519 stations pour quelqu'un qui
+   * cherche un trajet en métro serait un appel réseau inutile et une carte
+   * illisible. La couche s'affiche sur demande, comme un calque.
+   */
+  const [velibVisible, setVelibVisible] = useState(false);
+
+  /**
+   * Sort du chargement Vélib'.
+   *
+   * Quatre états DISTINCTS, parce qu'ils appellent quatre réponses
+   * différentes : ne rien afficher, patienter, montrer les stations, ou dire
+   * franchement que le fournisseur est indisponible.
+   */
+  const [velib, setVelib] = useState<
+    | { statut: "masque" }
+    | { statut: "chargement" }
+    | { statut: "ok"; stations: VelibStation[]; luA: string; attribution: string }
+    | { statut: "echec"; message: string }
+  >({ statut: "masque" });
   const [erreurArrets, setErreurArrets] = useState<string | null>(null);
 
   /**
@@ -193,8 +366,34 @@ export default function RecherchePage() {
   // Dérivée, jamais stockée : un état « sélection » et un état « résultats »
   // qui se contrediraient laisseraient la carte afficher un trajet absent de
   // la liste.
+  /**
+   * Les itinéraires réellement affichés, après filtrage par mode.
+   *
+   * ⚠️ UN ITINÉRAIRE EST ÉCARTÉ DÈS QU'IL EMPRUNTE UN MODE EXCLU — et non
+   * seulement s'il n'emprunte QUE des modes exclus. Quelqu'un qui refuse le bus
+   * refuse un trajet qui en comporte, même partiellement.
+   *
+   * ⚠️ LA MARCHE NE FAIT JAMAIS ÉCARTER. Tout itinéraire de transport en
+   * comporte — rejoindre l'arrêt, en sortir — et l'exclure viderait la liste
+   * quoi qu'on choisisse.
+   */
+  const resultatsAffiches = useMemo(() => {
+    if (!resultats || modesExclus.size === 0) {
+      return resultats;
+    }
+
+    return resultats.filter((itineraire) =>
+      itineraire.segments.every(
+        (segment) =>
+          segment.mode === "WALK" || !modesExclus.has(segment.mode),
+      ),
+    );
+  }, [resultats, modesExclus]);
+
   const selectionne =
-    resultats?.find((itineraire) => itineraire.criterion === selection) ?? resultats?.[0] ?? null;
+    resultatsAffiches?.find((itineraire) => itineraire.criterion === selection) ??
+    resultatsAffiches?.[0] ??
+    null;
 
   // Les arrêts DU TRAJET, et eux seuls : on ne dessine plus le réseau entier
   // en fond. Avant une recherche, la carte est simplement vide.
@@ -210,6 +409,42 @@ export default function RecherchePage() {
     () => (selectionne ? tronconsDItineraire(selectionne.segments) : null),
     [selectionne],
   );
+
+  /**
+   * Ce que la carte dessine en fond.
+   *
+   * Les arrêts du TRAJET quand il y en a un — ils sont alors mis en avant et
+   * le reste du réseau n'apporterait que du bruit. Sinon les arrêts alentour,
+   * pour que la carte montre quelque chose et reste cliquable dès l'arrivée
+   * sur la page.
+   */
+  const pointsCarte = useMemo(
+    () => trace ?? (arrets ?? []).map(pointDepuisArret),
+    [trace, arrets],
+  );
+
+  /**
+   * L'usager a cliqué sur un arrêt de la carte.
+   *
+   * ⚠️ CE POINT VAUT EXACTEMENT COMME UNE ADRESSE SAISIE : il porte un
+   * libellé et des coordonnées RÉELLES, et il remplit le champ correspondant.
+   * Il n'existe donc aucun chemin où la carte imposerait un départ que le
+   * formulaire ne montrerait pas.
+   */
+  const choisirDepuisLaCarte = (point: PointCarte, role: RoleArret) => {
+    const choisi = {
+      label: point.nom,
+      latitude: point.latitude,
+      longitude: point.longitude,
+      origine: "arret" as const,
+    };
+
+    if (role === "depart") {
+      poserDepart(choisi);
+    } else {
+      setArrivee(choisi);
+    }
+  };
 
   /**
    * Demande la position, et NE LA DEMANDE QU'À CE MOMENT.
@@ -276,6 +511,7 @@ export default function RecherchePage() {
       origine: "favori",
     });
 
+  const { t } = useTraduction();
   const routeur = useRouter();
 
   const idDepart = useId();
@@ -286,24 +522,83 @@ export default function RecherchePage() {
   useEffect(() => {
     let abandonne = false;
 
-    // ⚠️ UNE PAGE, PAS LE RÉSEAU (Phase 4). `GET /api/stops` est borné : cette
-    // liste alimente le sélecteur d'appoint replié, qui annonce lui-même
-    // n'être qu'un début d'alphabet. La saisie d'adresse reste l'entrée
-    // principale, et la carte n'a plus besoin d'aucun arrêt pour dessiner.
-    listerArrets({ limit: 200 })
-      .then((page) => {
-        if (abandonne) return;
-        setArrets(page.items);
+    // ⚠️ LES ARRÊTS AUTOUR DU CENTRE, PAS LE RÉSEAU (Phase 4).
+    //
+    // `GET /api/stops` est borné : on demande le VOISINAGE de ce que la carte
+    // montre. Se déplacer recharge donc la liste, et le sélecteur replié comme
+    // la carte affichent les mêmes arrêts — ceux qui sont sous les yeux.
+    //
+    // Le délai évite qu'un glissement continu ne produise une rafale de
+    // requêtes dont les réponses arriveraient dans le désordre.
+    const minuterie = setTimeout(() => {
+      listerArrets({
+        lat: centreCarte.latitude,
+        lon: centreCarte.longitude,
+        radiusM: RAYON_CARTE_M,
+        limit: 200,
       })
-      .catch((echec: unknown) => {
-        if (abandonne) return;
-        setErreurArrets(messageDErreur(echec));
-      });
+        .then((page) => {
+          if (abandonne) return;
+          setArrets(page.items);
+          setErreurArrets(null);
+        })
+        .catch((echec: unknown) => {
+          if (abandonne) return;
+          setErreurArrets(messageDErreur(echec));
+        });
+    }, DELAI_RECHARGEMENT_MS);
 
     return () => {
       abandonne = true;
+      clearTimeout(minuterie);
     };
-  }, []);
+  }, [centreCarte]);
+
+  // --- Stations Vélib', autour du centre de la carte (Phase 5) --------------
+  //
+  // ⚠️ MÊME DÉLAI QUE LES ARRÊTS, et pour la même raison : un glissement
+  // continu déclencherait sinon une requête par relâchement.
+  useEffect(() => {
+    if (!velibVisible) {
+      setVelib({ statut: "masque" });
+      return;
+    }
+
+    let abandonne = false;
+    const controleur = new AbortController();
+
+    setVelib({ statut: "chargement" });
+
+    const minuterie = setTimeout(() => {
+      velibProches(
+        centreCarte.latitude,
+        centreCarte.longitude,
+        { radiusM: RAYON_VELIB_M, limit: 300 },
+        controleur.signal,
+      )
+        .then((reponse) => {
+          if (abandonne) return;
+          setVelib({
+            statut: "ok",
+            stations: reponse.stations,
+            luA: reponse.fetchedAt,
+            attribution: reponse.attribution,
+          });
+        })
+        .catch((echec: unknown) => {
+          // Une requête annulée n'est pas un échec : l'usager a simplement
+          // déplacé la carte avant la fin.
+          if (abandonne || controleur.signal.aborted) return;
+          setVelib({ statut: "echec", message: messageDErreur(echec) });
+        });
+    }, DELAI_RECHARGEMENT_MS);
+
+    return () => {
+      abandonne = true;
+      controleur.abort();
+      clearTimeout(minuterie);
+    };
+  }, [velibVisible, centreCarte]);
 
   // ⚠️ IL N'Y A PLUS D'APPEL CARBONE ICI (Phase 4).
   //
@@ -471,12 +766,18 @@ export default function RecherchePage() {
     <Container>
       <section className="py-10 sm:py-14">
         <h1 className="text-ink text-2xl font-semibold tracking-tight sm:text-3xl">
-          Rechercher un itinéraire
+          {t.rechercheTitre}
         </h1>
-        <p className="mt-3 max-w-2xl text-neutral-700">
-          Choisissez un point de départ et une destination pour comparer le trajet le plus rapide,
-          le plus direct et le moins émetteur.
-        </p>
+        <p className="mt-3 max-w-2xl text-neutral-700">{t.rechercheIntro}</p>
+
+        {/* Le territoire est NOMMÉ, jamais supposé. Un usager doit savoir quel
+            réseau l'application connaît avant de s'étonner qu'une adresse
+            lointaine ne rende rien. */}
+        {zone && (
+          <p className="mt-1 text-sm text-neutral-600">
+            <span aria-hidden="true">📍</span> {zone.displayName}
+          </p>
+        )}
 
         <div className="mt-8 space-y-8">
           {erreurArrets ? (
@@ -489,8 +790,8 @@ export default function RecherchePage() {
                 <div className="grid gap-5 sm:grid-cols-2">
                   <div>
                     <ChampAdresse
-                      libelle="Départ"
-                      placeholder="D'où partez-vous ?"
+                      libelle={t.depart}
+                      placeholder={t.departPlaceholder}
                       valeur={depart}
                       onChoisir={poserDepart}
                       actions={
@@ -499,7 +800,7 @@ export default function RecherchePage() {
                               l'expérience principale, mais rien de ce qui
                               existait n'a disparu. */}
                           <BoutonSecondaire onClick={utiliserMaPosition}>
-                            Ma position
+                            {t.maPosition}
                           </BoutonSecondaire>
                           {adressesFav.map((favori) => (
                             <BoutonSecondaire
@@ -516,8 +817,8 @@ export default function RecherchePage() {
                   </div>
 
                   <ChampAdresse
-                    libelle="Arrivée"
-                    placeholder="Où allez-vous ?"
+                    libelle={t.arrivee}
+                    placeholder={t.arriveePlaceholder}
                     valeur={arrivee}
                     onChoisir={setArrivee}
                     actions={adressesFav.map((favori) => (
@@ -541,12 +842,12 @@ export default function RecherchePage() {
                       Choisir directement un arrêt du réseau
                     </summary>
                     {/* ⚠️ CE N'EST PLUS TOUT LE RÉSEAU (Phase 4). `GET
-                        /api/stops` est désormais borné : cette liste montre
-                        les premiers arrêts par ordre alphabétique, et le dit.
-                        La saisie d'adresse reste l'entrée principale. */}
+                        /api/stops` est borné : cette liste montre les arrêts
+                        du VOISINAGE de la carte, les mêmes que ceux qu'elle
+                        dessine. Déplacer la carte la met à jour. */}
                     <p className="mt-2 text-xs text-neutral-600">
-                      Les {arrets.length} premiers arrêts, par ordre alphabétique. Pour un lieu
-                      précis, utilisez la recherche d&apos;adresse ci-dessus.
+                      Les {arrets.length} arrêts affichés sur la carte, du plus proche de son
+                      centre au plus éloigné. Déplacez la carte pour en voir d&apos;autres.
                     </p>
                     <div className="mt-3 grid gap-4 sm:grid-cols-2">
                       <ChoixArret
@@ -571,7 +872,7 @@ export default function RecherchePage() {
                     lecteur d'écran l'annonce en atteignant l'un ou l'autre. */}
                 {memeArret && (
                   <p id={idErreur} role="alert" className="text-sm text-red-800">
-                    Le départ et l&apos;arrivée doivent être différents.
+                    {t.memePoint}
                   </p>
                 )}
 
@@ -583,7 +884,7 @@ export default function RecherchePage() {
                   disabled={!peutChercher || recherche}
                   className="w-full sm:w-auto"
                 >
-                  {recherche ? "Recherche en cours…" : "Rechercher"}
+                  {recherche ? t.rechercheEnCours : t.rechercher}
                 </Button>
               </form>
             </Card>
@@ -593,16 +894,53 @@ export default function RecherchePage() {
               elle situe le réseau avant toute recherche, puis le trajet
               retenu. Elle reste un complément — les étapes détaillées, en
               dessous, se lisent sans elle. */}
-          <Carte
-            titre={selectionne ? "Le trajet retenu sur la carte" : "Carte"}
-            description={descriptionCarte(selectionne, troncons)}
-            arrets={trace ?? []}
-            trace={trace}
-            troncons={troncons}
-          />
+          <div className="space-y-3">
+            <CoucheVelib
+              visible={velibVisible}
+              onBasculer={() => setVelibVisible((actuel) => !actuel)}
+              etat={velib}
+            />
+
+            <Carte
+              titre={
+                selectionne ? "Le trajet retenu sur la carte" : "Les arrêts autour de vous"
+              }
+              description={descriptionCarte(selectionne, troncons, pointsCarte.length, t)}
+              arrets={pointsCarte}
+              trace={trace}
+              troncons={troncons}
+              onChoisirArret={choisirDepuisLaCarte}
+              onCentreDeplace={(latitude, longitude) =>
+                setCentreCarte({ latitude, longitude })
+              }
+              velib={velib.statut === "ok" ? velib.stations : null}
+            />
+          </div>
+
+          {resultats !== null && (
+            <FiltresModes
+              disponibles={modesReseau}
+              capacites={capacitesInstallation}
+              exclus={modesExclus}
+              onBasculer={(mode) =>
+                setModesExclus((actuels) => {
+                  const suivants = new Set(actuels);
+
+                  if (suivants.has(mode)) {
+                    suivants.delete(mode);
+                  } else {
+                    suivants.add(mode);
+                  }
+
+                  return suivants;
+                })
+              }
+            />
+          )}
 
           <Resultats
-            resultats={resultats}
+            resultats={resultatsAffiches}
+            filtreActif={modesExclus.size > 0}
             selection={selectionne?.criterion ?? null}
             onSelectionner={setSelection}
             recherche={recherche}
@@ -615,6 +953,86 @@ export default function RecherchePage() {
         </div>
       </section>
     </Container>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Couche Vélib' (Phase 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Interrupteur de la couche Vélib', et son état.
+ *
+ * ⚠️ QUATRE ÉTATS, JAMAIS CONFONDUS. « masqué », « en cours », « affiché » et
+ * « indisponible » appellent quatre réponses différentes de l'usager. Les
+ * fondre en un seul booléen laisserait quelqu'un devant une carte sans
+ * stations sans savoir s'il doit attendre, réessayer, ou conclure qu'il n'y en
+ * a aucune.
+ *
+ * ⚠️ AUCUNE STATION INVENTÉE en cas de panne : on le dit, et la couche reste
+ * vide.
+ */
+function CoucheVelib({
+  visible,
+  onBasculer,
+  etat,
+}: {
+  visible: boolean;
+  onBasculer: () => void;
+  etat:
+    | { statut: "masque" }
+    | { statut: "chargement" }
+    | { statut: "ok"; stations: VelibStation[]; luA: string; attribution: string }
+    | { statut: "echec"; message: string };
+}) {
+  const { t } = useTraduction();
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      {/* `aria-pressed` : c'est un INTERRUPTEUR, pas une navigation. Un
+          lecteur d'écran annonce donc « activé » — l'information ne repose pas
+          seulement sur la couleur du bouton. */}
+      <button
+        type="button"
+        aria-pressed={visible}
+        onClick={onBasculer}
+        className={`rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+          visible
+            ? "border-eco bg-eco text-white"
+            : "text-ink border-neutral-300 bg-white hover:bg-neutral-50"
+        }`}
+      >
+        <span aria-hidden="true">🚲</span> {t.stationsVelib}
+      </button>
+
+      {/* `role="status"` : le résultat arrive de façon asynchrone après un
+          geste de l'usager. Sans zone d'état, un lecteur d'écran ne saurait
+          jamais que les stations sont arrivées — ni qu'elles manquent. */}
+      <p role="status" className="text-sm text-neutral-700">
+        {etat.statut === "chargement" && t.velibChargement}
+
+        {etat.statut === "ok" &&
+          (etat.stations.length === 0
+            ? t.velibAucune
+            : `${etat.stations.length} station${
+                etat.stations.length > 1 ? "s" : ""
+              } Vélib’ · relevé lu à ${new Date(etat.luA).toLocaleTimeString("fr-FR", {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}`)}
+
+        {etat.statut === "echec" && (
+          <>
+            <span className="font-medium">{t.velibIndisponible}</span> {etat.message}
+          </>
+        )}
+      </p>
+
+      {/* Attribution imposée par la licence du fournisseur. */}
+      {etat.statut === "ok" && etat.stations.length > 0 && (
+        <p className="w-full text-xs text-neutral-500">{etat.attribution}</p>
+      )}
+    </div>
   );
 }
 
@@ -711,6 +1129,7 @@ function ChoixArret({
 
 function Resultats({
   resultats,
+  filtreActif,
   recherche,
   erreur,
   enregistrements,
@@ -721,6 +1140,8 @@ function Resultats({
   onSelectionner,
 }: {
   resultats: Itinerary[] | null;
+  /** Vrai si l'usager a écarté au moins un mode. */
+  filtreActif: boolean;
   recherche: boolean;
   erreur: string | null;
   enregistrements: Partial<Record<ItineraryCriterion, EtatEnregistrement>>;
@@ -730,8 +1151,10 @@ function Resultats({
   selection: ItineraryCriterion | null;
   onSelectionner: (critere: ItineraryCriterion) => void;
 }) {
+  const { t } = useTraduction();
+
   if (recherche) {
-    return <Spinner label="Recherche d'itinéraires…" />;
+    return <Spinner label={t.rechercheIndicateur} />;
   }
 
   if (erreur) {
@@ -745,10 +1168,16 @@ function Resultats({
   }
 
   if (resultats.length === 0) {
+    // ⚠️ DEUX VIDES DIFFÉRENTS, DEUX MESSAGES DIFFÉRENTS. « Le réseau n'offre
+    // rien » et « vos filtres ont tout masqué » appellent deux gestes
+    // opposés : reformuler la recherche, ou réactiver un mode. Les confondre
+    // ferait chercher un trajet qui existe déjà.
     return (
       <EmptyState
-        title="Aucun itinéraire trouvé"
-        description="Le réseau ne propose pas de trajet entre ces deux points. Essayez deux arrêts plus proches l'un de l'autre, ou desservis par une même ligne."
+        title={t.aucunItineraire}
+        description={
+          filtreActif ? t.aucunItineraireApresFiltre : t.aucunItineraireDetail
+        }
       />
     );
   }
@@ -761,9 +1190,16 @@ function Resultats({
           : `${resultats.length} itinéraires proposés`}
       </h2>
 
-      <ul className="mt-4 space-y-4">
+      {/* ⚠️ `uf-cascade` DÉCALE L'APPARITION DES TROIS CARTES de 60 ms. Trois
+          cartes qui apparaissent exactement ensemble se lisent comme un seul
+          bloc ; décalées, l'œil les compte. C'est une aide à la lecture, pas
+          un effet.
+
+          Les deux classes sont définies dans `globals.css`, sans aucune
+          bibliothèque, et sont neutralisées par `prefers-reduced-motion`. */}
+      <ul className="uf-cascade mt-4 space-y-4">
         {resultats.map((itineraire) => (
-          <li key={itineraire.criterion}>
+          <li key={itineraire.criterion} className="uf-apparait">
             <ItineraireCarte
               itineraire={itineraire}
               // La référence de comparaison est TOUJOURS le plus rapide :
@@ -794,18 +1230,86 @@ function Resultats({
  * trajet, le backend ne le rend qu'une fois — sous le premier de cette liste.
  * L'interface n'affiche donc que ce qu'elle reçoit.
  */
-const CRITERES: Record<ItineraryCriterion, string> = {
-  FASTEST: "Le plus rapide",
-  FEWEST_TRANSFERS: "Le moins de changements",
-  LOWEST_CO2: "Le plus écologique",
-};
+const criteres = (t: Textes): Record<ItineraryCriterion, string> => ({
+  FASTEST: t.critereFastest,
+  SHORTEST: t.critereShortest,
+  FEWEST_TRANSFERS: t.critereFewestTransfers,
+  LOWEST_CO2: t.critereLowestCo2,
+});
 
 /// Ce que chaque critère promet, en une phrase.
-const EXPLICATIONS: Record<ItineraryCriterion, string> = {
-  FASTEST: "Le trajet le plus court en temps, tous modes confondus.",
-  FEWEST_TRANSFERS: "Le moins de correspondances — la marche n'en est pas une.",
-  LOWEST_CO2: "Le trajet le moins émetteur parmi ceux réellement praticables.",
-};
+const explications = (t: Textes): Record<ItineraryCriterion, string> => ({
+  FASTEST: t.explicationFastest,
+  SHORTEST: t.explicationShortest,
+  FEWEST_TRANSFERS: t.explicationFewestTransfers,
+  LOWEST_CO2: t.explicationLowestCo2,
+});
+
+/**
+ * L'heure d'arrivée réelle, attente comprise — ou la raison de son absence.
+ *
+ * ═══ CE QUE CE BLOC A REMPLACÉ ═══
+ *
+ * Une phrase fixe : « la durée n'inclut pas le temps d'attente ». Elle était
+ * honnête et impuissante — elle nommait un manque sans le combler, et
+ * laissait l'usager faire le calcul lui-même sans lui en donner les moyens.
+ *
+ * Depuis l'import du calendrier GTFS, l'attente est CONNUE : le backend
+ * cherche le prochain passage de chaque ligne empruntée et fait courir une
+ * horloge le long du trajet. La phrase d'excuse ne subsiste donc que dans les
+ * deux cas où elle reste vraie.
+ *
+ * ═══ LES TROIS CAS, ET TROIS PHRASES DIFFÉRENTES ═══
+ *
+ *   `SCHEDULE_AVAILABLE`    → l'heure d'arrivée, et l'attente qu'elle inclut
+ *   `SCHEDULE_UNKNOWN`      → ces lignes ne passent pas dans la fenêtre
+ *   `SCHEDULE_UNAVAILABLE`  → ce réseau n'a pas d'horaires importés
+ *
+ * ⚠️ LES CONFONDRE SERAIT UN MENSONGE PAR IMPRÉCISION. « Pas de passage
+ * aujourd'hui » et « nous ne connaissons pas les horaires » appellent deux
+ * décisions opposées de la part de quelqu'un qui s'apprête à partir.
+ */
+function Horaires({ itineraire }: { itineraire: Itinerary }) {
+  const { t } = useTraduction();
+  const horaire = itineraire.schedule;
+
+  // Un itinéraire relu depuis l'historique n'a pas d'horaires : il décrit un
+  // trajet passé, dont l'attente n'a plus de sens.
+  if (!horaire) {
+    return null;
+  }
+
+  if (horaire.status === "SCHEDULE_AVAILABLE" && horaire.arrivalAt) {
+    const attente = horaire.totalWaitMin;
+
+    return (
+      <p className="mt-2 flex flex-wrap items-baseline gap-x-2 text-sm">
+        <span className="text-neutral-600">{t.arriveePrevue}</span>
+        {/* ⚠️ L'HEURE D'ARRIVÉE EST LA SEULE VALEUR QUI RÉPOND À LA QUESTION
+            POSÉE. `totalDurationMin`, affiché plus haut, ne compte que le
+            temps de parcours : lire « 12 min » et arriver 25 minutes plus
+            tard n'est pas être mal informé, c'est être trompé. D'où le poids
+            typographique, égal à celui de la durée. */}
+        <span className="text-ink font-semibold">
+          {formaterHeure(horaire.arrivalAt)}
+        </span>
+        <span className="text-xs text-neutral-500">
+          {attente === null || attente === 0
+            ? t.attenteSansAttente
+            : t.attenteTotale.replace("{n}", String(attente))}
+        </span>
+      </p>
+    );
+  }
+
+  return (
+    <p className="mt-2 text-xs text-neutral-500">
+      {horaire.status === "SCHEDULE_UNAVAILABLE"
+        ? t.horaireNonImporte
+        : t.horaireIndisponible}
+    </p>
+  );
+}
 
 function ItineraireCarte({
   itineraire,
@@ -827,6 +1331,10 @@ function ItineraireCarte({
   selectionne: boolean;
   onSelectionner: (critere: ItineraryCriterion) => void;
 }) {
+  const { t } = useTraduction();
+  const CRITERES = criteres(t);
+  const EXPLICATIONS = explications(t);
+
   // Le regroupement est une pure LECTURE des segments : aucune donnée n'est
   // inventée, seulement présentée autrement. Le détail reste accessible.
   const groupes = regrouperSegments(itineraire.segments);
@@ -842,13 +1350,19 @@ function ItineraireCarte({
     <Card>
       <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="text-ink font-semibold">{CRITERES[itineraire.criterion]}</h3>
+          {/* ⚠️ `text-brand` (#1E3A5F) ET NON `text-ink`. La charte réserve le
+              bleu de marque à ce qui identifie — ligne, mode, critère — et
+              l'encre neutre au corps de texte. Sur `#F5F5F5`, le rapport de
+              contraste est de 10,5:1, soit AAA. */}
+          <h3 className="text-brand text-base font-semibold">
+            {CRITERES[itineraire.criterion]}
+          </h3>
           {itineraire.criterion === "LOWEST_CO2" && (
             // Le badge n'apparaît QUE sur le critère écologique, et seulement
             // quand le backend l'a effectivement proposé — donc jamais sur un
             // trajet qui n'a été comparé à rien.
             <span className="bg-eco/10 text-eco rounded-full px-2.5 py-0.5 text-xs font-semibold">
-              🌱 Meilleur pour le climat
+              {t.badgeClimat}
             </span>
           )}
         </div>
@@ -856,12 +1370,14 @@ function ItineraireCarte({
           <span className="text-ink font-medium">{formaterDuree(itineraire.totalDurationMin)}</span>{" "}
           · {formaterDistance(itineraire.totalDistanceM)} ·{" "}
           {changements === 0
-            ? "sans changement"
-            : `${changements} changement${changements > 1 ? "s" : ""}`}
+            ? t.sansChangement
+            : `${changements} ${t.changements.toLowerCase()}`}
         </p>
       </div>
 
       <p className="mt-1 text-sm text-neutral-600">{EXPLICATIONS[itineraire.criterion]}</p>
+
+      <Horaires itineraire={itineraire} />
 
       <Compromis itineraire={itineraire} reference={reference} />
 
@@ -895,9 +1411,9 @@ function ItineraireCarte({
           // Le libellé nomme l'itinéraire : trois boutons « Voir le trajet »
           // identiques sur la même page seraient indistinguables au lecteur
           // d'écran.
-          aria-label={`Voir le trajet ${CRITERES[itineraire.criterion].toLowerCase()} en détail`}
+          aria-label={`${t.voirLeTrajet} — ${CRITERES[itineraire.criterion]}`}
         >
-          Voir le trajet
+          {t.voirLeTrajet}
         </Button>
 
         <button
@@ -1015,13 +1531,15 @@ function Compromis({
  * indiscernables.
  */
 function Carbone({ carbone }: { carbone: ItineraryCarbon }) {
+  const { t } = useTraduction();
+
   if (carbone.status === "CARBON_UNAVAILABLE") {
     return (
       <p className="text-sm text-neutral-700">
         {/* Ni rouge alarmant ni silence : l'itinéraire reste valable, c'est
             seulement son empreinte qui manque. Le texte porte l'information,
             pas la couleur. */}
-        <span className="font-medium">Empreinte carbone indisponible.</span>{" "}
+        <span className="font-medium">{t.carboneIndisponible}</span>{" "}
         {carbone.reason ?? ""}
       </p>
     );
@@ -1043,15 +1561,19 @@ function Carbone({ carbone }: { carbone: ItineraryCarbon }) {
   return (
     <dl className="grid gap-4 sm:grid-cols-3">
       <div>
-        <dt className="text-sm text-neutral-600">CO₂ émis</dt>
-        <dd className="text-ink mt-0.5 font-semibold">{formaterCo2(co2Grams)}</dd>
+        <dt className="text-sm text-neutral-600">{t.co2Emis}</dt>
+        {/* ⚠️ LE VERT ÉCO (#2D7D46) SUR TOUT CE QUI TOUCHE AU CARBONE, y
+            compris les émissions elles-mêmes — pas seulement les gains. C'est
+            l'identité du produit : le chiffre qui compte doit se repérer d'un
+            coup d'œil. 5,08:1 sur blanc, soit AA. */}
+        <dd className="text-eco mt-0.5 font-semibold">{formaterCo2(co2Grams)}</dd>
       </div>
       <div>
-        <dt className="text-sm text-neutral-600">Économisé vs voiture</dt>
+        <dt className="text-sm text-neutral-600">{t.co2Economise}</dt>
         <dd className="text-eco mt-0.5 font-semibold">{formaterCo2(savedVsCarGrams)}</dd>
       </div>
       <div>
-        <dt className="text-sm text-neutral-600">Éco-score</dt>
+        <dt className="text-sm text-neutral-600">{t.ecoScore}</dt>
         <dd className="text-eco mt-0.5 font-semibold">
           {/* Le score est calculé par le MICROSERVICE, pas ici : c'est le
               pourcentage d'émissions évitées par rapport à la voiture
@@ -1096,6 +1618,9 @@ function Enregistrement({
   peutEnregistrer: boolean;
   onEnregistrer: (itineraire: Itinerary) => void;
 }) {
+  const { t } = useTraduction();
+  const CRITERES = criteres(t);
+
   if (!peutEnregistrer) {
     return (
       <div className="flex flex-wrap items-center gap-3">
@@ -1179,9 +1704,19 @@ function Enregistrement({
 function descriptionCarte(
   selectionne: Itinerary | null,
   troncons: readonly TronconTrace[] | null,
+  nombreArrets: number,
+  t: Textes,
 ): string {
+  const CRITERES = criteres(t);
+
   if (!selectionne || !troncons || troncons.length === 0) {
-    return "Lancez une recherche pour voir un trajet sur la carte.";
+    if (nombreArrets === 0) {
+      return "Aucun arrêt dans cette zone. Déplacez la carte pour en voir d'autres.";
+    }
+
+    return `${nombreArrets} ${
+      nombreArrets === 1 ? "arrêt est affiché" : "arrêts sont affichés"
+    } autour du centre de la carte. Cliquez sur l'un d'eux pour en faire votre départ ou votre destination ; déplacez la carte pour en voir d'autres.`;
   }
 
   const etapes = selectionne.segments.length;

@@ -18,6 +18,7 @@ import type {
   PaginatedStops,
   RouteSegment,
   SearchItineraryRequest,
+  TransportMode,
 } from "./types";
 
 /**
@@ -255,4 +256,25 @@ export function supprimerTrajet(jeton: string, id: string): Promise<void> {
     method: "DELETE",
     token: jeton,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Modes réellement présents dans le réseau (Phase 7)
+// ---------------------------------------------------------------------------
+
+export interface NetworkMode {
+  mode: TransportMode;
+  /** Nombre de lignes de ce mode. Un mode absent n'est pas dans la liste. */
+  lineCount: number;
+}
+
+/**
+ * Les modes que le réseau CHARGÉ contient réellement.
+ *
+ * ⚠️ L'ENUM N'EST PAS LE RÉSEAU. `TransportMode` compte huit valeurs ; le flux
+ * de la CTS n'en apporte que deux. Afficher un filtre par valeur d'enum
+ * proposerait de filtrer sur un mode qui ne rendra jamais rien.
+ */
+export function modesDuReseau(signal?: AbortSignal): Promise<{ modes: NetworkMode[] }> {
+  return apiFetch<{ modes: NetworkMode[] }>("/stops/modes", { signal });
 }

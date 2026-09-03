@@ -9,6 +9,7 @@ import { GtfsImportReport } from './gtfs-import-report';
 import { describeRouteType, mapRouteType } from './route-type.mapping';
 import { NetworkBuilderService } from './network-builder.service';
 import { GtfsSourceService } from './gtfs-source.service';
+import { ScheduleImportService } from './schedule-import.service';
 
 /**
  * Import du RÉFÉRENTIEL GTFS : les arrêts et les lignes (étape 4C-4-3).
@@ -39,6 +40,7 @@ export class GtfsImportService {
     private readonly reader: GtfsReaderService,
     private readonly networkBuilder: NetworkBuilderService,
     private readonly sourceService: GtfsSourceService,
+    private readonly scheduleImport: ScheduleImportService,
   ) {}
 
   /**
@@ -94,7 +96,7 @@ export class GtfsImportService {
     // L'ordre est imposé par les dépendances : les liaisons référencent des
     // arrêts et des lignes, qui doivent donc exister d'abord.
     await this.importStops(folder, operatorCode, report);
-    await this.importLines(folder, report, modes);
+    await this.importLines(folder, report, operatorCode, modes);
     await this.networkBuilder.buildNetwork(folder, report);
 
     // ⚠️ L'ORDRE DES DEUX ÉTAPES SUIVANTES EST CRITIQUE, et il a été corrigé
@@ -113,6 +115,12 @@ export class GtfsImportService {
     // Les correspondances relient les quais entre eux : sans elles, chaque
     // ligne forme un chemin ISOLÉ et aucun changement n'est possible.
     await this.importTransfers(folder, report);
+
+    // ⚠️ EN DERNIER, ET CE N'EST PAS ARBITRAIRE. Les passages référencent des
+    // lignes ET des arrêts : ils doivent être écrits APRÈS l'élagage, sinon
+    // un arrêt supprimé emporterait ses passages en cascade, et l'on aurait
+    // lu 710 000 lignes pour rien.
+    await this.scheduleImport.importSchedules(folder, operatorCode, report);
 
     // Le bilan est journalisé, jamais silencieux : c'est la seule façon de
     // savoir ce qu'un flux réel contenait vraiment.
@@ -157,6 +165,7 @@ export class GtfsImportService {
   private async importLines(
     folder: string,
     report: GtfsImportReport,
+    operatorCode: string,
     modes?: ReadonlySet<ModeTransport>,
   ): Promise<void> {
     const chemin = join(folder, 'routes.txt');
@@ -188,7 +197,18 @@ export class GtfsImportService {
       const donnees = {
         name: this.nomDeLigne(ligne.shortName, ligne.longName, ligne.routeId),
         mode,
-        operator: ligne.agencyId,
+        // ⚠️ REPLI SUR LE CODE D'EXPLOITANT DONNÉ EN ARGUMENT.
+        //
+        // `agency_id` est FACULTATIF dans `routes.txt` : la spécification GTFS
+        // permet de l'omettre quand `agency.txt` ne décrit qu'une seule
+        // agence, puisqu'il n'y a alors aucune ambiguïté. C'est le cas du flux
+        // de la CTS, dont `routes.txt` ne porte pas cette colonne du tout.
+        //
+        // Sans ce repli, toutes ses lignes arrivaient avec un exploitant VIDE,
+        // et l'interface affichait « Tram A » sans savoir qui l'exploite. Le
+        // code passé en argument (`npm run gtfs:import -- <source> CTS`) sert
+        // précisément à cela — il alimentait déjà les arrêts.
+        operator: ligne.agencyId || operatorCode,
       };
 
       await this.prisma.transitLine.upsert({

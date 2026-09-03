@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { ButtonLink } from "@/components/Button";
 import { Card } from "@/components/Card";
@@ -8,8 +8,16 @@ import { Carte } from "@/components/Carte";
 import { Container } from "@/components/Container";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
+import { useTraduction } from "@/components/LangueProvider";
+import type { Textes } from "@/lib/i18n/dictionnaire";
 import { arretsDItineraire, tronconsDItineraire } from "@/lib/carte";
-import { formaterCo2, formaterDistance, formaterDuree, LIBELLES_MODES } from "@/lib/format";
+import {
+  formaterCo2,
+  formaterDistance,
+  formaterDuree,
+  formaterHeure,
+  LIBELLES_MODES,
+} from "@/lib/format";
 import { regrouperSegments, type GroupeEtapes } from "@/lib/itineraire";
 import {
   analyserSelection,
@@ -18,7 +26,9 @@ import {
   souscrireSelection,
   type SelectionItineraire,
 } from "@/lib/itineraire-selection";
-import type { ItineraryCarbon, ItineraryCriterion } from "@/lib/types";
+import type { Alert, ItineraryCarbon, ItineraryCriterion } from "@/lib/types";
+import { listerAlertes } from "@/lib/alertes-api";
+import { alertesDeLItineraire, type AlerteItineraire } from "@/lib/alertes-itineraire";
 
 // =============================================================================
 // Le trajet retenu, en détail (Phase 4)
@@ -36,11 +46,12 @@ import type { ItineraryCarbon, ItineraryCriterion } from "@/lib/types";
 // =============================================================================
 
 /// Libellés des critères — les mêmes que sur l'écran de recherche.
-const CRITERES: Record<ItineraryCriterion, string> = {
-  FASTEST: "Le plus rapide",
-  FEWEST_TRANSFERS: "Le moins de changements",
-  LOWEST_CO2: "Le plus écologique",
-};
+const criteres = (t: Textes): Record<ItineraryCriterion, string> => ({
+  FASTEST: t.critereFastest,
+  SHORTEST: t.critereShortest,
+  FEWEST_TRANSFERS: t.critereFewestTransfers,
+  LOWEST_CO2: t.critereLowestCo2,
+});
 
 export default function ItinerairePage() {
   /**
@@ -98,6 +109,9 @@ export default function ItinerairePage() {
 }
 
 function Detail({ selection }: { selection: SelectionItineraire }) {
+  const { t } = useTraduction();
+  const CRITERES = criteres(t);
+
   const { itineraire, origine, destination } = selection;
 
   const groupes = useMemo(() => regrouperSegments(itineraire.segments), [itineraire]);
@@ -105,6 +119,33 @@ function Detail({ selection }: { selection: SelectionItineraire }) {
   const troncons = useMemo(() => tronconsDItineraire(itineraire.segments), [itineraire]);
 
   const approches = troncons.filter((troncon) => troncon.source === "STRAIGHT").length;
+
+  /**
+   * Perturbations en cours, ou `null` tant qu'on ne sait pas.
+   *
+   * ⚠️ SON ÉCHEC N'EMPORTE PAS L'ÉCRAN. Un itinéraire reste parfaitement
+   * utilisable sans la liste des perturbations ; l'inverse serait absurde. On
+   * n'affiche donc rien plutôt qu'un message d'erreur qui inquiéterait sans
+   * rien apprendre.
+   */
+  const [alertes, setAlertes] = useState<Alert[] | null>(null);
+
+  useEffect(() => {
+    const controleur = new AbortController();
+
+    listerAlertes(controleur.signal)
+      .then((reponse) => setAlertes(reponse.items))
+      .catch(() => {
+        // Silencieux, et c'est délibéré : voir ci-dessus.
+      });
+
+    return () => controleur.abort();
+  }, []);
+
+  const perturbations = useMemo(
+    () => (alertes ? alertesDeLItineraire(alertes, itineraire.segments) : []),
+    [alertes, itineraire.segments],
+  );
 
   return (
     <Container>
@@ -137,7 +178,19 @@ function Detail({ selection }: { selection: SelectionItineraire }) {
             troncons={troncons}
           />
 
+          {perturbations.length > 0 && <Perturbations items={perturbations} />}
+
           <Timeline groupes={groupes} destination={destination.label} />
+
+          {/* ⚠️ CE BOUTON FAIT QUELQUE CHOSE. `/navigation` lit le MÊME
+              itinéraire mémorisé : il n'y a rien à transmettre, et rien ne
+              peut se perdre entre les deux écrans. */}
+          <div className="flex flex-wrap gap-3 border-t border-neutral-200 pt-6">
+            <ButtonLink href="/navigation">{t.commencerTrajet}</ButtonLink>
+            <ButtonLink href="/recherche" variant="secondary">
+              Choisir un autre itinéraire
+            </ButtonLink>
+          </div>
         </div>
       </section>
     </Container>
@@ -159,24 +212,35 @@ function Chiffres({
   changements: number;
   carbone: ItineraryCarbon;
 }) {
+  const { t } = useTraduction();
+
   return (
     <Card>
       <dl className="grid gap-4 sm:grid-cols-4">
-        <Chiffre libelle="Durée" valeur={formaterDuree(durationMin)} />
-        <Chiffre libelle="Distance" valeur={formaterDistance(distanceM)} />
+        <Chiffre libelle={t.duree} valeur={formaterDuree(durationMin)} />
+        <Chiffre libelle={t.distance} valeur={formaterDistance(distanceM)} />
         <Chiffre
-          libelle="Changements"
-          valeur={changements === 0 ? "Aucun" : String(changements)}
+          libelle={t.changements}
+          valeur={changements === 0 ? t.aucun : String(changements)}
         />
         {/* ⚠️ « Indisponible », JAMAIS « 0 g ». Zéro est une valeur légitime —
             un trajet à pied émet réellement zéro — et l'employer comme repli
             rendrait les deux cas indiscernables. */}
         <Chiffre
-          libelle="CO₂ émis"
-          valeur={carbone.co2Grams === null ? "Indisponible" : formaterCo2(carbone.co2Grams)}
+          libelle={t.co2Emis}
+          valeur={carbone.co2Grams === null ? t.indisponible : formaterCo2(carbone.co2Grams)}
           accent={carbone.co2Grams !== null}
         />
       </dl>
+
+      {/* Voir la note sur `Itinerary.totalDurationMin` : la durée additionne
+          des temps de parcours réels, mais aucun temps d'attente. */}
+      {changements > 0 && (
+        <p className="mt-3 text-xs text-neutral-500">
+          Durée hors temps d&apos;attente aux correspondances : nous importons le réseau, pas
+          les horaires de passage.
+        </p>
+      )}
 
       {carbone.status === "CARBON_AVAILABLE" &&
         carbone.savedVsCarGrams !== null &&
@@ -189,8 +253,7 @@ function Chiffres({
 
       {carbone.status === "CARBON_UNAVAILABLE" && (
         <p className="mt-4 border-t border-neutral-200 pt-4 text-sm text-neutral-700">
-          <span className="font-medium">Empreinte carbone indisponible.</span>{" "}
-          {carbone.reason ?? ""}
+          <span className="font-medium">{t.carboneIndisponible}</span> {carbone.reason ?? ""}
         </p>
       )}
     </Card>
@@ -215,6 +278,57 @@ function Chiffre({
 }
 
 /**
+ * Les perturbations qui touchent CE trajet, et elles seules.
+ *
+ * ⚠️ N'APPARAÎT QUE S'IL Y EN A. Un encadré « aucune perturbation » sur
+ * chaque itinéraire serait du bruit permanent pour une information qui ne sert
+ * que par exception.
+ */
+function Perturbations({ items }: { items: AlerteItineraire[] }) {
+  const { t } = useTraduction();
+
+  return (
+    <section aria-labelledby="perturbations">
+      <h2 id="perturbations" className="text-ink text-lg font-semibold">
+        {t.perturbationsTrajet}
+      </h2>
+
+      <ul className="mt-3 space-y-3">
+        {items.map(({ alerte, lignes }) => (
+          <li key={alerte.id}>
+            <Card>
+              <p className="text-ink font-semibold">
+                <span aria-hidden="true">⚠</span> {lignes.join(", ")}
+              </p>
+
+              {/* Le texte de l'OPÉRATEUR, tel qu'il l'a publié. On ne le
+                  reformule pas : ce serait faire passer notre interprétation
+                  pour sa parole. */}
+              {alerte.headerText && (
+                <p className="mt-1 text-neutral-700">{alerte.headerText}</p>
+              )}
+
+              {alerte.descriptionText && (
+                <p className="mt-1 text-sm text-neutral-600">{alerte.descriptionText}</p>
+              )}
+
+              {/* Quand l'opérateur n'a publié aucun texte, on montre le
+                  vocabulaire GTFS-RT plutôt que rien — c'est peu lisible, mais
+                  c'est vrai. */}
+              {!alerte.headerText && !alerte.descriptionText && (
+                <p className="mt-1 text-sm text-neutral-600">
+                  {alerte.cause} · {alerte.effect}
+                </p>
+              )}
+            </Card>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
  * Le déroulé du trajet, étape par étape.
  *
  * UNE ÉTAPE PAR LIGNE EMPRUNTÉE, jamais une par tronçon : cinq stations de la
@@ -222,10 +336,12 @@ function Chiffre({
  * replié — la vue principale répond d'abord à « que dois-je faire ? ».
  */
 function Timeline({ groupes, destination }: { groupes: GroupeEtapes[]; destination: string }) {
+  const { t } = useTraduction();
+
   return (
     <section aria-labelledby="deroule">
       <h2 id="deroule" className="text-ink text-lg font-semibold">
-        Le déroulé du trajet
+        {t.derouleTrajet}
       </h2>
 
       {/* Une liste ORDONNÉE : l'ordre est celui du trajet, et un lecteur
@@ -259,6 +375,49 @@ const PICTOS: Record<string, string> = {
   CAR: "🚗",
 };
 
+/**
+ * Les heures de passage d'une étape — « 08:35 → 08:43 », et l'attente avant.
+ *
+ * ═══ POURQUOI SUR CHAQUE ÉTAPE, ET PAS SEULEMENT EN TÊTE DE PAGE ═══
+ *
+ * L'heure d'arrivée globale répond à « puis-je y être à temps ? ». Les heures
+ * par étape répondent à une autre question, qu'on se pose EN ROUTE : « ai-je
+ * raté ma correspondance ? ». Ce sont deux usages, à deux moments.
+ *
+ * ⚠️ NE S'AFFICHE QUE SI LES DEUX HEURES EXISTENT. Le backend les pose
+ * ensemble ou pas du tout — un itinéraire partiellement horodaté est refusé
+ * en amont — mais s'en remettre à cette garantie ici rendrait l'affichage
+ * dépendant d'une invariante distante. La vérification coûte une ligne.
+ *
+ * ⚠️ L'ATTENTE EST DITE SÉPARÉMENT, jamais fondue dans l'intervalle. « 08:35
+ * → 08:43 » précédé de « 6 min d'attente » informe ; « 08:29 → 08:43 » sans
+ * autre précision laisse croire à un trajet de quatorze minutes.
+ */
+function HorairesEtape({ groupe }: { groupe: GroupeEtapes }) {
+  const { t } = useTraduction();
+
+  const premier = groupe.segments[0];
+  const dernier = groupe.segments[groupe.segments.length - 1];
+
+  if (!premier.departureAt || !dernier.arrivalAt) {
+    return null;
+  }
+
+  return (
+    <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-sm">
+      <span className="text-ink font-medium tabular-nums">
+        {formaterHeure(premier.departureAt)} → {formaterHeure(dernier.arrivalAt)}
+      </span>
+
+      {premier.waitMin !== undefined && premier.waitMin > 0 && (
+        <span className="text-xs text-neutral-500">
+          {t.attenteTotale.replace("{n}", String(premier.waitMin))}
+        </span>
+      )}
+    </p>
+  );
+}
+
 function Etape({
   groupe,
   rang,
@@ -273,7 +432,11 @@ function Etape({
   return (
     <Card>
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <p className="text-ink font-semibold">
+        {/* ⚠️ `text-brand` ET NON `text-ink`. La charte réserve le bleu de
+            marque à ce qui IDENTIFIE — une ligne, un mode — et l'encre neutre
+            au corps de texte. Sur un déroulé de trajet, c'est le nom de ligne
+            qu'on cherche des yeux, et c'est lui qui doit ressortir. */}
+        <p className="text-brand font-semibold">
           {/* `aria-hidden` : le pictogramme double une information déjà
               écrite. Le faire lire ajouterait « émoji train » avant chaque
               étape. */}
@@ -296,6 +459,8 @@ function Etape({
       <p className="mt-1 text-sm text-neutral-700">
         {groupe.depart} → {groupe.arrivee}
       </p>
+
+      <HorairesEtape groupe={groupe} />
 
       <p className="sr-only">
         Étape {rang} sur {total}.

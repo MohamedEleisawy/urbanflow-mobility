@@ -47,3 +47,65 @@ export function parseGtfsTime(value: string | undefined): number | null {
 
   return heures * 3600 + minutes * 60 + secondes;
 }
+
+// =============================================================================
+// Dates de calendrier GTFS (sprint soutenance)
+// =============================================================================
+// GTFS écrit ses dates au format `YYYYMMDD` : « 20260903 ». Trois pièges, tous
+// rencontrés :
+//
+//   1. `new Date("20260903")` est INVALIDE dans Node — la chaîne n'est pas un
+//      format ISO reconnu. Il faut découper soi-même.
+//
+//   2. `new Date(2026, 8, 3)` construit un instant dans le fuseau du SERVEUR.
+//      Sur un serveur à l'ouest de Greenwich, minuit local devient la veille
+//      en UTC, et une colonne `date` stocke alors le 2 septembre. Une date de
+//      calendrier n'a pas de fuseau : on la fabrique en UTC.
+//
+//   3. `Date.UTC(2026, 8, 31)` avec un mois à 30 jours donne le 1er octobre
+//      SANS LEVER D'ERREUR. JavaScript reporte silencieusement. On vérifie
+//      donc que la date reconstruite correspond bien à ce qui était écrit.
+// =============================================================================
+
+const DATE_GTFS = /^(\d{4})(\d{2})(\d{2})$/;
+
+/**
+ * Convertit une date GTFS `YYYYMMDD` en `Date` à midi UTC.
+ *
+ * ⚠️ MIDI ET NON MINUIT. À minuit UTC, un serveur affichant la date en heure
+ * locale négative recule d'un jour. Midi laisse douze heures de marge de part
+ * et d'autre — davantage que n'importe quel décalage horaire terrestre.
+ *
+ * Renvoie `null` si la chaîne n'est pas une date exploitable : au lecteur de
+ * compter la ligne comme ignorée plutôt que de deviner.
+ */
+export function parseGtfsDate(value: string | undefined): Date | null {
+  if (!value) {
+    return null;
+  }
+
+  const resultat = DATE_GTFS.exec(value.trim());
+
+  if (!resultat) {
+    return null;
+  }
+
+  const annee = Number(resultat[1]);
+  const mois = Number(resultat[2]);
+  const jour = Number(resultat[3]);
+
+  const date = new Date(Date.UTC(annee, mois - 1, jour, 12, 0, 0));
+
+  // ⚠️ LE CONTRÔLE DE REPORT. `Date.UTC(2026, 1, 31)` rend le 3 mars sans
+  // broncher : sans cette vérification, un « 20260231 » deviendrait une date
+  // valide et fausse.
+  if (
+    date.getUTCFullYear() !== annee ||
+    date.getUTCMonth() !== mois - 1 ||
+    date.getUTCDate() !== jour
+  ) {
+    return null;
+  }
+
+  return date;
+}

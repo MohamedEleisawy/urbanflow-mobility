@@ -3,6 +3,8 @@ import { render, screen, within } from "@testing-library/react";
 import ItinerairePage from "./page";
 import { memoriserSelection, type SelectionItineraire } from "@/lib/itineraire-selection";
 import type { Itinerary, ItinerarySegment } from "@/lib/types";
+import { AuthProvider } from "@/components/AuthProvider";
+import { LangueProvider } from "@/components/LangueProvider";
 
 // =============================================================================
 // /itineraire — le détail du trajet retenu
@@ -15,6 +17,10 @@ import type { Itinerary, ItinerarySegment } from "@/lib/types";
 // Le remplaçant expose ses propriétés dans le DOM, ce qui permet de vérifier
 // ce que la page lui transmet réellement.
 // =============================================================================
+
+// Les perturbations : cet écran les charge, mais leur échec ne doit jamais
+// l'empêcher de s'afficher.
+vi.mock("@/lib/alertes-api", () => ({ listerAlertes: vi.fn() }));
 
 vi.mock("@/components/CarteLeaflet", () => ({
   default: ({
@@ -41,6 +47,8 @@ vi.mock("@/components/CarteLeaflet", () => ({
   ),
 }));
 
+const { listerAlertes } = await import("@/lib/alertes-api");
+
 const segment = (
   surcharge: Partial<ItinerarySegment> = {},
 ): ItinerarySegment => ({
@@ -56,6 +64,7 @@ const segment = (
   lineName: "A",
   operator: "SNCF",
   lineId: "rer-a",
+  gtfsLineId: null,
   distanceM: 2964,
   durationMin: 3,
   geometry: null,
@@ -100,6 +109,7 @@ const ITINERAIRE: Itinerary = {
       toStopLon: 2.3553,
       lineName: "D",
       lineId: "rer-d",
+      gtfsLineId: null,
       distanceM: 2394,
       durationMin: 3,
     }),
@@ -113,11 +123,31 @@ const SELECTION: SelectionItineraire = {
   choisiA: "2026-09-02T10:00:00.000Z",
 };
 
-const rendre = () => render(<ItinerairePage />);
+/**
+ * ⚠️ `LangueProvider` EXIGE `AuthProvider` : il lit la préférence de langue du
+ * compte. La langue par défaut restant le français, tous les tests écrits
+ * avant l'internationalisation attendent les mêmes textes.
+ */
+const rendre = () =>
+  render(
+    <AuthProvider>
+      <LangueProvider>
+        <ItinerairePage />
+      </LangueProvider>
+    </AuthProvider>,
+  );
 
 describe("/itineraire", () => {
   beforeEach(() => {
     window.sessionStorage.clear();
+    vi.mocked(listerAlertes).mockReset();
+    // Par défaut : aucune perturbation. Les tests qui n'en parlent pas ne
+    // doivent pas en dépendre.
+    vi.mocked(listerAlertes).mockResolvedValue({
+      items: [],
+      limit: 200,
+      truncated: false,
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -357,6 +387,81 @@ describe("/itineraire", () => {
       rendre();
 
       expect(screen.getByText(/suit la voie réelle publiée par l'opérateur/i)).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Perturbations
+  // ---------------------------------------------------------------------------
+  describe("perturbations", () => {
+    const alerte = (ligneGtfs: string, texte: string) => ({
+      id: `alerte-${ligneGtfs}`,
+      headerText: texte,
+      descriptionText: null,
+      stopIds: [],
+      lines: [{ id: ligneGtfs, name: "RER A" }],
+      mode: "TRAIN" as const,
+      severity: "WARNING" as const,
+      cause: "MAINTENANCE",
+      effect: "REDUCED_SERVICE",
+      startTime: "2026-09-03T06:00:00.000Z",
+      endTime: null,
+    });
+
+    it("affiche une perturbation qui touche une ligne EMPRUNTÉE", async () => {
+      window.sessionStorage.clear();
+      memoriserSelection({
+        ...SELECTION,
+        itineraire: {
+          ...ITINERAIRE,
+          segments: [{ ...ITINERAIRE.segments[0], gtfsLineId: "IDFM:RER-A" }],
+        },
+      });
+      vi.mocked(listerAlertes).mockResolvedValue({
+        items: [alerte("IDFM:RER-A", "Trafic interrompu entre Auber et Nation")],
+        limit: 200,
+        truncated: false,
+      });
+
+      rendre();
+
+      expect(await screen.findByText(/trafic interrompu/i)).toBeDefined();
+    });
+
+    it("N'AFFICHE PAS une perturbation d'une autre ligne", async () => {
+      window.sessionStorage.clear();
+      memoriserSelection({
+        ...SELECTION,
+        itineraire: {
+          ...ITINERAIRE,
+          segments: [{ ...ITINERAIRE.segments[0], gtfsLineId: "IDFM:RER-A" }],
+        },
+      });
+      vi.mocked(listerAlertes).mockResolvedValue({
+        items: [alerte("IDFM:BUS-999", "Déviation du bus 999")],
+        limit: 200,
+        truncated: false,
+      });
+
+      rendre();
+
+      await screen.findByText("6 min");
+      // ⚠️ Déverser les 200 alertes d'Île-de-France sur chaque itinéraire
+      // noierait celles qui comptent.
+      expect(screen.queryByText(/déviation du bus/i)).toBeNull();
+      expect(screen.queryByText(/perturbations sur votre trajet/i)).toBeNull();
+    });
+
+    it("reste utilisable quand les perturbations sont injoignables", async () => {
+      vi.mocked(listerAlertes).mockRejectedValue(new Error("réseau coupé"));
+      memoriserSelection(SELECTION);
+
+      rendre();
+
+      // Un itinéraire reste parfaitement utilisable sans la liste des
+      // perturbations ; l'inverse serait absurde.
+      expect(await screen.findByText("6 min")).toBeDefined();
+      expect(screen.queryByText(/perturbations/i)).toBeNull();
     });
   });
 });

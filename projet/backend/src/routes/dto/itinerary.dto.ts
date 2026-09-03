@@ -48,6 +48,25 @@ export interface ItinerarySegmentDto {
    */
   lineId: string;
 
+  /**
+   * Identifiant de la ligne DANS LE FLUX DE L'OPÉRATEUR (`routes.txt`,
+   * `route_id`), ou `null` pour une ligne créée à la main.
+   *
+   * ⚠️ POURQUOI CE TROISIÈME IDENTIFIANT. `lineId` est notre UUID interne :
+   * il ne veut rien dire hors de notre base. Or les perturbations GTFS-RT
+   * désignent les lignes par LEUR identifiant à eux — celui du flux.
+   *
+   * Sans ce champ, associer une alerte à un segment supposerait une requête
+   * de traduction par ligne empruntée, ou pire, un rapprochement sur le NOM
+   * d'affichage — que le réseau rend ambigu, plusieurs lignes portant le même
+   * (« 4 » de métro et « 4 » de bus).
+   *
+   * C'est donc lui, et lui seul, qui permet de n'afficher sur un itinéraire
+   * que les alertes des lignes RÉELLEMENT empruntées — plutôt que toutes
+   * celles d'Île-de-France.
+   */
+  gtfsLineId: string | null;
+
   distanceM: number;
   durationMin: number;
 
@@ -77,28 +96,63 @@ export interface ItinerarySegmentDto {
    * cas de la même façon. Sans lui, une droite passerait pour un tracé.
    */
   geometrySource: 'SHAPE' | 'STRAIGHT';
+
+  /**
+   * Minutes d'attente AVANT de monter dans ce segment.
+   *
+   * ⚠️ PRÉSENT UNIQUEMENT SUR UNE MONTÉE, et `undefined` — jamais 0 — sur les
+   * tronçons suivants d'une même ligne. Rester assis dans le tram sur cinq
+   * arrêts n'a pas de temps d'attente ; écrire « 0 min d'attente » cinq fois
+   * de suite laisserait croire à cinq correspondances instantanées.
+   *
+   * `undefined` aussi quand aucun horaire n'est connu : voir
+   * `ItineraryScheduleDto`.
+   */
+  waitMin?: number;
+
+  /**
+   * Heure de départ et d'arrivée de ce tronçon, en ISO 8601.
+   *
+   * ⚠️ CALCULÉES À PARTIR DES HORAIRES THÉORIQUES publiés par l'opérateur, et
+   * jamais observées. Un retard ne s'y voit pas. `undefined` quand le
+   * calendrier ne permet pas de les établir.
+   */
+  departureAt?: string;
+  arrivalAt?: string;
 }
 
 /**
  * Critère selon lequel l'itinéraire a été optimisé.
  *
- * ═══ CHANGEMENT DE CONTRAT (Phase 4) ═══
+ * ═══ LES TROIS CRITÈRES PRODUITS ═══
  *
- * `SHORTEST` (la plus courte distance) a été RETIRÉ, et remplacé par
- * `FEWEST_TRANSFERS` et `LOWEST_CO2`.
+ *   FASTEST     ⚡ le plus rapide      → minimise la durée totale estimée
+ *   LOWEST_CO2  🌱 le plus écologique  → minimise les émissions estimées
+ *   SHORTEST    📏 le plus court       → minimise la distance parcourue
  *
- * Pourquoi. Dans un réseau de transport public, « le plus court en mètres »
- * et « le plus rapide » désignent presque toujours le même trajet : le
- * critère produisait un doublon que le service dédupliquait aussitôt. Il ne
- * répondait à aucune question que se pose un voyageur — personne ne choisit
- * un itinéraire de métro au mètre près.
+ * ═══ POURQUOI `SHORTEST` EST DE RETOUR ═══
  *
- * Les deux critères qui le remplacent, eux, répondent à des questions
- * réelles et opposables : « je ne veux pas courir dans les couloirs » et
- * « je veux le trajet le moins émetteur ». Le second est l'identité même du
- * produit.
+ * Il avait été retiré en phase 4 au motif que « le plus court en mètres » et
+ * « le plus rapide » désignaient presque toujours le même trajet, produisant
+ * un doublon aussitôt dédupliqué.
+ *
+ * Ce raisonnement valait sur un réseau de métro dense — celui d'Île-de-France
+ * — où la vitesse commerciale varie peu d'une ligne à l'autre. Il ne vaut plus
+ * sur l'Eurométropole de Strasbourg, où le tram file en site propre et le bus
+ * serpente : le trajet le plus court en mètres y emprunte volontiers un bus
+ * direct que le tram contourne, et le plus rapide un tram qui rallonge.
+ *
+ * Le critère est donc rétabli, ET LA DÉDUPLICATION LE PROTÈGE : s'il désigne
+ * malgré tout le même trajet, il n'est simplement pas renvoyé. Aucune carte
+ * n'est jamais remplie pour faire nombre.
+ *
+ * ⚠️ `FEWEST_TRANSFERS` RESTE UNE VALEUR VALIDE DU TYPE, bien qu'aucune
+ * recherche ne la produise plus. Des itinéraires enregistrés par les usagers
+ * la portent en base : la retirer du type ferait échouer la relecture de leur
+ * historique, c'est-à-dire détruirait une donnée qui leur appartient.
  */
-export type ItineraryCriterion = 'FASTEST' | 'FEWEST_TRANSFERS' | 'LOWEST_CO2';
+export type ItineraryCriterion =
+  'FASTEST' | 'LOWEST_CO2' | 'SHORTEST' | 'FEWEST_TRANSFERS';
 
 /**
  * Disponibilité du calcul carbone pour un itinéraire.
@@ -135,11 +189,89 @@ export interface ItineraryCarbonDto {
   reason: string | null;
 }
 
+/**
+ * Disponibilité des horaires pour un itinéraire.
+ *
+ *   `SCHEDULE_AVAILABLE`    heures de départ et d'arrivée établies ;
+ *   `SCHEDULE_UNKNOWN`      le calendrier existe, mais aucune de ces lignes
+ *                           ne passe dans la fenêtre consultée — un bus de
+ *                           nuit cherché à 14 h, typiquement ;
+ *   `SCHEDULE_UNAVAILABLE`  aucun horaire n'est importé sur cette
+ *                           installation.
+ *
+ * ⚠️ LES TROIS CAS APPELLENT TROIS PHRASES DIFFÉRENTES À L'ÉCRAN. Les
+ * confondre ferait dire « pas de passage aujourd'hui » à un usager dont le
+ * réseau n'a simplement jamais été horodaté.
+ */
+export type ScheduleStatus =
+  'SCHEDULE_AVAILABLE' | 'SCHEDULE_UNKNOWN' | 'SCHEDULE_UNAVAILABLE';
+
+export interface ItineraryScheduleDto {
+  status: ScheduleStatus;
+
+  /// Instant de départ retenu, en ISO 8601. `null` hors du cas disponible.
+  departureAt: string | null;
+
+  /**
+   * Heure d'arrivée estimée, ATTENTE COMPRISE.
+   *
+   * ⚠️ C'EST LA SEULE VALEUR QUI RÉPOND À LA QUESTION POSÉE. `totalDurationMin`
+   * ne compte que le temps de parcours : un usager qui lit « 12 min » et
+   * arrive 25 minutes plus tard n'a pas été mal informé, il a été trompé.
+   */
+  arrivalAt: string | null;
+
+  /**
+   * Somme des attentes sur le quai, en minutes.
+   *
+   * ⚠️ `null` ET NON 0 QUAND ELLE EST INCONNUE. Zéro annoncerait un
+   * enchaînement parfait, ce qui est exactement le contraire de « je ne sais
+   * pas ».
+   */
+  totalWaitMin: number | null;
+
+  /// Pourquoi l'horaire n'a pas pu être établi. `null` quand il l'a été.
+  reason: string | null;
+}
+
 export interface ItineraryDto {
   // Permet au client de savoir à quelle question cet itinéraire répond,
   // sans avoir à comparer les totaux lui-même.
   criterion: ItineraryCriterion;
   totalDistanceM: number;
+
+  /**
+   * ⚠️ CE QUE LA DURÉE ANNONCÉE NE CONTIENT PAS : LE TEMPS D'ATTENTE.
+   *
+   * `totalDurationMin` est la somme des durées de parcours des liaisons —
+   * elles-mêmes des MÉDIANES observées dans le flux GTFS (étape 4C-4-4) — plus
+   * les temps de correspondance à pied publiés dans `transfers.txt`.
+   *
+   * Il y manque l'attente du véhicule à chaque montée, que notre modèle ne
+   * connaît pas : nous importons le réseau, pas les horaires. `stop_times.txt`
+   * est agrégé en durées typiques, et aucune table ne porte de passage précis.
+   *
+   * ═══ POURQUOI CELA COMPTE VRAIMENT, MESURÉ SUR LE RÉSEAU RÉEL ═══
+   *
+   * Tant que le réseau ne contenait que métro, tram et RER, l'écart restait
+   * marginal — ces modes passent souvent et les itinéraires comptaient une ou
+   * deux correspondances.
+   *
+   * Depuis l'import du bus (1 963 lignes), le moteur peut enchaîner douze
+   * tronçons de bus et CINQ changements pour « 17 minutes », là où le RER met
+   * 19 minutes sans aucun changement. Les durées de chaque tronçon sont
+   * exactes ; c'est leur SOMME qui promet l'impossible, puisqu'elle suppose
+   * cinq correspondances instantanées.
+   *
+   * ⚠️ CE N'EST PAS UNE DONNÉE INVENTÉE, C'EST UNE DONNÉE MANQUANTE. La
+   * réponse honnête n'est pas d'ajouter une pénalité au jugé — un nombre que
+   * rien ne justifierait — mais de DIRE ce que la durée recouvre. L'interface
+   * l'annonce dès qu'un itinéraire comporte une correspondance, et
+   * `numberOfTransfers` permet au client de pondérer lui-même.
+   *
+   * La correction de fond suppose d'importer `calendar`, `trips` et
+   * `stop_times` pour calculer de vrais prochains passages.
+   */
   totalDurationMin: number;
 
   /**
@@ -153,6 +285,15 @@ export interface ItineraryDto {
    * elle est ici la SOURCE : le client n'a plus à la recalculer.
    */
   numberOfTransfers: number;
+
+  /**
+   * Horaires réels de cet itinéraire, attente comprise.
+   *
+   * FACULTATIF dans le type parce qu'il est posé APRÈS la construction de
+   * l'itinéraire, par `enrichirHoraires()`. Il est toujours présent dans une
+   * réponse de `POST /api/routes/search`.
+   */
+  schedule?: ItineraryScheduleDto;
 
   /// Empreinte de cet itinéraire, ou l'aveu qu'elle est incalculable.
   carbon: ItineraryCarbonDto;
