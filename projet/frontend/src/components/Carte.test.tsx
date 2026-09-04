@@ -14,8 +14,8 @@ import type { PointCarte } from "@/lib/carte";
 // =============================================================================
 
 const POINTS: PointCarte[] = [
-  { id: "a", nom: "Gare du Nord", latitude: 48.8809, longitude: 2.3553 },
-  { id: "b", nom: "Châtelet", latitude: 48.8583, longitude: 2.3477 },
+  { id: "a", nom: "Gare Centrale", latitude: 48.5853, longitude: 7.7355 },
+  { id: "b", nom: "Homme de Fer", latitude: 48.5836, longitude: 7.7454 },
 ];
 
 describe("Carte", () => {
@@ -50,10 +50,33 @@ describe("Carte", () => {
     expect(texte.className).not.toContain("sr-only");
   });
 
-  it("le dit quand il n'y a rien à montrer", () => {
-    render(<Carte titre="Le réseau" description="Rien à afficher." arrets={[]} />);
+  it("le dit quand il n'y a rien à montrer, SANS retirer la carte", () => {
+    // ⚠️ RÉGRESSION VERROUILLÉE. La carte conditionnait autrefois son rendu sur
+    // `arrets.length` : une recherche sans arrêt la faisait disparaître.
+    // Désormais le fond cartographique reste monté, et le message n'est qu'une
+    // incrustation `pointer-events-none`.
+    const { container } = render(
+      <Carte titre="Le réseau" description="Rien à afficher." arrets={[]} />,
+    );
 
-    expect(screen.getByText(/aucun arrêt à afficher/i)).toBeDefined();
+    expect(screen.getByText(/aucun arrêt à proximité/i)).toBeDefined();
+    // Le conteneur Leaflet (chargé dynamiquement) est toujours là.
+    expect(container.querySelector(".h-64")).not.toBeNull();
+  });
+
+  it("laisse personnaliser le message d'incrustation", () => {
+    render(
+      <Carte
+        titre="Le réseau"
+        description="Rien."
+        arrets={[]}
+        messageVide="Déplacez la carte pour voir des arrêts."
+      />,
+    );
+
+    expect(
+      screen.getByText("Déplacez la carte pour voir des arrêts."),
+    ).toBeDefined();
   });
 
   it("réserve une hauteur explicite au conteneur", () => {

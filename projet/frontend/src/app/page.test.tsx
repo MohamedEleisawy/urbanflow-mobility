@@ -66,6 +66,39 @@ describe("/", () => {
     expect(cta.getAttribute("href")).toBe("/recherche");
   });
 
+  it("le CTA est ATTEIGNABLE AU CLAVIER, parce que c’est un vrai lien", () => {
+    // ⚠️ Un `<div onClick>` stylé en bouton serait invisible au clavier,
+    // inouvrable dans un nouvel onglet, et absent de la liste des liens d'un
+    // lecteur d'écran. La taille et la couleur ne remplacent pas la
+    // sémantique — et c'est le seul élément de la page qui compte vraiment.
+    rendre();
+
+    const cta = screen.getByRole("link", { name: /rechercher un itinéraire/i });
+
+    // Un `<a href>` est focusable nativement : aucun `tabIndex` ne doit avoir
+    // été ajouté pour compenser une balise mal choisie.
+    expect(cta.tagName).toBe("A");
+    expect(cta.getAttribute("tabindex")).toBeNull();
+  });
+
+  it("le pictogramme du CTA est DÉCORATIF", () => {
+    // Sans `aria-hidden`, un lecteur d'écran annonce « emoji fusée » avant le
+    // libellé du seul bouton qui compte sur cette page.
+    rendre();
+
+    const cta = screen.getByRole("link", { name: /rechercher un itinéraire/i });
+    const picto = cta.querySelector("[aria-hidden='true']");
+
+    expect(picto?.textContent).toBe("🚀");
+  });
+
+  it("porte le slogan du produit", () => {
+    rendre();
+
+    expect(screen.getByText(/bougez mieux/i)).toBeDefined();
+    expect(screen.getByText(/émettez moins/i)).toBeDefined();
+  });
+
   it("mène aussi aux perturbations", () => {
     rendre();
 

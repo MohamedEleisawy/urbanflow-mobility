@@ -24,6 +24,8 @@ const ITINERAIRE: Itinerary = {
   criterion: "FASTEST",
   totalDistanceM: 4300,
   totalDurationMin: 24,
+  walkAccess: null,
+  walkEgress: null,
   numberOfTransfers: 1,
   carbon: {
     status: "CARBON_AVAILABLE",
@@ -130,9 +132,7 @@ describe("relecture défensive", () => {
     const sansCarbone = { ...ITINERAIRE } as Record<string, unknown>;
     delete sansCarbone.carbon;
 
-    expect(
-      analyserSelection(JSON.stringify({ ...SELECTION, itineraire: sansCarbone })),
-    ).toBeNull();
+    expect(analyserSelection(JSON.stringify({ ...SELECTION, itineraire: sansCarbone }))).toBeNull();
   });
 
   it("rejette un point sans coordonnées exploitables", () => {
@@ -161,11 +161,9 @@ describe("relecture défensive", () => {
 
 describe("stockage indisponible", () => {
   it("ne lève pas quand l'écriture est refusée", () => {
-    const echouer = vi
-      .spyOn(Storage.prototype, "setItem")
-      .mockImplementation(() => {
-        throw new Error("QuotaExceededError");
-      });
+    const echouer = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
 
     // Navigation privée, quota atteint, stockage désactivé par politique :
     // ce n'est pas une raison pour casser un clic.

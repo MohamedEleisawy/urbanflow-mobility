@@ -1,9 +1,14 @@
 import { NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { StopsService } from './stops.service';
+import { ScheduleService } from '../schedule/schedule.service';
 import { FindStopsQueryDto } from './dto/find-stops-query.dto';
 
 describe('StopsService', () => {
+  let schedule: {
+    horairesDisponibles: jest.Mock;
+    prochainsPassages: jest.Mock;
+  };
   let service: StopsService;
   let prisma: {
     stop: {
@@ -13,6 +18,12 @@ describe('StopsService', () => {
       count: jest.Mock;
     };
     transitLine: { groupBy: jest.Mock };
+    networkLink: {
+      findMany: jest.Mock<
+        Promise<unknown[]>,
+        [{ where: { line: { mode: { not: string } } } }]
+      >;
+    };
   };
 
   const arret = (
@@ -58,8 +69,29 @@ describe('StopsService', () => {
         count: jest.fn().mockResolvedValue(0),
       },
       transitLine: { groupBy: jest.fn().mockResolvedValue([]) },
+      networkLink: {
+        findMany: jest
+          .fn<
+            Promise<unknown[]>,
+            [{ where: { line: { mode: { not: string } } } }]
+          >()
+          .mockResolvedValue([]),
+      },
     };
-    service = new StopsService(prisma as unknown as PrismaService);
+
+    // ⚠️ UN DOUBLE QUI DIT « AUCUN HORAIRE ». C'est l'état d'un réseau sans
+    // `calendar.txt`, et c'est le plus exigeant pour ces tests : « Autour de
+    // moi » doit alors rendre `departuresFreshness: 'UNKNOWN'` plutôt que de
+    // laisser croire qu'aucun véhicule ne passe.
+    schedule = {
+      horairesDisponibles: jest.fn().mockResolvedValue(false),
+      prochainsPassages: jest.fn().mockResolvedValue([]),
+    };
+
+    service = new StopsService(
+      prisma as unknown as PrismaService,
+      schedule as unknown as ScheduleService,
+    );
   });
 
   it('crée un arrêt', async () => {
@@ -367,6 +399,219 @@ describe('StopsService', () => {
         expect.objectContaining({ by: ['mode'] }),
       );
       expect(prisma.stop.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // « Autour de moi » (war room)
+  // ---------------------------------------------------------------------------
+  describe('findNearby', () => {
+    const quai = (id: string, name: string, lat: number, lon: number) => ({
+      id,
+      name,
+      latitude: lat,
+      longitude: lon,
+      pmrAccessible: false,
+      operatorCode: 'IDFM',
+      gtfsStopId: id,
+    });
+
+    const POINT = { lat: 48.8443, lon: 2.3743 };
+
+    const liaison = (
+      fromStopId: string,
+      toStopId: string,
+      lineId: string,
+      name: string,
+      mode: string,
+    ) => ({ fromStopId, toStopId, line: { id: lineId, name, mode } });
+
+    it('REGROUPE les quais du meme lieu en une seule entree', async () => {
+      // Ile-de-France Mobilites publie UN ARRET PAR QUAI : « Gare de Lyon »
+      // existe en vingt et un exemplaires. Une liste qui les enumere dit
+      // vingt et une fois la meme chose a quelqu'un qui veut savoir ou aller.
+      prisma.stop.findMany.mockResolvedValue([
+        quai('q1', 'Gare de Lyon', 48.8443, 2.3743),
+        quai('q2', 'Gare de Lyon', 48.8444, 2.3744),
+        quai('q3', 'Bercy', 48.8401, 2.3795),
+      ]);
+      prisma.networkLink.findMany.mockResolvedValue([
+        liaison('q1', 'q9', 'l-63', '63', 'BUS'),
+        liaison('q2', 'q9', 'l-14', '14', 'METRO'),
+        liaison('q3', 'q9', 'l-6', '6', 'METRO'),
+      ]);
+
+      const reponse = await service.findNearby({
+        ...POINT,
+        radiusM: 800,
+        limit: 10,
+      });
+
+      expect(reponse.stops.map((s) => s.name)).toEqual([
+        'Gare de Lyon',
+        'Bercy',
+      ]);
+    });
+
+    it('FUSIONNE les lignes des quais regroupes', async () => {
+      // Ne garder que celles du quai le plus proche afficherait
+      // « Gare de Lyon - 63 » et tairait le metro 14, qui part du quai d'a
+      // cote. C'est precisement l'information qu'on vient chercher.
+      prisma.stop.findMany.mockResolvedValue([
+        quai('q1', 'Gare de Lyon', 48.8443, 2.3743),
+        quai('q2', 'Gare de Lyon', 48.8444, 2.3744),
+      ]);
+      prisma.networkLink.findMany.mockResolvedValue([
+        liaison('q1', 'q9', 'l-63', '63', 'BUS'),
+        liaison('q2', 'q9', 'l-14', '14', 'METRO'),
+      ]);
+
+      const reponse = await service.findNearby({
+        ...POINT,
+        radiusM: 800,
+        limit: 10,
+      });
+
+      expect(reponse.stops[0].lines.map((l) => l.name)).toEqual(['14', '63']);
+    });
+
+    it('ECARTE la ligne interne de correspondance a pied', async () => {
+      // DEFAUT REEL, CONSTATE A L'ECRAN : « Gare de Lyon - Correspondance »
+      // apparaissait a cote du metro 14, comme si l'on pouvait prendre la
+      // correspondance.
+      //
+      // Cette « ligne » est un ARTEFACT : l'import fabrique une ligne WALK
+      // pour porter les liaisons pietonnes entre quais. Elle a sa place dans
+      // le graphe, aucune sur un panneau.
+      prisma.stop.findMany.mockResolvedValue([
+        quai('q1', 'Gare de Lyon', 48.8443, 2.3743),
+      ]);
+
+      await service.findNearby({ ...POINT, radiusM: 800, limit: 10 });
+
+      const requete = prisma.networkLink.findMany.mock.calls[0][0];
+
+      expect(requete.where.line.mode.not).toBe('WALK');
+    });
+
+    it('annonce UNKNOWN quand aucun passage n est connu POUR CES ARRETS', async () => {
+      // LE BOGUE QUE CE TEST VERROUILLE. La premiere version demandait
+      // `horairesDisponibles()`, qui repond « oui » des qu'UN reseau de la
+      // base est horodate. Sur une installation portant deux reseaux - l'un
+      // avec horaires, l'autre sans - elle annoncait `STATIC` sur des arrets
+      // dont aucun passage n'etait connu.
+      //
+      // Le resultat se lisait « ces lignes ne circulent plus », alors que la
+      // phrase exacte etait « nous ne connaissons pas leurs horaires ».
+      prisma.stop.findMany.mockResolvedValue([
+        quai('q1', 'Gare de Lyon', 48.8443, 2.3743),
+      ]);
+      schedule.prochainsPassages.mockResolvedValue([]);
+
+      const reponse = await service.findNearby({
+        ...POINT,
+        radiusM: 800,
+        limit: 10,
+      });
+
+      expect(reponse.departuresFreshness).toBe('UNKNOWN');
+      expect(reponse.stops[0].nextDeparture).toBeNull();
+    });
+
+    it('rattache le prochain passage A LA BONNE LIGNE', async () => {
+      // `prochainsPassages` est appele pour TOUS les arrets a la fois. Sans
+      // filtre par ligne, un arret afficherait le prochain passage d'un arret
+      // voisin - plausible, et faux.
+      prisma.stop.findMany.mockResolvedValue([
+        quai('q1', 'Gare de Lyon', 48.8443, 2.3743),
+        quai('q3', 'Bercy', 48.8401, 2.3795),
+      ]);
+      prisma.networkLink.findMany.mockResolvedValue([
+        liaison('q1', 'q9', 'l-14', '14', 'METRO'),
+        liaison('q3', 'q9', 'l-6', '6', 'METRO'),
+      ]);
+      schedule.prochainsPassages.mockResolvedValue([
+        {
+          lineId: 'l-6',
+          lineName: '6',
+          mode: 'METRO',
+          headsign: 'Nation',
+          departureAt: new Date('2026-09-03T08:00:00Z'),
+          waitMin: 2,
+        },
+        {
+          lineId: 'l-14',
+          lineName: '14',
+          mode: 'METRO',
+          headsign: 'Olympiades',
+          departureAt: new Date('2026-09-03T08:05:00Z'),
+          waitMin: 7,
+        },
+      ]);
+
+      const reponse = await service.findNearby({
+        ...POINT,
+        radiusM: 800,
+        limit: 10,
+      });
+
+      const gareDeLyon = reponse.stops.find((s) => s.name === 'Gare de Lyon');
+      const bercy = reponse.stops.find((s) => s.name === 'Bercy');
+
+      // Le passage de la ligne 6 est le PLUS PROCHE dans le temps, mais il ne
+      // concerne pas Gare de Lyon.
+      expect(gareDeLyon?.nextDeparture?.lineName).toBe('14');
+      expect(bercy?.nextDeparture?.lineName).toBe('6');
+    });
+
+    it('ESTIME la marche, sans jamais annoncer zero minute', async () => {
+      // « 0 min de marche » se lit comme « vous y etes », ce qui est faux a
+      // cinquante metres d'un quai.
+      prisma.stop.findMany.mockResolvedValue([
+        quai('q1', 'Gare de Lyon', 48.8443, 2.3743),
+      ]);
+
+      const reponse = await service.findNearby({
+        ...POINT,
+        radiusM: 800,
+        limit: 10,
+      });
+
+      expect(reponse.stops[0].distanceM).toBe(0);
+      expect(reponse.stops[0].walkMin).toBe(1);
+    });
+
+    it('ECARTE les arrets hors du rayon demande', async () => {
+      // Le rectangle circonscrit ramene les coins ; le cercle les ecarte.
+      prisma.stop.findMany.mockResolvedValue([
+        quai('q1', 'Gare de Lyon', 48.8443, 2.3743),
+        quai('loin', 'Trop loin', 48.85, 2.39),
+      ]);
+
+      const reponse = await service.findNearby({
+        ...POINT,
+        radiusM: 200,
+        limit: 10,
+      });
+
+      expect(reponse.stops.map((s) => s.name)).toEqual(['Gare de Lyon']);
+    });
+
+    it('n interroge NI les lignes NI le calendrier quand rien n est proche', async () => {
+      // Deux allers-retours en base pour une liste vide seraient du gaspillage
+      // pur - et cet endpoint est appele a chaque deplacement de carte.
+      prisma.stop.findMany.mockResolvedValue([]);
+
+      const reponse = await service.findNearby({
+        ...POINT,
+        radiusM: 800,
+        limit: 10,
+      });
+
+      expect(reponse.stops).toEqual([]);
+      expect(reponse.departuresFreshness).toBe('UNKNOWN');
+      expect(prisma.networkLink.findMany).not.toHaveBeenCalled();
+      expect(schedule.prochainsPassages).not.toHaveBeenCalled();
     });
   });
 });

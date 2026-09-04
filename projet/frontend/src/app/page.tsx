@@ -100,37 +100,63 @@ export default function AccueilPage() {
 
         <Container>
           <div className="relative py-14 sm:py-20">
-            <p className="text-eco text-sm font-semibold tracking-wide uppercase">
-              {t.accueilBaseline}
-            </p>
+            {/* ═══ TOUT EST CENTRÉ ═══
+                L'accueil ne raconte rien : il pose une question et donne un
+                bouton pour y répondre. Un alignement à gauche disperserait le
+                regard sur trois colonnes de texte ; centré, il n'y a qu'un
+                seul endroit où poser les yeux. */}
+            <div className="flex flex-col items-center text-center">
+              <p className="text-eco text-sm font-semibold tracking-wide uppercase">
+                {t.accueilBaseline}
+              </p>
 
-            <h1 className="text-ink mt-3 max-w-3xl text-3xl font-bold tracking-tight text-balance sm:text-4xl lg:text-5xl">
-              {titre}
-            </h1>
+              <h1 className="text-ink mt-4 max-w-3xl text-3xl font-bold tracking-tight text-balance sm:text-4xl lg:text-5xl">
+                {titre}
+              </h1>
 
-            <p className="mt-4 max-w-2xl text-lg text-neutral-700">
-              {t.accueilIntro}
-            </p>
+              {/* Le slogan, en deux temps. Court, il se retient ; c'est
+                  l'identité du produit en quatre mots. */}
+              <p className="text-ink mt-5 text-xl font-semibold sm:text-2xl">
+                {t.accueilSlogan1}{" "}
+                <span className="text-eco">{t.accueilSlogan2}</span>
+              </p>
 
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              {/*
-                UN SEUL appel à l'action dominant. Deux boutons de même poids
-                obligeraient à choisir avant d'avoir compris, et c'est
-                exactement ce qu'une page d'accueil doit épargner.
+              <p className="mt-4 max-w-xl text-lg text-neutral-700">
+                {t.accueilIntro}
+              </p>
 
-                Le halo (`shadow-brand/25`) tient lieu de mise en avant : il
-                détache le bouton du fond sans introduire de couleur nouvelle.
-              */}
+              {/* ═══ LE POINT FOCAL ═══
+                  ⚠️ UN SEUL BOUTON DOMINANT. Deux appels à l'action de même
+                  poids obligeraient à choisir avant d'avoir compris — et c'est
+                  précisément ce qu'une page d'accueil doit épargner. Le lien
+                  vers les perturbations existe toujours, en dessous et en
+                  retrait typographique.
+
+                  ⚠️ C'EST UN `<Link>`, DONC UN VRAI LIEN. Un `<div onClick>`
+                  serait invisible au clavier, inouvrable dans un nouvel
+                  onglet, et absent de la liste des liens d'un lecteur
+                  d'écran. La taille et la couleur ne remplacent pas la
+                  sémantique.
+
+                  `uf-cta` : halo qui respire, défini dans `globals.css`,
+                  neutralisé par `prefers-reduced-motion`. */}
               <Link
                 href="/recherche"
-                className="bg-brand hover:bg-brand-dark shadow-brand/25 rounded-lg px-6 py-3 text-base font-semibold text-white shadow-lg transition-all hover:shadow-xl motion-safe:hover:-translate-y-0.5"
+                className="bg-brand hover:bg-brand-dark uf-cta mt-10 inline-flex items-center gap-3 rounded-2xl px-8 py-5 text-lg font-bold text-white transition-transform sm:px-12 sm:py-6 sm:text-xl motion-safe:hover:-translate-y-1"
               >
-                {t.accueilCta}
+                <span aria-hidden="true">🚀</span>
+                {t.accueilCtaPrincipal}
               </Link>
+
+              {/* L'accroche sous le bouton, discrète : elle dit à quoi mène le
+                  clic sans répéter le libellé. */}
+              <p className="mt-4 text-sm text-neutral-600">
+                {t.accueilCtaAccroche}
+              </p>
 
               <Link
                 href="/perturbations"
-                className="text-ink rounded-lg border border-neutral-300 bg-white px-5 py-3 text-base font-medium transition-colors hover:bg-neutral-50"
+                className="hover:text-brand mt-8 text-sm font-medium text-neutral-600 underline underline-offset-4 transition-colors"
               >
                 {t.accueilCtaSecondaire}
               </Link>

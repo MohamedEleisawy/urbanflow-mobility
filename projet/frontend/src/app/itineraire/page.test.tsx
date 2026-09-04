@@ -23,13 +23,7 @@ import { LangueProvider } from "@/components/LangueProvider";
 vi.mock("@/lib/alertes-api", () => ({ listerAlertes: vi.fn() }));
 
 vi.mock("@/components/CarteLeaflet", () => ({
-  default: ({
-    arrets,
-    troncons,
-  }: {
-    arrets: unknown[];
-    troncons?: unknown[] | null;
-  }) => (
+  default: ({ arrets, troncons }: { arrets: unknown[]; troncons?: unknown[] | null }) => (
     <div
       data-testid="carte-leaflet"
       data-arrets={arrets.length}
@@ -49,9 +43,7 @@ vi.mock("@/components/CarteLeaflet", () => ({
 
 const { listerAlertes } = await import("@/lib/alertes-api");
 
-const segment = (
-  surcharge: Partial<ItinerarySegment> = {},
-): ItinerarySegment => ({
+const segment = (surcharge: Partial<ItinerarySegment> = {}): ItinerarySegment => ({
   fromStopId: "a",
   fromStopName: "Gare de Lyon",
   fromStopLat: 48.8443,
@@ -77,6 +69,8 @@ const ITINERAIRE: Itinerary = {
   criterion: "FASTEST",
   totalDistanceM: 5358,
   totalDurationMin: 6,
+  walkAccess: null,
+  walkEgress: null,
   numberOfTransfers: 1,
   carbon: {
     status: "CARBON_AVAILABLE",
@@ -321,8 +315,18 @@ describe("/itineraire", () => {
           // Trois tronçons consécutifs sur la même ligne.
           segments: [
             segment({ fromStopId: "s0", toStopId: "s1", toStopName: "Arrêt 1" }),
-            segment({ fromStopId: "s1", fromStopName: "Arrêt 1", toStopId: "s2", toStopName: "Arrêt 2" }),
-            segment({ fromStopId: "s2", fromStopName: "Arrêt 2", toStopId: "s3", toStopName: "Arrêt 3" }),
+            segment({
+              fromStopId: "s1",
+              fromStopName: "Arrêt 1",
+              toStopId: "s2",
+              toStopName: "Arrêt 2",
+            }),
+            segment({
+              fromStopId: "s2",
+              fromStopName: "Arrêt 2",
+              toStopId: "s3",
+              toStopName: "Arrêt 3",
+            }),
           ],
         },
       });

@@ -416,10 +416,12 @@ describe("/historique/[id]", () => {
 
       rendre();
 
-      // Sans segment, il n'y a aucune position à relier. Leaflet n'est même
-      // pas chargé : il n'y a rien à dessiner, et la carte le dit.
-      expect(await screen.findByText(/aucun arrêt à afficher/i)).toBeDefined();
-      expect(screen.queryByTestId("carte-leaflet")).toBeNull();
+      // Sans segment, il n'y a aucune position à relier — mais la carte RESTE
+      // MONTÉE : seuls ses calques sont vides. Elle le dit en incrustation.
+      expect(
+        await screen.findByText(/ne porte aucun arrêt localisable/i),
+      ).toBeDefined();
+      expect(screen.getByTestId("carte-leaflet")).toBeDefined();
       // Le trajet, lui, reste entièrement affiché.
       expect(screen.getByText("24 min")).toBeDefined();
     });

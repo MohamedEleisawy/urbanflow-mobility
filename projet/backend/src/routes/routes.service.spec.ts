@@ -970,6 +970,29 @@ describe('RoutesService', () => {
     const depuisA = { fromLat: 48.8807, fromLon: 2.3551 };
     const versC = { toLat: 48.8585, toLon: 2.3472 };
 
+    /**
+     * Distance et durée de la MARCHE d'approche et de sortie d'un itinéraire.
+     *
+     * ⚠️ ELLES ENTRENT DANS LES TOTAUX. Les jeux d'essai placent le point
+     * demandé à quelques dizaines de mètres du quai : la marche y est donc
+     * courte mais JAMAIS NULLE, et un total « exactement 3 000 m » signalerait
+     * qu'elle a été oubliée — le défaut que ces tests verrouillent.
+     */
+    const marches = (itineraire: {
+      walkAccess: { distanceM: number; durationMin: number } | null;
+      walkEgress: { distanceM: number; durationMin: number } | null;
+    }) => {
+      const legs = [itineraire.walkAccess, itineraire.walkEgress].filter(
+        (leg): leg is { distanceM: number; durationMin: number } =>
+          leg !== null,
+      );
+
+      return {
+        distanceM: legs.reduce((somme, leg) => somme + leg.distanceM, 0),
+        durationMin: legs.reduce((somme, leg) => somme + leg.durationMin, 0),
+      };
+    };
+
     it('renvoie un itinéraire direct quand un seul segment relie les deux arrêts', async () => {
       prisma.stop.findMany.mockResolvedValue([A, C]);
       prisma.networkLink.findMany.mockResolvedValue([aVersC]);
@@ -989,8 +1012,13 @@ describe('RoutesService', () => {
         distanceM: 3000,
         durationMin: 30,
       });
-      expect(result[0].totalDistanceM).toBe(3000);
-      expect(result[0].totalDurationMin).toBe(30);
+      // Réseau + marche des deux bouts : c'est ce que l'usager parcourt.
+      expect(result[0].totalDistanceM).toBe(
+        3000 + marches(result[0]).distanceM,
+      );
+      expect(result[0].totalDurationMin).toBe(
+        30 + marches(result[0]).durationMin,
+      );
     });
 
     it('enchaîne deux segments quand il n’existe pas de liaison directe', async () => {
@@ -1005,22 +1033,28 @@ describe('RoutesService', () => {
         'Magenta',
         'Chatelet',
       ]);
-      // Les totaux sont bien la somme des segments.
-      expect(result[0].totalDistanceM).toBe(3800);
-      expect(result[0].totalDurationMin).toBe(20);
+      // Les totaux sont la somme des segments ET de la marche des deux bouts.
+      expect(result[0].totalDistanceM).toBe(
+        3800 + marches(result[0]).distanceM,
+      );
+      expect(result[0].totalDurationMin).toBe(
+        20 + marches(result[0]).durationMin,
+      );
     });
 
-    it('oppose le plus rapide au plus court quand ils diffèrent', async () => {
-      // C'est le cas STRASBOURGEOIS, et il n'a rien de théorique : le tram
-      // file en site propre mais contourne, le bus coupe au plus court mais
-      // s'arrête partout.
+    it('oppose le plus rapide au moins de changements quand ils diffèrent', async () => {
+      // ⚠️ CE TEST OPPOSAIT AUPARAVANT FASTEST A SHORTEST. Le critere « le plus
+      // court en metres » a ete retire de l'affichage apres mesure sur le
+      // reseau francilien : il proposait 64 minutes et onze fois plus
+      // d'emissions pour economiser 1,4 km de trace. Voir l'en-tete de
+      // `searchRoutes`.
       //
-      //   Rapide : A --tram--> B --tram--> C   6 000 m, 10 min, 1 changement
-      //   Court  : A --bus-----------> C       3 500 m, 30 min, 0 changement
+      //   Rapide : A --tram--> B --tram--> C   10 min, 1 changement
+      //   Direct : A --bus-----------> C       30 min, 0 changement
       //
-      // ⚠️ LE PLUS COURT EST ICI LE PLUS LENT. C'est exactement ce que le
-      // critère doit rendre visible : sans lui, un usager qui préfère marcher
-      // moins et rester au sol ne verrait jamais cette option.
+      // ⚠️ LE PLUS DIRECT EST ICI LE PLUS LENT. C'est exactement ce que le
+      // critere doit rendre visible : quelqu'un avec une valise, une poussette
+      // ou vingt minutes d'avance prefere souvent ne pas changer.
       const aVersBTram = segment(A.id, B.id, 'TRAM', 3000, 5, 'tram-b');
       const bVersCTram = segment(B.id, C.id, 'TRAM', 3000, 5, 'tram-c');
       const aVersCBus = segment(A.id, C.id, 'BUS', 3500, 30, 'bus-30');
@@ -1035,19 +1069,20 @@ describe('RoutesService', () => {
       const result = await service.searchRoutes({ ...depuisA, ...versC });
 
       const rapide = result.find((i) => i.criterion === 'FASTEST');
-      const court = result.find((i) => i.criterion === 'SHORTEST');
+      const direct = result.find((i) => i.criterion === 'FEWEST_TRANSFERS');
 
-      // Le plus rapide gagne 20 minutes, au prix d'une correspondance et de
-      // 2 500 mètres supplémentaires.
-      expect(rapide?.totalDurationMin).toBe(10);
-      expect(rapide?.totalDistanceM).toBe(6000);
+      // Le plus rapide gagne 20 minutes, au prix d'une correspondance.
+      expect(rapide!.totalDurationMin).toBe(10 + marches(rapide!).durationMin);
       expect(rapide?.numberOfTransfers).toBe(1);
 
-      // Le plus court parcourt moins de sol, et c'est SA SEULE PROMESSE :
-      // il ne prétend être ni plus rapide, ni plus propre.
-      expect(court?.totalDistanceM).toBe(3500);
-      expect(court?.totalDurationMin).toBe(30);
-      expect(court?.segments).toHaveLength(1);
+      // Le plus direct est plus lent, mais d'un seul tenant.
+      expect(direct!.totalDurationMin).toBe(30 + marches(direct!).durationMin);
+      expect(direct?.numberOfTransfers).toBe(0);
+      expect(direct?.segments).toHaveLength(1);
+
+      // ⚠️ `SHORTEST` EST CALCULE MAIS JAMAIS RENDU : il sert de candidat au
+      // critere carbone, sans occuper une carte de resultat.
+      expect(result.map((i) => i.criterion)).not.toContain('SHORTEST');
     });
 
     it('NE SACRIFIE PAS 23 MINUTES POUR UN DIXIÈME DE GRAMME', async () => {
@@ -1113,11 +1148,10 @@ describe('RoutesService', () => {
       expect(result[0].segments[0].lineId).toBe('tram-b');
       expect(result[1].segments[0].lineId).toBe('tram-f');
 
-      // ⚠️ LE SECOND EST ÉTIQUETÉ « LOWEST_CO2 », PAS « SHORTEST », et c'est
-      // le comportement voulu : moins de mètres à mode égal, ce sont moins de
-      // grammes, donc le critère carbone désigne le même trajet et passe
-      // AVANT dans l'ordre d'insertion. La déduplication retire ensuite le
-      // doublon `SHORTEST`. L'usager voit deux cartes honnêtes, pas trois.
+      // ⚠️ LE SECOND EST ÉTIQUETÉ « LOWEST_CO2 » : moins de mètres à mode
+      // égal, ce sont moins de grammes, donc le critère carbone désigne ce
+      // trajet et passe avant dans l'ordre d'insertion. L'usager voit deux
+      // cartes honnêtes, pas trois dont l'une serait un doublon maquillé.
       expect(result.map((i) => i.criterion)).toEqual(['FASTEST', 'LOWEST_CO2']);
     });
 
@@ -1183,8 +1217,17 @@ describe('RoutesService', () => {
       it('envoie au calcul le mode et la distance issus du RÉSEAU', async () => {
         await service.searchRoutes({ ...depuisA, ...versC });
 
+        // ⚠️ LA MARCHE EST ENVOYÉE ELLE AUSSI. Elle n'émet rien, mais elle
+        // compte dans la distance porte-à-porte — celle qui sert de référence
+        // à « ce que la voiture aurait émis ». L'omettre sous-estimait
+        // l'économie annoncée à l'usager.
         expect(carbonService.calculate).toHaveBeenCalledWith({
-          segments: [{ mode: 'BUS', distanceM: 3000 }],
+          segments: [
+            { mode: 'BUS', distanceM: 3000 },
+            // La marche d'approche et celle de sortie, dans cet ordre.
+            { mode: 'WALK', distanceM: expect.any(Number) as number },
+            { mode: 'WALK', distanceM: expect.any(Number) as number },
+          ],
         });
       });
 
@@ -1201,7 +1244,9 @@ describe('RoutesService', () => {
 
         expect(result).toHaveLength(1);
         expect(result[0].segments).toHaveLength(1);
-        expect(result[0].totalDurationMin).toBe(30);
+        expect(result[0].totalDurationMin).toBe(
+          30 + marches(result[0]).durationMin,
+        );
       });
 
       it('n’affiche JAMAIS 0 g à la place d’une erreur', async () => {
@@ -1329,7 +1374,7 @@ describe('RoutesService', () => {
       });
     });
 
-    it("renvoie [] quand l'arrivée n'est reliée à rien", async () => {
+    it("propose la MARCHE quand l'arrivée n'est reliée à rien", async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C, D]);
       prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
 
@@ -1340,19 +1385,34 @@ describe('RoutesService', () => {
         toLon: D.longitude,
       });
 
-      expect(result).toEqual([]);
+      // ⚠️ « Le réseau n'y va pas » n'est pas « on ne peut pas y aller ».
+      // Aucun tronçon n'est emprunté : l'itinéraire est une marche, et il le
+      // dit — `ESTIMATE`, jamais un itinéraire de rues.
+      expect(result).toHaveLength(1);
+      expect(result[0].segments).toEqual([]);
+      expect(result[0].walkAccess?.source).toBe('ESTIMATE');
     });
 
-    it('renvoie [] quand la base ne contient aucun arrêt', async () => {
+    it('propose la MARCHE quand la base ne contient aucun arrêt', async () => {
+      // ⚠️ « Aucun arrêt » n'est pas « aucun trajet ». Deux points peuvent se
+      // rejoindre à pied dans une zone que le réseau ne dessert pas — et
+      // répondre [] reviendrait à dire « impossible » à quelqu'un qui n'a
+      // qu'à marcher.
       prisma.stop.findMany.mockResolvedValue([]);
       prisma.networkLink.findMany.mockResolvedValue([]);
 
       const result = await service.searchRoutes({ ...depuisA, ...versC });
 
-      expect(result).toEqual([]);
+      expect(result).toHaveLength(1);
+      expect(result[0].segments).toEqual([]);
+      expect(result[0].walkAccess).toMatchObject({ source: 'ESTIMATE' });
+      expect(result[0].walkAccess!.distanceM).toBeGreaterThan(0);
+      expect(result[0].totalDurationMin).toBeGreaterThanOrEqual(1);
     });
 
-    it('renvoie [] quand le départ et l’arrivée pointent vers le même arrêt', async () => {
+    it('propose la MARCHE quand le départ et l’arrivée pointent vers le même arrêt', async () => {
+      // Mesuré sur le réseau réel : « 15 rue Adler » → « 2 rue Mélanie »,
+      // deux cents mètres, rendait AUCUN itinéraire.
       prisma.stop.findMany.mockResolvedValue([A, C]);
       prisma.networkLink.findMany.mockResolvedValue([aVersC]);
 
@@ -1363,7 +1423,11 @@ describe('RoutesService', () => {
         toLon: A.longitude,
       });
 
-      expect(result).toEqual([]);
+      expect(result).toHaveLength(1);
+      expect(result[0].segments).toEqual([]);
+      expect(result[0].numberOfTransfers).toBe(0);
+      // ⚠️ JAMAIS ZÉRO MINUTE : « 0 min » se lirait « vous y êtes ».
+      expect(result[0].totalDurationMin).toBeGreaterThanOrEqual(1);
     });
 
     it('ne renvoie jamais de données personnelles (ni routeId, ni userId, ni horaires)', async () => {
@@ -1609,8 +1673,12 @@ describe('RoutesService', () => {
         geometrySource: 'STRAIGHT',
       });
       expect(itineraire.criterion).toBe('FASTEST');
-      expect(itineraire.totalDistanceM).toBe(3000);
-      expect(itineraire.totalDurationMin).toBe(30);
+      expect(itineraire.totalDistanceM).toBe(
+        3000 + marches(itineraire).distanceM,
+      );
+      expect(itineraire.totalDurationMin).toBe(
+        30 + marches(itineraire).durationMin,
+      );
     });
 
     it('reste déterministe : deux recherches identiques, réponse identique', async () => {
@@ -1832,7 +1900,7 @@ describe('RoutesService', () => {
       const propre = result.find((i) => i.criterion === 'LOWEST_CO2');
 
       // Le plus rapide est bien le minimum des trois durées (20 < 30 < 50).
-      expect(rapide?.totalDurationMin).toBe(20);
+      expect(rapide!.totalDurationMin).toBe(20 + marches(rapide!).durationMin);
 
       // ⚠️ AUCUN itinéraire FEWEST_TRANSFERS ici, et c'est CORRECT : le plus
       // rapide (A→B à pied, puis le bus 38) ne comporte lui non plus aucun
@@ -1850,10 +1918,10 @@ describe('RoutesService', () => {
       // des trajets réels : ici, le plus rapide sans bus se trouve être ce
       // trajet-là.
       expect(propre?.segments.every((s) => s.mode === 'WALK')).toBe(true);
-      expect(propre?.totalDistanceM).toBe(2000);
+      expect(propre!.totalDistanceM).toBe(2000 + marches(propre!).distanceM);
     });
 
-    it('renvoie [] quand le point de départ est trop loin de tout arrêt', async () => {
+    it('propose la MARCHE quand le point de départ est trop loin de tout arrêt', async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
       prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
 
@@ -1864,10 +1932,14 @@ describe('RoutesService', () => {
         ...versC,
       });
 
-      expect(result).toEqual([]);
+      // Le réseau ne dessert pas ce point : reste la marche, annoncée comme
+      // une estimation.
+      expect(result).toHaveLength(1);
+      expect(result[0].segments).toEqual([]);
+      expect(result[0].walkAccess?.source).toBe('ESTIMATE');
     });
 
-    it('renvoie [] quand la destination est trop loin de tout arrêt', async () => {
+    it('propose la MARCHE quand la destination est trop loin de tout arrêt', async () => {
       prisma.stop.findMany.mockResolvedValue([A, B, C]);
       prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
 
@@ -1877,7 +1949,9 @@ describe('RoutesService', () => {
         toLon: C.longitude,
       });
 
-      expect(result).toEqual([]);
+      expect(result).toHaveLength(1);
+      expect(result[0].segments).toEqual([]);
+      expect(result[0].walkAccess?.source).toBe('ESTIMATE');
     });
 
     it('accepte un point situé juste à l’intérieur du rayon de recherche', async () => {
@@ -1944,10 +2018,12 @@ describe('RoutesService', () => {
         // Le plus rapide est le bus (30 min contre 45), le moins émetteur la
         // marche (0 g/km contre 113) : les deux liaisons ont donc bien été
         // prises en compte séparément.
-        expect(rapide?.totalDurationMin).toBe(30);
+        expect(rapide!.totalDurationMin).toBe(
+          30 + marches(rapide!).durationMin,
+        );
         expect(rapide?.segments[0].mode).toBe('BUS');
         expect(propre?.segments[0].mode).toBe('WALK');
-        expect(propre?.totalDistanceM).toBe(2000);
+        expect(propre!.totalDistanceM).toBe(2000 + marches(propre!).distanceM);
       });
     });
 
@@ -1967,7 +2043,7 @@ describe('RoutesService', () => {
         expect(prisma.networkLink.findMany).toHaveBeenCalled();
       });
 
-      it('ignore les trajets personnels : sans réseau public, aucun itinéraire', async () => {
+      it('ignore les trajets personnels : sans réseau public, aucun TRONÇON', async () => {
         prisma.stop.findMany.mockResolvedValue([A, B, C]);
         // Le réseau public est VIDE...
         prisma.networkLink.findMany.mockResolvedValue([]);
@@ -1978,7 +2054,13 @@ describe('RoutesService', () => {
 
         const result = await service.searchRoutes({ ...depuisA, ...versC });
 
-        expect(result).toEqual([]);
+        // ⚠️ LA GARANTIE PORTE SUR LES TRONÇONS, PAS SUR LE NOMBRE DE
+        // RÉPONSES. Depuis que la marche est proposée en dernier recours, la
+        // réponse n'est plus vide — mais elle ne contient TOUJOURS aucun
+        // tronçon, donc rien qui puisse venir du trajet d'un usager.
+        expect(result).toHaveLength(1);
+        expect(result[0].segments).toEqual([]);
+        expect(JSON.stringify(result)).not.toContain(B.id);
       });
 
       it("n'emprunte que des liaisons du réseau public, jamais celles d'un usager", async () => {
@@ -1996,7 +2078,9 @@ describe('RoutesService', () => {
         expect(result[0].segments[0].toStopId).toBe(C.id);
         // La durée est bien celle du réseau (30 min), et non celle du
         // raccourci personnel (20 min).
-        expect(result[0].totalDurationMin).toBe(30);
+        expect(result[0].totalDurationMin).toBe(
+          30 + marches(result[0]).durationMin,
+        );
       });
 
       it('fonctionne avec le réseau public seul, sans aucune donnée utilisateur', async () => {

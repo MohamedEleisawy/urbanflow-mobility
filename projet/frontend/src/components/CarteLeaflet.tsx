@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { Map as CarteLeafletType, LayerGroup } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { CENTRE_DEFAUT, type PointCarte, type TronconTrace } from "@/lib/carte";
+import { SuiviRecadrage } from "@/lib/carte-recadrage";
 import type { TransportMode } from "@/lib/types";
 import type { VelibStation } from "@/lib/velib-api";
 
@@ -134,6 +135,17 @@ export interface CarteLeafletProps {
    * ne la ramène de force sous ses pieds.
    */
   suivrePosition?: boolean;
+
+  /**
+   * Centre du territoire desservi, pour l'ouverture de la carte.
+   *
+   * ⚠️ APPLIQUÉ UNE SEULE FOIS. Il arrive de façon asynchrone (`GET
+   * /api/territory`) : la carte s'ouvre donc sur `CENTRE_DEFAUT` — un repli
+   * neutre, jamais une ville en dur — puis se recentre dès que le territoire
+   * est connu, tant qu'aucun trajet n'est tracé et que l'usager n'a rien
+   * déplacé.
+   */
+  centre?: readonly [number, number] | null;
 }
 
 /**
@@ -241,12 +253,69 @@ export default function CarteLeaflet({
   velib = null,
   position = null,
   suivrePosition = false,
+  centre = null,
 }: CarteLeafletProps) {
   const conteneur = useRef<HTMLDivElement>(null);
   const carte = useRef<CarteLeafletType | null>(null);
   const couche = useRef<LayerGroup | null>(null);
   /// Arrete l'observateur de redimensionnement au demontage.
   const nettoyage = useRef<(() => void) | null>(null);
+  /// Le centrage sur le territoire n'a lieu qu'UNE fois : après, la vue est à
+  /// l'usager. Passe à `true` dès qu'on l'a appliqué OU que l'usager déplace
+  /// la carte.
+  const centreTerritoireApplique = useRef(false);
+
+  // ═══ LE CENTRE EST DÉPLIÉ EN DEUX NOMBRES ═══
+  //
+  // ⚠️ ET C'EST LA CORRECTION D'UNE BOUCLE DE RENDU INFINIE. `centre` est un
+  // TUPLE : un parent qui écrit `centre={[zone.lat, zone.lon]}` en fabrique un
+  // nouveau à CHAQUE rendu. Mis tel quel dans les dépendances de l'effet
+  // ci-dessous, il le faisait rejouer à chaque rendu — donc `fitBounds`, donc
+  // `moveend`, donc `onCentreDeplace`, donc un `setState` chez le parent, donc
+  // un nouveau rendu : « Maximum update depth exceeded », et le processeur à
+  // 100 %.
+  //
+  // Deux NOMBRES se comparent par valeur. L'identité du tuple n'a plus aucune
+  // conséquence, quel que soit le parent.
+  const centreLat = centre ? centre[0] : null;
+  const centreLon = centre ? centre[1] : null;
+
+  /// Dernier centre connu, tenu à jour pour que la création de carte — qui est
+  /// asynchrone — parte du territoire s'il est déjà résolu.
+  const centreRef = useRef<readonly [number, number] | null>(centre);
+  useEffect(() => {
+    centreRef.current =
+      centreLat === null || centreLon === null ? null : [centreLat, centreLon];
+  }, [centreLat, centreLon]);
+
+  // ═══ DISTINGUER UN DÉPLACEMENT DE L'USAGER D'UN RECADRAGE PROGRAMMÉ ═══
+  //
+  // ⚠️ LEAFLET NE LE FAIT PAS POUR NOUS. `setView`, `fitBounds` et `panTo`
+  // émettent le MÊME `moveend` qu'un glissement au doigt. Rapporter les
+  // premiers au parent revient à lui dire « l'usager a bougé » alors que c'est
+  // NOUS qui avons bougé — et c'est l'autre moitié de la boucle infinie.
+  //
+  // La règle vit dans `lib/carte-recadrage.ts`, sans React ni Leaflet, et y
+  // est éprouvée cas par cas. Ici on ne fait que la brancher.
+  const suiviRecadrage = useRef<SuiviRecadrage>(null);
+  suiviRecadrage.current ??= new SuiviRecadrage();
+
+  /**
+   * Exécute un recadrage en le marquant comme PROGRAMMÉ.
+   *
+   * Tout `setView` / `fitBounds` / `panTo` doit passer par ici : c'est le seul
+   * endroit qui arme les garde-fous, et donc le seul qui garantisse que le
+   * `moveend` qui suivra ne sera pas pris pour un geste de l'usager.
+   *
+   * Stable (`useCallback` sans dépendance) : elle ne lit qu'une référence,
+   * elle peut donc entrer dans les dépendances d'un effet sans le faire
+   * rejouer.
+   */
+  const recadrer = useCallback(
+    (cible: { lat: number; lng: number }, action: () => void) =>
+      suiviRecadrage.current!.programmer(cible, action),
+    [],
+  );
 
   /**
    * Les rappels, tenus dans des références.
@@ -282,8 +351,18 @@ export default function CarteLeaflet({
     void import("leaflet").then((L) => {
       if (annule || !element || carte.current) return;
 
+      // Le territoire est parfois déjà connu au moment où la carte se crée
+      // (import Leaflet résolu après le premier rendu) : on part alors
+      // directement du bon centre, sans le saut visible d'un recentrage.
+      const centreInitial = centreRef.current;
+      if (centreInitial) {
+        centreTerritoireApplique.current = true;
+      }
+
       const instance = L.map(element, {
-        center: CENTRE_DEFAUT,
+        center: centreInitial
+          ? [centreInitial[0], centreInitial[1]]
+          : CENTRE_DEFAUT,
         zoom: 12,
         // La molette fait defiler la page, pas la carte, tant qu'on n'a pas cliqué
         // dedans : sans cela, un défilement au doigt sur mobile reste piégé.
@@ -312,16 +391,34 @@ export default function CarteLeaflet({
       //
       // ⚠️ `moveend` ET NON `move` : `move` se déclenche à chaque image d'un
       // glissement, ce qui produirait des dizaines de requêtes par seconde.
+      //
+      // ⚠️ ET SEULEMENT POUR UN GESTE DE L'USAGER. Voir `recadrer` : un
+      // recadrage que NOUS avons déclenché n'est pas une nouvelle intention de
+      // l'usager, et le rapporter refermait une boucle de rendu infinie.
       const surDeplacement = () => {
-        const centre = instance.getCenter();
-        centreDeplace.current?.(centre.lat, centre.lng);
+        const vue = instance.getCenter();
+
+        if (suiviRecadrage.current!.estEcho({ lat: vue.lat, lng: vue.lng })) {
+          return;
+        }
+
+        centreDeplace.current?.(vue.lat, vue.lng);
       };
 
       instance.on("moveend", surDeplacement);
 
+      // Dès que l'usager empoigne la carte, le recentrage sur le territoire
+      // est définitivement abandonné : la vue lui appartient. `dragstart` ne
+      // se déclenche QUE sur un geste — jamais sur un `setView` programmé.
+      const surPriseEnMain = () => {
+        centreTerritoireApplique.current = true;
+      };
+      instance.on("dragstart", surPriseEnMain);
+
       nettoyage.current = () => {
         observateur.disconnect();
         instance.off("moveend", surDeplacement);
+        instance.off("dragstart", surPriseEnMain);
       };
     });
 
@@ -343,6 +440,32 @@ export default function CarteLeaflet({
       const instance = carte.current;
       const groupe = couche.current;
       if (annule || !instance || !groupe) return;
+
+      // ═══ RECENTRAGE SUR LE TERRITOIRE, UNE SEULE FOIS ═══
+      //
+      // ⚠️ Le territoire arrive de façon asynchrone (`GET /api/territory`),
+      // parfois après la création de la carte. On le rattrape ici — cet effet
+      // se rejoue à chaque changement de données — mais UNIQUEMENT tant que la
+      // vue est neutre : aucun trajet, aucun suivi GPS, aucun geste de
+      // l'usager. Ensuite `fitBounds` (trajet) ou `panTo` (suivi) plus bas
+      // reprennent la main, et `dragstart` verrouille définitivement.
+      if (
+        centreLat !== null &&
+        centreLon !== null &&
+        !centreTerritoireApplique.current &&
+        !suivrePosition &&
+        !(trace && trace.length > 0) &&
+        !(troncons && troncons.length > 0)
+      ) {
+        centreTerritoireApplique.current = true;
+        recadrer({ lat: centreLat, lng: centreLon }, () =>
+          // `animate: false` : le `moveend` part alors de façon SYNCHRONE,
+          // pendant que le drapeau de `recadrer` est encore levé.
+          instance.setView([centreLat, centreLon], instance.getZoom(), {
+            animate: false,
+          }),
+        );
+      }
 
       groupe.clearLayers();
 
@@ -471,9 +594,16 @@ export default function CarteLeaflet({
       // `panTo` et non `setView` : on déplace SANS toucher au zoom, que
       // l'usager a peut-être ajusté lui-même.
       if (suivrePosition && position) {
-        instance.panTo([position.latitude, position.longitude], {
-          animate: true,
-        });
+        recadrer(
+          { lat: position.latitude, lng: position.longitude },
+          // Animé : pendant une navigation, un glissement doux se suit des
+          // yeux là où un saut sec fait perdre le fil. C'est le cas que
+          // `cibleProgrammee` existe pour couvrir.
+          () =>
+            instance.panTo([position.latitude, position.longitude], {
+              animate: true,
+            }),
+        );
         return;
       }
 
@@ -485,17 +615,39 @@ export default function CarteLeaflet({
             );
 
       if (pointsDuTrace.length > 0) {
-        instance.fitBounds(L.latLngBounds(pointsDuTrace), {
-          padding: [32, 32],
-          maxZoom: 16,
-        });
+        const cadre = L.latLngBounds(pointsDuTrace);
+        const milieu = cadre.getCenter();
+
+        recadrer({ lat: milieu.lat, lng: milieu.lng }, () =>
+          instance.fitBounds(cadre, {
+            padding: [32, 32],
+            maxZoom: 16,
+            // Synchrone, donc couvert par le drapeau de `recadrer` — et sans
+            // animation le trajet s'affiche d'un coup, ce qui est ce qu'on
+            // veut après une recherche.
+            animate: false,
+          }),
+        );
       }
     });
 
     return () => {
       annule = true;
     };
-  }, [arrets, trace, troncons, velib, position, suivrePosition]);
+    // ⚠️ `centreLat` / `centreLon` ET NON `centre` : deux nombres comparés par
+    // valeur, là où le tuple changeait d'identité à chaque rendu du parent et
+    // faisait rejouer cet effet en boucle. `recadrer` est stable.
+  }, [
+    arrets,
+    trace,
+    troncons,
+    velib,
+    position,
+    suivrePosition,
+    centreLat,
+    centreLon,
+    recadrer,
+  ]);
 
   // `aria-hidden` : tout ce que la carte montre est déjà écrit en toutes
   // lettres à côté d'elle (étapes, arrêts, distances). Faire lire à un

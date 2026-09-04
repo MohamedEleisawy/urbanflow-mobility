@@ -20,10 +20,12 @@ import {
   ItineraryDto,
   ItineraryScheduleDto,
   ItinerarySegmentDto,
+  ItineraryWalkLegDto,
 } from './dto/itinerary.dto';
 import { CarbonFactorsDto } from '../carbon/dto/carbon-factors.dto';
 import { cheminOptimal, type AreteGenerique, type Cout } from './dijkstra';
 import { haversineDistanceM } from '../common/geo/distance.util';
+import { minutesDeMarche } from '../common/geo/marche.util';
 
 // Une "arête" du graphe : un déplacement possible d'un arrêt vers un autre.
 interface GraphEdge {
@@ -681,9 +683,26 @@ export class RoutesService {
    *
    * ═══ LES TROIS CRITÈRES ═══
    *
-   *   FASTEST     ⚡ le plus rapide, tous modes confondus ;
-   *   LOWEST_CO2  🌱 le moins émetteur ;
-   *   SHORTEST    📏 la plus courte distance parcourue.
+   *   FASTEST           ⚡ le plus rapide, tous modes confondus ;
+   *   LOWEST_CO2        🌱 le moins émetteur ;
+   *   FEWEST_TRANSFERS  🔁 le moins de changements de ligne.
+   *
+   * ⚠️ `SHORTEST` A ÉTÉ RETIRÉ DE L'AFFICHAGE, après mesure sur le réseau
+   * francilien :
+   *
+   *     Gare de Lyon → Gare du Nord
+   *       FASTEST      6 min, 1 changement,   21 g
+   *       SHORTEST    64 min, 4 changements, 238 g
+   *
+   * « Le plus court en mètres » minimise le sol parcouru. Dans un réseau où le
+   * métro plonge sous les immeubles et le bus contourne les places, cela
+   * désigne des trajets de surface qui zigzaguent — soixante-quatre minutes et
+   * onze fois plus d'émissions pour économiser 1,4 km de tracé.
+   *
+   * Le critère gardait un sens sur l'Eurométropole de Strasbourg, réseau de
+   * surface où le tram file en site propre mais contourne. Il n'en a plus sur
+   * un réseau souterrain dense. Il reste une valeur valide du type : des
+   * itinéraires enregistrés par les usagers la portent.
    *
    * Ils répondent à trois questions qu'un voyageur se pose vraiment, et
    * peuvent parfaitement désigner le même trajet : dans ce cas un seul
@@ -693,8 +712,8 @@ export class RoutesService {
    *
    * Les trois critères sont trois fonctions de coût LEXICOGRAPHIQUES :
    *
-   *     FASTEST   [durée]
-   *     SHORTEST  [distance, durée]
+   *     FASTEST           [durée]
+   *     FEWEST_TRANSFERS  [changements, durée]
    *
    * Aucune ne mélange deux grandeurs dans une somme pondérée, donc aucune
    * n'exige de choisir un taux de conversion — « une correspondance vaut
@@ -749,24 +768,31 @@ export class RoutesService {
       }),
     ]);
 
+    // ⚠️ AUCUN ARRÊT DANS LE CADRE NE VEUT PAS DIRE « AUCUN TRAJET ». Deux
+    // points peuvent parfaitement se rejoindre à pied dans une zone que le
+    // réseau ne dessert pas.
     if (stops.length === 0) {
-      return [];
+      return this.seulementAPied(dto);
     }
 
     // ⚠️ TOUS LES QUAIS D'UN MÊME LIEU SONT ACCEPTABLES, pas seulement le
-    // plus proche. Île-de-France Mobilités publie UN ARRÊT PAR QUAI :
-    // « Gare de Lyon » existe en cinq exemplaires.
+    // plus proche. Un pôle d'échange publie UN ARRÊT PAR QUAI : « Gare
+    // Centrale » compte onze quais à Strasbourg.
     const origines = this.arretsProches(stops, dto.fromLat, dto.fromLon);
     const destinations = this.arretsProches(stops, dto.toLat, dto.toLon);
 
+    // Aucun quai rattachable d'un côté ou de l'autre : le réseau ne dessert
+    // pas ce point, mais les jambes, elles, fonctionnent toujours.
     if (origines.length === 0 || destinations.length === 0) {
-      return [];
+      return this.seulementAPied(dto);
     }
 
-    // Deux points rattachés aux mêmes quais : il n'y a pas de trajet à
-    // proposer, seulement quelques pas.
+    // ⚠️ DEUX POINTS RATTACHÉS AUX MÊMES QUAIS SE REJOIGNENT À PIED — ce qui
+    // est une RÉPONSE, pas une absence de réponse. Ce cas rendait autrefois
+    // une liste vide : « 15 rue Adler » → « 2 rue Mélanie », deux cents
+    // mètres, et l'écran affichait « aucun itinéraire ».
     if (origines.every((o) => destinations.some((d) => d.id === o.id))) {
-      return [];
+      return this.seulementAPied(dto);
     }
 
     const graph = this.buildGraph(links);
@@ -828,23 +854,26 @@ export class RoutesService {
     // C'est exactement la technique déjà employée par `moinsEmetteur()`, pour
     // la même raison : sélectionner parmi des trajets réels plutôt que
     // pondérer des grandeurs incommensurables.
-    await this.plusRapideReellement(chemins, stopsById, instant);
+    await this.plusRapideReellement(chemins, stopsById, instant, lignesActives);
 
     const itineraires: ItineraryDto[] = [];
 
     for (const [critere, chemin] of chemins) {
-      // Clé de travail, jamais un critère affiché : elle a servi de candidat
-      // ci-dessus et n'a plus rien à faire dans la réponse.
-      if (critere === 'FEWEST_TRANSFERS') {
+      // ⚠️ `SHORTEST` EST CALCULÉ MAIS NON AFFICHÉ. Il sert de candidat au
+      // critère carbone — un trajet plus court émet souvent moins — sans
+      // occuper une carte de résultat où il proposerait, sur un réseau
+      // souterrain dense, des zigzags de surface. Voir l'en-tête de
+      // `searchRoutes`.
+      if (critere === 'SHORTEST') {
         continue;
       }
 
-      const candidat = this.toItinerary(critere, chemin, stopsById);
+      const candidat = this.toItinerary(critere, chemin, stopsById, dto);
 
       // ⚠️ DEUX CRITÈRES PEUVENT DÉSIGNER LE MÊME TRAJET, et c'est même le
       // cas normal sur un trajet court. On garde le premier, dans l'ordre
-      // FASTEST → LOWEST_CO2 → SHORTEST, et l'interface affiche alors DEUX
-      // cartes — jamais trois dont l'une serait un doublon maquillé.
+      // FASTEST → LOWEST_CO2 → FEWEST_TRANSFERS, et l'interface affiche alors
+      // DEUX cartes — jamais trois dont l'une serait un doublon maquillé.
       const deja = itineraires.some(
         (existant) => this.signature(existant) === this.signature(candidat),
       );
@@ -854,8 +883,32 @@ export class RoutesService {
       }
     }
 
+    // ═══ LA MARCHE, QUAND ELLE EST LA BONNE RÉPONSE ═══
+    //
+    // ⚠️ CE BLOC RÉPARE UN « AUCUN ITINÉRAIRE » MESURÉ SUR LE RÉSEAU RÉEL.
+    // « 15 rue Adler » → « 2 rue Mélanie », deux cents mètres : le graphe ne
+    // relie pas ces deux quais, et l'écran répondait « nous ne savons pas vous
+    // y emmener » pour une rue à traverser.
+    //
+    // ⚠️ UNIQUEMENT QUAND LE RÉSEAU N'OFFRE RIEN, et c'est une retenue
+    // délibérée. Il serait tentant de proposer aussi la marche dès qu'elle
+    // paraît plus rapide — mais ce serait opposer une ESTIMATION à vol
+    // d'oiseau, minorée par construction, à des durées MESURÉES dans le flux
+    // de l'opérateur. Deux grandeurs qui ne se comparent pas honnêtement.
+    //
+    // ⚠️ AUCUN SEUIL DE DISTANCE N'EST INVENTÉ ICI. Le seul critère est
+    // « le graphe n'a rien trouvé », qui se constate.
+    //
+    // LIMITE CONNUE, ASSUMÉE : quand le réseau propose un détour absurde pour
+    // trois cents mètres, il reste proposé. La corriger demanderait soit un
+    // routeur piéton réel (`WALK_ROUTING_PROVIDER`), soit un seuil arbitraire
+    // — et c'est exactement le genre de nombre que ce projet refuse d'inventer.
+    if (itineraires.length === 0) {
+      itineraires.push(this.itineraireAPied(dto));
+    }
+
     await this.enrichirCarbone(itineraires, facteurs);
-    await this.enrichirHoraires(itineraires, instant);
+    await this.enrichirHoraires(itineraires, instant, lignesActives);
 
     return itineraires;
   }
@@ -878,15 +931,27 @@ export class RoutesService {
     chemins: Map<ItineraryCriterion, PathStep[]>,
     stopsById: Map<string, Stop>,
     instant: Date,
+    lignesActives: CirculationDuMoment | null,
   ): Promise<void> {
     const rapide = chemins.get('FASTEST');
     const directs = chemins.get('FEWEST_TRANSFERS');
 
-    if (!rapide || !directs) {
+    if (!rapide || !directs || lignesActives === null) {
       return;
     }
 
-    if (!(await this.schedule.horairesDisponibles())) {
+    // ⚠️ MÊME GARDE QUE `enrichirHoraires`, ET POUR LA MÊME RAISON. Sans
+    // horaires, les deux candidats rendent `null` : on paie deux évaluations
+    // complètes — chacune une requête par montée — pour ne rien pouvoir
+    // départager.
+    const horodate = (chemin: PathStep[]) =>
+      chemin.some(
+        (etape) =>
+          etape.edge.mode !== ModeTransport.WALK &&
+          lignesActives.horodatees.has(etape.edge.lineId),
+      );
+
+    if (!horodate(rapide) && !horodate(directs)) {
       return;
     }
 
@@ -971,9 +1036,41 @@ export class RoutesService {
   private async enrichirHoraires(
     itineraires: ItineraryDto[],
     instant: Date,
+    lignesActives: CirculationDuMoment | null,
   ): Promise<void> {
-    if (!(await this.schedule.horairesDisponibles())) {
-      for (const itineraire of itineraires) {
+    // ═══ UN TRAJET À PIED N'ATTEND AUCUN VÉHICULE ═══
+    //
+    // ⚠️ SANS CE CAS, UN TRAJET DE TROIS MINUTES À PIED AFFICHAIT « les
+    // horaires ne sont pas importés : la durée ne compte pas l'attente ».
+    // C'était trompeur : il n'y a rien à attendre, et l'heure d'arrivée est
+    // parfaitement connue — c'est l'heure de départ plus la durée de marche.
+    //
+    // Traité AVANT le repli `lignesActives === null` : l'absence de calendrier
+    // ne change rien à la marche.
+    const aPied = itineraires.filter(
+      (itineraire) => itineraire.segments.length === 0,
+    );
+
+    for (const itineraire of aPied) {
+      itineraire.schedule = {
+        status: 'SCHEDULE_AVAILABLE',
+        departureAt: instant.toISOString(),
+        arrivalAt: new Date(
+          instant.getTime() + itineraire.totalDurationMin * 60_000,
+        ).toISOString(),
+        // ⚠️ ZÉRO, ET NON `null` : ce n'est pas « nous ne savons pas », c'est
+        // « il n'y a aucune attente ». Les deux se lisent différemment.
+        totalWaitMin: 0,
+        reason: null,
+      };
+    }
+
+    const enTransport = itineraires.filter(
+      (itineraire) => itineraire.segments.length > 0,
+    );
+
+    if (lignesActives === null) {
+      for (const itineraire of enTransport) {
         itineraire.schedule = {
           status: 'SCHEDULE_UNAVAILABLE',
           departureAt: null,
@@ -988,9 +1085,56 @@ export class RoutesService {
       return;
     }
 
-    for (const itineraire of itineraires) {
+    for (const itineraire of enTransport) {
+      // ═══ ON NE DEMANDE PAS L'HEURE À UNE LIGNE QUI N'EN A PAS ═══
+      //
+      // ⚠️ CORRIGÉ APRÈS MESURE : la recherche mettait deux secondes, dont
+      // l'essentiel en allers-retours vers un calendrier qui n'avait rien à
+      // dire. Un itinéraire à six correspondances déclenchait jusqu'à
+      // quarante-huit requêtes pour n'en tirer que des `null`.
+      //
+      // ⚠️ ET SURTOUT, LE STATUT ÉTAIT FAUX. `SCHEDULE_UNKNOWN` signifie « ces
+      // lignes ne passent pas dans les prochaines heures » — une affirmation
+      // sur le service. La phrase juste ici est « nous n'avons aucun horaire
+      // pour ces lignes », qui n'affirme rien sur leur circulation.
+      if (!this.itineraireHorodate(itineraire, lignesActives)) {
+        itineraire.schedule = {
+          status: 'SCHEDULE_UNAVAILABLE',
+          departureAt: null,
+          arrivalAt: null,
+          totalWaitMin: null,
+          reason:
+            "Aucun horaire n'est importé pour les lignes de cet itinéraire : " +
+            "la durée affichée ne compte que le temps de parcours, sans l'attente.",
+        };
+        continue;
+      }
+
       itineraire.schedule = await this.horairesDe(itineraire, instant);
     }
+  }
+
+  /**
+   * Vrai si AU MOINS UNE ligne empruntée possède des horaires en base.
+   *
+   * ⚠️ « AU MOINS UNE », ET NON « TOUTES ». Un itinéraire mixte — une ligne
+   * horodatée, une autre non — doit tenter le calcul : il échouera alors sur la
+   * seconde et rendra `SCHEDULE_UNKNOWN`, ce qui est exact. C'est seulement
+   * quand AUCUNE ligne n'est connue qu'on peut affirmer d'emblée n'avoir aucun
+   * horaire.
+   *
+   * ⚠️ LA MARCHE NE COMPTE PAS. Elle n'a pas d'horaire par nature ; l'inclure
+   * ferait conclure « horodaté » sur un trajet entièrement à pied.
+   */
+  private itineraireHorodate(
+    itineraire: ItineraryDto,
+    lignesActives: CirculationDuMoment,
+  ): boolean {
+    return itineraire.segments.some(
+      (segment) =>
+        segment.mode !== ModeTransport.WALK &&
+        lignesActives.horodatees.has(segment.lineId),
+    );
   }
 
   /**
@@ -1143,12 +1287,6 @@ export class RoutesService {
       retenus.set('FASTEST', rapide);
     }
 
-    if (directs) {
-      // Rangé sous une clé INTERNE, jamais renvoyée telle quelle : c'est
-      // `searchRoutes` qui décidera s'il remplace `FASTEST`.
-      retenus.set('FEWEST_TRANSFERS', directs);
-    }
-
     const court = this.plusCourt(graph, idsArrivee, circule);
 
     // ⚠️ L'ORDRE D'INSERTION EST L'ORDRE D'AFFICHAGE, et il n'est pas
@@ -1178,8 +1316,18 @@ export class RoutesService {
       }
     }
 
+    // ⚠️ CALCULÉ, MAIS FILTRÉ À LA SORTIE. `SHORTEST` sert de candidat au
+    // critère carbone ci-dessus ; il n'occupe pas de carte de résultat.
     if (court) {
       retenus.set('SHORTEST', court);
+    }
+
+    // ⚠️ EN DERNIER DANS L'ORDRE D'INSERTION, donc dernier à survivre à la
+    // déduplication. C'est voulu : quand « le moins de changements » désigne
+    // le même trajet que « le plus rapide », c'est cette dernière étiquette
+    // qui doit rester — elle est la plus utile des deux.
+    if (directs) {
+      retenus.set('FEWEST_TRANSFERS', directs);
     }
 
     return retenus;
@@ -1356,6 +1504,31 @@ export class RoutesService {
       }
     }
 
+    // ═══ Y A-T-IL SEULEMENT QUELQUE CHOSE À ARBITRER ? ═══
+    //
+    // ⚠️ AJOUTÉ APRÈS MESURE. Les variantes ci-dessous coûtent onze parcours
+    // de graphe supplémentaires — quatre secondes et demie sur le réseau
+    // francilien. Elles cherchent un trajet moins émetteur en retirant tour à
+    // tour chaque ligne, puis chaque mode.
+    //
+    // Cette recherche a un sens quand les trajets de base DIFFÈRENT en
+    // émissions. Elle n'en a aucun quand ils émettent déjà la même chose au
+    // gramme près : le réseau est alors homogène sur ce trajet — même mode,
+    // même distance à peu près — et retirer une ligne ne peut produire qu'un
+    // détour équivalent ou pire.
+    //
+    // Mesuré sur Gare de Lyon → Gare du Nord : les trois candidats émettent
+    // 21 g. On payait quatre secondes et demie pour confirmer qu'il n'y avait
+    // rien à gagner.
+    //
+    // ⚠️ LE SEUIL N'EST PAS INVENTÉ. C'est LE GRAMME, déjà retenu plus bas
+    // comme unité de comparaison — la précision des facteurs de la Base
+    // Carbone de l'ADEME, et l'unité affichée à l'usager. Une différence
+    // qu'on n'affiche pas ne vaut pas onze parcours de graphe.
+    if (this.emissionsHomogenes(dejaCalcules, facteurs)) {
+      return this.moinsEmetteurParmi(dejaCalcules, facteurs);
+    }
+
     // Ordre déterministe : deux recherches identiques doivent explorer les
     // mêmes variantes dans le même ordre (règle 4C-2). Le `slice` s'applique
     // donc à un ensemble stable, et non au hasard d'un parcours de `Set`.
@@ -1406,6 +1579,50 @@ export class RoutesService {
       }
     }
 
+    return this.moinsEmetteurParmi(candidats, facteurs);
+  }
+
+  /**
+   * Vrai si tous les candidats émettent la même chose, au gramme près.
+   *
+   * ⚠️ « AU GRAMME PRÈS », la même unité que la comparaison finale. Employer
+   * une précision plus fine ici rendrait la garde inopérante : deux trajets
+   * identiques au centième de gramme sont, pour l'usager, le même trajet.
+   *
+   * ⚠️ UN CANDIDAT NON MESURABLE FAIT ÉCHOUER LA GARDE. `co2Estime` rend `null`
+   * quand un mode n'a pas de facteur ; on ne peut alors rien conclure sur
+   * l'homogénéité, et l'exploration complète reprend ses droits.
+   */
+  private emissionsHomogenes(
+    candidats: readonly PathStep[][],
+    facteurs: CarbonFactorsDto,
+  ): boolean {
+    if (candidats.length < 2) {
+      return false;
+    }
+
+    const grammes = candidats.map((chemin) => this.co2Estime(chemin, facteurs));
+
+    if (grammes.some((valeur) => valeur === null)) {
+      return false;
+    }
+
+    const arrondis = grammes.map((valeur) => Math.round(valeur as number));
+
+    return new Set(arrondis).size === 1;
+  }
+
+  /**
+   * Le moins émetteur d'un ensemble de chemins déjà calculés.
+   *
+   * Extrait de `moinsEmetteur` pour être réutilisé par la garde
+   * d'homogénéité : sans cela, il aurait fallu recopier le départage — et deux
+   * copies d'une même règle divergent au premier changement de l'une.
+   */
+  private moinsEmetteurParmi(
+    candidats: readonly PathStep[][],
+    facteurs: CarbonFactorsDto,
+  ): PathStep[] | null {
     let meilleur: {
       chemin: PathStep[];
       co2: number;
@@ -1592,11 +1809,26 @@ export class RoutesService {
     await Promise.all(
       itineraires.map(async (itineraire) => {
         try {
+          // ⚠️ LA MARCHE DES DEUX BOUTS EN FAIT PARTIE. Elle n'émet rien, mais
+          // elle compte dans la DISTANCE — et c'est cette distance qui sert de
+          // référence à « ce que la voiture aurait émis ». L'omettre
+          // sous-estimait l'économie annoncée à l'usager, sur le chiffre même
+          // qui justifie le produit.
+          const marches = [itineraire.walkAccess, itineraire.walkEgress].filter(
+            (marche): marche is ItineraryWalkLegDto => marche !== null,
+          );
+
           const resultat = await this.carbonService.calculate({
-            segments: itineraire.segments.map((segment) => ({
-              mode: segment.mode,
-              distanceM: segment.distanceM,
-            })),
+            segments: [
+              ...itineraire.segments.map((segment) => ({
+                mode: segment.mode,
+                distanceM: segment.distanceM,
+              })),
+              ...marches.map((marche) => ({
+                mode: ModeTransport.WALK,
+                distanceM: marche.distanceM,
+              })),
+            ],
           });
 
           itineraire.carbon = {
@@ -1777,11 +2009,106 @@ export class RoutesService {
     return graph;
   }
 
+  /**
+   * Une marche entre un point demandé et un arrêt.
+   *
+   * ⚠️ TOUJOURS `ESTIMATE`. Aucun routeur piéton n'est configuré : la distance
+   * est à vol d'oiseau, donc MINORÉE, et le dire fait partie de la réponse.
+   * Le jour où `WALK_ROUTING_PROVIDER` existera, c'est ici que le vrai tracé
+   * entrera — le contrat public, lui, n'aura pas à changer.
+   */
+  private marcheVers(
+    depuis: { lat: number; lon: number },
+    vers: { lat: number; lon: number },
+    stopName: string,
+  ): ItineraryWalkLegDto {
+    const distanceM = Math.round(
+      haversineDistanceM(depuis.lat, depuis.lon, vers.lat, vers.lon),
+    );
+
+    return {
+      fromLat: depuis.lat,
+      fromLon: depuis.lon,
+      toLat: vers.lat,
+      toLon: vers.lon,
+      stopName,
+      distanceM,
+      durationMin: minutesDeMarche(distanceM),
+      source: 'ESTIMATE',
+    };
+  }
+
+  /**
+   * L'itinéraire entièrement à pied, quand le réseau n'apporte rien.
+   *
+   * ═══ CE QU'IL REMPLACE : UNE LISTE VIDE ═══
+   *
+   * Le moteur rendait `[]` — donc « aucun itinéraire » — dès que l'origine et
+   * la destination se rattachaient aux mêmes quais. Mesuré : « 15 rue Adler »
+   * → « 2 rue Mélanie », deux cents mètres, AUCUNE proposition. L'usager
+   * lisait « nous ne savons pas vous y emmener » pour une rue à traverser.
+   *
+   * ⚠️ ET CE N'EST PAS UNE DONNÉE INVENTÉE. La distance est mesurée entre les
+   * deux points que l'usager a lui-même désignés, et elle sort marquée
+   * `ESTIMATE` — l'interface annonce « Marche — estimation », jamais un
+   * itinéraire de rues.
+   */
+  /**
+   * La seule réponse possible : y aller à pied — empreinte comprise.
+   *
+   * ⚠️ ELLE PASSE PAR `enrichirCarbone` COMME LES AUTRES. Un trajet à pied
+   * émet zéro gramme, mais ce zéro doit venir du microservice, pas d'une
+   * constante écrite ici : c'est lui qui détient les facteurs, et c'est lui
+   * qui calcule l'économie face à la voiture — le chiffre qui donne tout son
+   * sens à « allez-y à pied ».
+   */
+  private async seulementAPied(dto: SearchRouteDto): Promise<ItineraryDto[]> {
+    const itineraires = [this.itineraireAPied(dto)];
+
+    await this.enrichirCarbone(
+      itineraires,
+      await this.carbonService.facteurs(),
+    );
+
+    return itineraires;
+  }
+
+  private itineraireAPied(dto: SearchRouteDto): ItineraryDto {
+    const marche = this.marcheVers(
+      { lat: dto.fromLat, lon: dto.fromLon },
+      { lat: dto.toLat, lon: dto.toLon },
+      // Aucun des deux bouts n'est un arrêt : c'est une marche de bout en bout.
+      '',
+    );
+
+    return {
+      criterion: 'FASTEST',
+      totalDistanceM: marche.distanceM,
+      totalDurationMin: marche.durationMin,
+      // Marcher n'est pas changer de ligne.
+      numberOfTransfers: 0,
+      carbon: indisponible('Empreinte non encore calculée.'),
+      walkAccess: marche,
+      walkEgress: null,
+      // ⚠️ VIDE, ET C'EST LE RÉSULTAT. Aucun véhicule n'est emprunté.
+      segments: [],
+    };
+  }
+
   // Met en forme le chemin brut pour la réponse HTTP.
   private toItinerary(
     criterion: ItineraryCriterion,
     steps: PathStep[],
     stopsById: Map<string, Stop>,
+    /**
+     * Les points que l'usager a demandés, pour chiffrer la marche d'approche
+     * et la marche finale.
+     *
+     * FACULTATIF : les chemins évalués en interne (`plusRapideReellement`) ne
+     * s'en servent pas — ils ne comparent que la partie réseau, identique aux
+     * deux bouts. Les inclure là fausserait la comparaison sans rien apporter.
+     */
+    points?: SearchRouteDto,
   ): ItineraryDto {
     const segments: ItinerarySegmentDto[] = steps.map((step) => {
       const depuis = stopsById.get(step.fromStopId);
@@ -1818,15 +2145,54 @@ export class RoutesService {
       };
     });
 
+    // ═══ LA MARCHE DES DEUX BOUTS ═══
+    //
+    // ⚠️ SANS ELLE, LA DURÉE ANNONCÉE EST FAUSSE, pas approximative. Mesuré :
+    // « 15 rue Adler » → « Place Kléber » s'affichait « 15 min, 3 994 m » et
+    // commençait à l'arrêt Jardiniers — en taisant les 500 m à pied pour
+    // l'atteindre et les 200 m de sortie. Vingt minutes de trajet réel
+    // annoncées quinze, et un premier arrêt qui tombait du ciel.
+    const premier = segments[0];
+    const dernier = segments[segments.length - 1];
+
+    const walkAccess =
+      points && premier
+        ? this.marcheVers(
+            { lat: points.fromLat, lon: points.fromLon },
+            { lat: premier.fromStopLat, lon: premier.fromStopLon },
+            premier.fromStopName,
+          )
+        : null;
+
+    const walkEgress =
+      points && dernier
+        ? this.marcheVers(
+            { lat: dernier.toStopLat, lon: dernier.toStopLon },
+            { lat: points.toLat, lon: points.toLon },
+            dernier.toStopName,
+          )
+        : null;
+
+    const marches = [walkAccess, walkEgress].filter(
+      (marche): marche is ItineraryWalkLegDto => marche !== null,
+    );
+
     return {
       criterion,
-      totalDistanceM: segments.reduce((sum, s) => sum + s.distanceM, 0),
-      totalDurationMin: segments.reduce((sum, s) => sum + s.durationMin, 0),
+      totalDistanceM:
+        segments.reduce((sum, s) => sum + s.distanceM, 0) +
+        marches.reduce((sum, m) => sum + m.distanceM, 0),
+      totalDurationMin:
+        segments.reduce((sum, s) => sum + s.durationMin, 0) +
+        marches.reduce((sum, m) => sum + m.durationMin, 0),
+      // ⚠️ INCHANGÉ : marcher jusqu'à un quai n'est pas une correspondance.
       numberOfTransfers: compterChangements(segments),
       // Remplacé par `enrichirCarbone`. L'initialiser à « indisponible »
       // plutôt qu'à `null` garantit qu'aucun chemin de code ne peut rendre un
       // itinéraire dépourvu de champ carbone.
       carbon: indisponible('Empreinte non encore calculée.'),
+      walkAccess,
+      walkEgress,
       segments,
     };
   }

@@ -200,6 +200,7 @@ function ContenuDetail({ id }: { id: string }) {
               description={descriptionCarte(trajet, trace !== null)}
               arrets={trace ?? []}
               trace={trace}
+              messageVide="Ce trajet ne porte aucun arrêt localisable."
             />
             <Segments trajet={trajet} arrets={noms} />
             <Carbone trajet={trajet} />

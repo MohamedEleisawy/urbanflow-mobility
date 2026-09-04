@@ -32,10 +32,27 @@ export default function ConnexionPage() {
             }}
             bas={
               <>
-                Pas encore de compte ?{" "}
-                <Link href="/inscription" className="text-brand font-medium underline">
-                  Créer un compte
+                {/* ⚠️ « MOT DE PASSE OUBLIÉ » EN PREMIER, et sur sa propre
+                    ligne. Quelqu'un qui arrive ici après un échec de connexion
+                    cherche cela ; le noyer à la suite de « créer un compte »
+                    le ferait chercher, puis abandonner — ou créer un second
+                    compte avec la même adresse, qui échouerait aussi. */}
+                <Link
+                  href="/mot-de-passe-oublie"
+                  className="text-brand font-medium underline underline-offset-2"
+                >
+                  Mot de passe oublié ?
                 </Link>
+
+                <span className="mt-2 block">
+                  Pas encore de compte ?{" "}
+                  <Link
+                    href="/inscription"
+                    className="text-brand font-medium underline"
+                  >
+                    Créer un compte
+                  </Link>
+                </span>
               </>
             }
           />

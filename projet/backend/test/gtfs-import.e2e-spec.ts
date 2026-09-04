@@ -135,6 +135,8 @@ describe('Import GTFS puis recherche (e2e)', () => {
     const itineraires = response.body as {
       criterion: string;
       totalDurationMin: number;
+      walkAccess: { durationMin: number } | null;
+      walkEgress: { durationMin: number } | null;
       segments: { fromStopName: string; toStopName: string; mode: string }[];
     }[];
 
@@ -147,8 +149,19 @@ describe('Import GTFS puis recherche (e2e)', () => {
       'Reseau Centre',
     ]);
     expect(itineraire.segments[1].toStopName).toBe('Reseau Sud');
-    // 6 min (médiane N1→N2) + 8 min (médiane N2→N3).
-    expect(itineraire.totalDurationMin).toBe(14);
+
+    // ═══ 14 MIN DE RÉSEAU, PLUS LA MARCHE DES DEUX BOUTS ═══
+    //
+    // 6 min (médiane N1→N2) + 8 min (médiane N2→N3) pour la partie roulée.
+    // ⚠️ ET LA MARCHE COMPTE. Le point demandé n'est pas l'arrêt : il faut le
+    // rejoindre, puis quitter le dernier arrêt. Un total exactement égal à 14
+    // signalerait que ces minutes ont de nouveau disparu de l'annonce.
+    const marcheMin =
+      (itineraire.walkAccess?.durationMin ?? 0) +
+      (itineraire.walkEgress?.durationMin ?? 0);
+
+    expect(marcheMin).toBeGreaterThan(0);
+    expect(itineraire.totalDurationMin).toBe(14 + marcheMin);
     // Le mode vient de la ligne GTFS (route_type 3 = bus).
     expect(itineraire.segments[0].mode).toBe('BUS');
   });
@@ -314,8 +327,18 @@ describe('Import GTFS puis recherche (e2e)', () => {
         .send(RECHERCHE)
         .expect(200);
 
-      const itineraires = response.body as { totalDurationMin: number }[];
-      expect(itineraires[0].totalDurationMin).toBe(14);
+      const itineraires = response.body as {
+        totalDurationMin: number;
+        walkAccess: { durationMin: number } | null;
+        walkEgress: { durationMin: number } | null;
+      }[];
+
+      // 14 min de réseau, plus la marche d'approche et de sortie.
+      const marcheMin =
+        (itineraires[0].walkAccess?.durationMin ?? 0) +
+        (itineraires[0].walkEgress?.durationMin ?? 0);
+
+      expect(itineraires[0].totalDurationMin).toBe(14 + marcheMin);
     });
 
     it('remonte une erreur claire pour une archive corrompue', async () => {

@@ -293,3 +293,54 @@ body {
 [data-theme="dark"] .leaflet-control-attribution a {
   color: var(--color-brand);
 }
+
+/* ==========================================================================
+   APPEL À L'ACTION PRINCIPAL (war room)
+   ==========================================================================
+   Le bouton « Rechercher un itinéraire » est le point focal de l'accueil :
+   c'est la seule chose que 90 % des visiteurs viennent y faire.
+
+   ═══ CE QUE FAIT CETTE ANIMATION, ET CE QU'ELLE NE FAIT PAS ═══
+
+   Un halo qui respire, très lentement, très faiblement. Il attire l'œil sans
+   le retenir.
+
+   ⚠️ ELLE PORTE SUR `box-shadow`, JAMAIS SUR `transform` NI `width`. Une
+   pulsation d'échelle ferait bouger la mise en page à chaque cycle, provoquant
+   un décalage cumulatif (CLS) sur la métrique la plus visible de la page.
+   `box-shadow` s'anime hors du flux : rien ne se déplace.
+
+   ⚠️ 3 SECONDES, PAS 1. Une pulsation rapide se lit comme une alerte et
+   devient épuisante au bout de dix secondes. Trois secondes se remarquent une
+   fois, puis se laissent oublier.
+
+   ⚠️ NEUTRALISÉE PAR `prefers-reduced-motion`, comme toute animation
+   décorative — voir la règle en fin de fichier. Le bouton reste alors
+   parfaitement visible : c'est sa couleur et sa taille qui le portent, pas son
+   halo.
+   ========================================================================== */
+@keyframes uf-halo {
+  0%,
+  100% {
+    box-shadow:
+      0 10px 15px -3px color-mix(in oklab, var(--color-brand) 25%, transparent),
+      0 0 0 0 color-mix(in oklab, var(--color-brand) 30%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 10px 15px -3px color-mix(in oklab, var(--color-brand) 25%, transparent),
+      0 0 0 14px color-mix(in oklab, var(--color-brand) 0%, transparent);
+  }
+}
+
+.uf-cta {
+  animation: uf-halo 3s ease-in-out infinite;
+}
+
+/* ⚠️ L'ANIMATION S'ARRÊTE AU SURVOL ET AU FOCUS. Quelqu'un qui a trouvé le
+   bouton n'a plus besoin qu'on le lui signale — et une cible qui pulse pendant
+   qu'on la vise est désagréable, en particulier au trackpad. */
+.uf-cta:hover,
+.uf-cta:focus-visible {
+  animation: none;
+}

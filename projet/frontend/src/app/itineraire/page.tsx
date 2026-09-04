@@ -19,6 +19,8 @@ import {
   LIBELLES_MODES,
 } from "@/lib/format";
 import { regrouperSegments, type GroupeEtapes } from "@/lib/itineraire";
+import { EtapeMarche } from "@/components/EtapeMarche";
+import type { ItineraryWalkLeg } from "@/lib/types";
 import {
   analyserSelection,
   instantaneServeur,
@@ -180,7 +182,12 @@ function Detail({ selection }: { selection: SelectionItineraire }) {
 
           {perturbations.length > 0 && <Perturbations items={perturbations} />}
 
-          <Timeline groupes={groupes} destination={destination.label} />
+          <Timeline
+            groupes={groupes}
+            destination={destination.label}
+            walkAccess={itineraire.walkAccess}
+            walkEgress={itineraire.walkEgress}
+          />
 
           {/* ⚠️ CE BOUTON FAIT QUELQUE CHOSE. `/navigation` lit le MÊME
               itinéraire mémorisé : il n'y a rien à transmettre, et rien ne
@@ -335,7 +342,17 @@ function Perturbations({ items }: { items: AlerteItineraire[] }) {
  * ligne 8 forment UNE étape lisible. Le détail des arrêts reste accessible,
  * replié — la vue principale répond d'abord à « que dois-je faire ? ».
  */
-function Timeline({ groupes, destination }: { groupes: GroupeEtapes[]; destination: string }) {
+function Timeline({
+  groupes,
+  destination,
+  walkAccess,
+  walkEgress,
+}: {
+  groupes: GroupeEtapes[];
+  destination: string;
+  walkAccess: ItineraryWalkLeg | null;
+  walkEgress: ItineraryWalkLeg | null;
+}) {
   const { t } = useTraduction();
 
   return (
@@ -345,13 +362,33 @@ function Timeline({ groupes, destination }: { groupes: GroupeEtapes[]; destinati
       </h2>
 
       {/* Une liste ORDONNÉE : l'ordre est celui du trajet, et un lecteur
-          d'écran annonce « 2 sur 4 ». */}
+          d'écran annonce « 2 sur 4 ».
+
+          ⚠️ LA MARCHE OUVRE ET FERME LE DÉROULÉ. Sans elle, la première étape
+          était « prenez le tram E à Jardiniers » sans jamais dire comment
+          atteindre Jardiniers depuis l'adresse demandée. */}
       <ol className="mt-4 space-y-3">
+        {walkAccess && (
+          <li>
+            <Card>
+              <EtapeMarche marche={walkAccess} sens="acces" />
+            </Card>
+          </li>
+        )}
+
         {groupes.map((groupe, index) => (
           <li key={`${groupe.lineId}-${groupe.segments[0].fromStopId}-${index}`}>
             <Etape groupe={groupe} rang={index + 1} total={groupes.length} />
           </li>
         ))}
+
+        {walkEgress && (
+          <li>
+            <Card>
+              <EtapeMarche marche={walkEgress} sens="sortie" />
+            </Card>
+          </li>
+        )}
 
         <li>
           <Card>

@@ -16,7 +16,21 @@ describe('ScheduleService', () => {
   // chaque assertion sur une requête Prisma devient un accès non sûr que le
   // linter refuse — à juste titre : une faute de frappe dans un nom de champ
   // ne serait alors détectée par rien.
-  type Requete = { where: Record<string, unknown> };
+  /**
+   * La forme des requêtes Prisma qu'on inspecte.
+   *
+   * ⚠️ TYPÉE, ET NON `Record<string, unknown>`. Le type large obligeait chaque
+   * assertion à un `as`, ce qui revenait à ne rien typer du tout : une faute de
+   * frappe dans un nom de champ passait inaperçue.
+   */
+  type Requete = {
+    where: {
+      serviceId?: { in: string[] };
+      lineId?: { in: string[] };
+      departureSec?: { gte: number; lte: number };
+      [autre: string]: unknown;
+    };
+  };
 
   let prisma: {
     transitService: {
@@ -164,7 +178,7 @@ describe('ScheduleService', () => {
       // requête, et le test passerait pour de mauvaises raisons.
       const requete = prisma.stopDeparture.findMany.mock.calls[1][0];
 
-      expect(requete.where.serviceId.in).toEqual(['semaine']);
+      expect(requete.where.serviceId?.in).toEqual(['semaine']);
     });
 
     it('AJOUTE un service qu’une exception introduit, même hors calendrier régulier', async () => {
@@ -186,7 +200,7 @@ describe('ScheduleService', () => {
       // requête, et le test passerait pour de mauvaises raisons.
       const requete = prisma.stopDeparture.findMany.mock.calls[1][0];
 
-      expect(requete.where.serviceId.in).toEqual(['dimanche']);
+      expect(requete.where.serviceId?.in).toEqual(['dimanche']);
     });
   });
 
@@ -293,8 +307,8 @@ describe('ScheduleService', () => {
 
       const requete = prisma.stopDeparture.findMany.mock.calls[0][0];
 
-      expect(requete.where.departureSec.gte).toBe(8 * 3600);
-      expect(requete.where.departureSec.lte).toBe(8 * 3600 + 3 * 3600);
+      expect(requete.where.departureSec?.gte).toBe(8 * 3600);
+      expect(requete.where.departureSec?.lte).toBe(8 * 3600 + 3 * 3600);
     });
 
     it('rend une liste vide SANS INTERROGER LA BASE si aucun arrêt n’est demandé', async () => {
@@ -329,7 +343,7 @@ describe('ScheduleService', () => {
 
       const requete = prisma.stopDeparture.findMany.mock.calls[0][0];
 
-      expect(requete.where.lineId.in).toEqual(['tram-d']);
+      expect(requete.where.lineId?.in).toEqual(['tram-d']);
     });
   });
 });

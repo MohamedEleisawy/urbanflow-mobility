@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
+import { territoire } from "@/lib/territoire-api";
 import { useAuth } from "@/components/AuthProvider";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
@@ -360,6 +361,46 @@ function Formulaire({
   const idLng = useId();
   const idAide = useId();
 
+  /**
+   * Les exemples de coordonnees, pris sur le TERRITOIRE DESSERVI.
+   *
+   * Ils affichaient auparavant « 48.5834 / 7.7452 » en dur — la Place Kleber,
+   * a Strasbourg. Sur un deploiement francilien, l'exemple designait donc une
+   * ville a cinq cents kilometres.
+   *
+   * Ce n'est pas cosmetique : un exemple GUIDE LA SAISIE. Quelqu'un qui recopie
+   * la forme sans verifier la valeur enregistre un domicile dans la mauvaise
+   * region, et son itineraire ne rendra rien.
+   *
+   * `null` tant que le territoire n'a pas repondu : le champ n'affiche alors
+   * aucun exemple, ce qui vaut mieux qu'un exemple faux.
+   */
+  const [exemple, setExemple] = useState<{
+    latitude: string;
+    longitude: string;
+  } | null>(null);
+
+  useEffect(() => {
+    const controleur = new AbortController();
+
+    territoire(controleur.signal)
+      .then((zone) =>
+        setExemple({
+          // Quatre decimales : environ dix metres, la precision utile pour une
+          // adresse. Davantage suggererait une exactitude que personne ne
+          // saisit a la main.
+          latitude: zone.centerLat.toFixed(4),
+          longitude: zone.centerLon.toFixed(4),
+        }),
+      )
+      .catch(() => {
+        // Silencieux : sans exemple, le champ reste utilisable. Le texte
+        // d'aide sous les deux champs explique deja ce qu'on attend.
+      });
+
+    return () => controleur.abort();
+  }, []);
+
   // Chaînes, et non nombres : un champ numérique vide vaut `""`, que
   // `Number("")` convertit en `0` — une coordonnée parfaitement valide au
   // large du golfe de Guinée. On garde donc le texte brut et on convertit
@@ -444,7 +485,7 @@ function Formulaire({
             value={saisie.latitude}
             onChange={(e) => modifier("latitude", e.target.value)}
             aria-describedby={idAide}
-            placeholder="48.5834"
+            placeholder={exemple?.latitude ?? ""}
             className="focus:border-brand mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
           />
         </div>
@@ -459,7 +500,7 @@ function Formulaire({
             value={saisie.longitude}
             onChange={(e) => modifier("longitude", e.target.value)}
             aria-describedby={idAide}
-            placeholder="7.7452"
+            placeholder={exemple?.longitude ?? ""}
             className="focus:border-brand mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
           />
         </div>

@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
@@ -10,6 +17,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorMessage } from "@/components/ErrorMessage";
 import { Spinner } from "@/components/Spinner";
 import { messageDErreur } from "@/lib/api";
+import { haversineDistanceM } from "@/lib/geo";
 import {
   arretsDItineraire,
   CENTRE_DEFAUT,
@@ -26,6 +34,7 @@ import { listerAdresses } from "@/lib/adresses-api";
 import { regrouperSegments, resumerModes, type GroupeEtapes } from "@/lib/itineraire";
 import { memoriserSelection } from "@/lib/itineraire-selection";
 import { ChampAdresse, type PointChoisi } from "@/components/ChampAdresse";
+import { EtapeMarche } from "@/components/EtapeMarche";
 import type { FavoriteAddress, FavoriteAddressType } from "@/lib/types";
 import {
   enregistrerItineraire,
@@ -122,6 +131,25 @@ const DELAI_RECHARGEMENT_MS = 400;
  */
 const RAYON_VELIB_M = 800;
 
+/**
+ * Déplacement minimal du centre à partir duquel on recharge les arrêts.
+ *
+ * ═══ CE N'EST PAS UNE OPTIMISATION, C'EST UN VERROU ANTI-BOUCLE ═══
+ *
+ * Sans lui, `setCentreCarte({ latitude, longitude })` fabriquait un objet NEUF
+ * à chaque `moveend`, même pour un centre identique au précédent. Le nouvel
+ * objet re-rendait la page, la page re-rendait la carte, la carte se recadrait,
+ * le recadrage émettait un `moveend`… « Maximum update depth exceeded ».
+ *
+ * En rendant l'état INCHANGÉ sous ce seuil, React abandonne le rendu : la
+ * boucle ne peut plus se refermer, quelle que soit l'origine de l'appel.
+ *
+ * 50 m est très inférieur au rayon chargé (1 500 m) — aucun arrêt utile ne
+ * peut donc échapper à l'affichage — et bien au-dessus du bruit d'arrondi de
+ * Leaflet.
+ */
+const SEUIL_RECHARGEMENT_M = 50;
+
 /// Libellés français des deux emplacements. `HOME` ne se montre pas.
 const LIBELLES_ADRESSES: Record<FavoriteAddressType, string> = {
   HOME: "Domicile",
@@ -183,6 +211,45 @@ export default function RecherchePage() {
    * une ville codée en dur — le défaut que ce recadrage corrige.
    */
   const [zone, setZone] = useState<Territoire | null>(null);
+
+  /**
+   * Le centre du territoire, sous une identité STABLE.
+   *
+   * ⚠️ SANS CE `useMemo`, l'expression `[zone.centerLat, zone.centerLon]`
+   * écrite dans le JSX fabriquait un tableau neuf à chaque rendu. La carte le
+   * recevait comme une valeur « changée » et se recadrait — ce qui provoquait
+   * un rendu, donc un nouveau tableau, donc un nouveau recadrage.
+   *
+   * `CarteLeaflet` se protège désormais aussi de son côté (il compare deux
+   * nombres, pas un tuple) ; les deux gardes sont volontairement conservées :
+   * la carte ne doit pas dépendre de la discipline de chacun de ses appelants.
+   */
+  const centreDuTerritoire = useMemo<[number, number] | null>(
+    () => (zone ? [zone.centerLat, zone.centerLon] : null),
+    [zone],
+  );
+
+  /**
+   * La carte a bougé : on recharge les arrêts autour du nouveau centre.
+   *
+   * ⚠️ STABLE (`useCallback` sans dépendance) ET IDEMPOTENT. La mise à jour
+   * passe par la forme fonctionnelle et rend l'état INCHANGÉ quand le centre
+   * n'a pas bougé de plus de `SEUIL_RECHARGEMENT_M` : React abandonne alors le
+   * rendu. C'est ce qui rend structurellement impossible la boucle
+   * rendu → recadrage → `moveend` → `setState` → rendu.
+   */
+  const surCentreDeplace = useCallback((latitude: number, longitude: number) => {
+    setCentreCarte((actuel) => {
+      const ecartM = haversineDistanceM(
+        actuel.latitude,
+        actuel.longitude,
+        latitude,
+        longitude,
+      );
+
+      return ecartM < SEUIL_RECHARGEMENT_M ? actuel : { latitude, longitude };
+    });
+  }, []);
 
   /**
    * Modes présents dans le réseau, ou `null` tant qu'on ne les connaît pas.
@@ -910,10 +977,9 @@ export default function RecherchePage() {
               trace={trace}
               troncons={troncons}
               onChoisirArret={choisirDepuisLaCarte}
-              onCentreDeplace={(latitude, longitude) =>
-                setCentreCarte({ latitude, longitude })
-              }
+              onCentreDeplace={surCentreDeplace}
               velib={velib.statut === "ok" ? velib.stations : null}
+              centre={centreDuTerritoire}
             />
           </div>
 
@@ -1016,7 +1082,7 @@ function CoucheVelib({
             ? t.velibAucune
             : `${etat.stations.length} station${
                 etat.stations.length > 1 ? "s" : ""
-              } Vélib’ · relevé lu à ${new Date(etat.luA).toLocaleTimeString("fr-FR", {
+              } · relevé lu à ${new Date(etat.luA).toLocaleTimeString("fr-FR", {
                 hour: "2-digit",
                 minute: "2-digit",
               })}`)}
@@ -1338,7 +1404,14 @@ function ItineraireCarte({
   // Le regroupement est une pure LECTURE des segments : aucune donnée n'est
   // inventée, seulement présentée autrement. Le détail reste accessible.
   const groupes = regrouperSegments(itineraire.segments);
-  const resume = resumerModes(groupes, LIBELLES_MODES);
+
+  // ⚠️ UN TRAJET SANS AUCUN TRONÇON EST UN TRAJET À PIED, pas un trajet vide.
+  // `resumerModes` rendrait une chaîne vide et la carte de résultat n'aurait
+  // plus de titre de trajet du tout.
+  const resume =
+    groupes.length === 0
+      ? t.itineraireToutAPied
+      : resumerModes(groupes, LIBELLES_MODES);
 
   // ⚠️ LE NOMBRE DE CHANGEMENTS VIENT DU BACKEND, qui en est la source depuis
   // la Phase 4. Le recalculer ici ferait deux implémentations d'une même
@@ -1388,8 +1461,18 @@ function ItineraireCarte({
 
       {/* Une liste ORDONNÉE de GROUPES : l'ordre est celui du trajet.
           Cinq tronçons sur la ligne 8 forment UNE étape lisible, pas cinq —
-          et un lecteur d'écran n'entend plus cinq fois « Métro 8 ». */}
+          et un lecteur d'écran n'entend plus cinq fois « Métro 8 ».
+
+          ⚠️ LA MARCHE DES DEUX BOUTS ENCADRE LA LISTE. Sans elle, le trajet
+          commençait à un arrêt que l'usager n'avait pas demandé, sans jamais
+          dire comment l'atteindre. */}
       <ol className="mt-4 space-y-3">
+        {itineraire.walkAccess && (
+          <li>
+            <EtapeMarche marche={itineraire.walkAccess} sens="acces" />
+          </li>
+        )}
+
         {groupes.map((groupe, index) => (
           <EtapeGroupee
             key={`${groupe.lineId}-${groupe.segments[0].fromStopId}-${index}`}
@@ -1398,6 +1481,12 @@ function ItineraireCarte({
             total={groupes.length}
           />
         ))}
+
+        {itineraire.walkEgress && (
+          <li>
+            <EtapeMarche marche={itineraire.walkEgress} sens="sortie" />
+          </li>
+        )}
       </ol>
 
       {/* UN VRAI BOUTON, avec `aria-pressed` : c'est un interrupteur, pas

@@ -99,6 +99,10 @@ const FR = {
 
   // --- Page d'accueil (sprint soutenance) ----------------------------------
   accueilBaseline: "La mobilité urbaine, sans zone d’ombre",
+  accueilSlogan1: "Bougez mieux.",
+  accueilSlogan2: "Émettez moins.",
+  accueilCtaPrincipal: "Rechercher un itinéraire",
+  accueilCtaAccroche: "Votre prochain trajet commence ici.",
   accueilTitre: "Bougez dans {territoire} en sachant ce que ça coûte",
   accueilIntro:
     "Comparez vos itinéraires en tram, en bus et à pied, et voyez l’empreinte carbone de chacun avant de partir.",
@@ -118,6 +122,62 @@ const FR = {
   accueilHonneteteTitre: "Ce que nous ne savons pas, nous le disons",
   accueilHonneteteTexte:
     "Une source absente est annoncée comme absente. Aucun horaire n’est inventé, aucune perturbation fabriquée, aucun trajet rempli pour faire nombre.",
+
+  // --- Mot de passe oublié (war room) --------------------------------------
+  mdpOublieLien: "Mot de passe oublié ?",
+  mdpOublieTitre: "Mot de passe oublié",
+  mdpOublieIntro:
+    "Saisissez l’adresse de votre compte. Nous préparerons un lien de réinitialisation.",
+  mdpOublieChamp: "Adresse électronique",
+  mdpOublieEnvoyer: "Préparer un lien",
+  mdpOublieEnCours: "Préparation…",
+  mdpOublieRetour: "Retour à la connexion",
+  mdpOublieConfidentialite:
+    "Nous répondons la même chose que l’adresse soit inscrite ou non : cela évite qu’on puisse deviner qui a un compte ici.",
+
+  mdpResetTitre: "Nouveau mot de passe",
+  mdpResetIntro: "Choisissez un mot de passe d’au moins 8 caractères.",
+  mdpResetChamp: "Nouveau mot de passe",
+  mdpResetConfirmation: "Confirmer le mot de passe",
+  mdpResetValider: "Changer mon mot de passe",
+  mdpResetEnCours: "Modification…",
+  mdpResetDiscordance: "Les deux mots de passe ne correspondent pas.",
+  mdpResetTropCourt: "Le mot de passe doit contenir au moins 8 caractères.",
+  mdpResetSansJeton:
+    "Ce lien est incomplet. Demandez une nouvelle réinitialisation.",
+  mdpResetSucces: "Mot de passe modifié. Vous pouvez vous connecter.",
+  mdpAllerConnexion: "Aller à la connexion",
+
+  // --- Autour de moi (war room) --------------------------------------------
+  autourTitre: "Autour de moi",
+  autourIntro:
+    "Les arrêts les plus proches de votre position, avec les lignes qui les desservent.",
+  // --- Marche d'approche et de sortie ---
+  // ⚠️ « estimation » n'est pas une précaution de style : la distance est à
+  // vol d'oiseau, donc MINORÉE. Le trajet réel est toujours plus long.
+  marcheVers: "Marche jusqu’à",
+  marcheDepuis: "Marche depuis",
+  marcheJusquAArrivee: "Marche jusqu’à votre destination",
+  marcheEstimation: "estimation à vol d’oiseau",
+  marcheEstimationDetail:
+    "Aucun routeur piéton n’est configuré : cette distance est mesurée à vol d’oiseau, le chemin réel est plus long.",
+  itineraireToutAPied: "Ce trajet se fait entièrement à pied.",
+  autourActiver: "Utiliser ma position",
+  autourRecherche: "Recherche des arrêts proches…",
+  autourAucun: "Aucun arrêt de transport dans les environs.",
+  autourAucunDetail:
+    "Élargissez la zone ou vérifiez que le réseau de ce territoire est bien chargé.",
+  autourDistanceVolDOiseau:
+    "Distances et temps de marche estimés à vol d’oiseau : aucun routeur piéton n’est configuré, le trajet réel est plus long.",
+  autourHorairesTheoriques:
+    "Prochains passages selon les horaires théoriques de l’opérateur. Retards et suppressions ne sont pas connus.",
+  autourHorairesInconnus:
+    "Les horaires de ces lignes ne sont pas importés : nous ne pouvons pas annoncer de prochain passage.",
+  autourDans: "dans",
+  autourMinutes: "min",
+  autourPartirDIci: "Partir d’ici",
+  autourAllerIci: "Aller ici",
+  autourPmr: "Accessible PMR",
 
   navAccueil: "Accueil",
   navRecherche: "Recherche",
@@ -275,6 +335,10 @@ const EN: typeof FR = {
 
   // --- Home page (soutenance sprint) ---------------------------------------
   accueilBaseline: "Urban mobility, with nothing hidden",
+  accueilSlogan1: "Move better.",
+  accueilSlogan2: "Emit less.",
+  accueilCtaPrincipal: "Find a route",
+  accueilCtaAccroche: "Your next journey starts here.",
   accueilTitre: "Move around {territoire} knowing what it costs",
   accueilIntro:
     "Compare tram, bus and walking routes, and see the carbon footprint of each one before you leave.",
@@ -294,6 +358,58 @@ const EN: typeof FR = {
   accueilHonneteteTitre: "What we don’t know, we say",
   accueilHonneteteTexte:
     "A missing source is announced as missing. No timetable is invented, no disruption fabricated, no route padded to fill a card.",
+
+  // --- Forgotten password (war room) ---------------------------------------
+  mdpOublieLien: "Forgot your password?",
+  mdpOublieTitre: "Forgotten password",
+  mdpOublieIntro:
+    "Enter your account address. We will prepare a reset link.",
+  mdpOublieChamp: "Email address",
+  mdpOublieEnvoyer: "Prepare a link",
+  mdpOublieEnCours: "Preparing…",
+  mdpOublieRetour: "Back to sign in",
+  mdpOublieConfidentialite:
+    "We answer the same whether the address is registered or not: this prevents anyone from working out who has an account here.",
+
+  mdpResetTitre: "New password",
+  mdpResetIntro: "Choose a password of at least 8 characters.",
+  mdpResetChamp: "New password",
+  mdpResetConfirmation: "Confirm password",
+  mdpResetValider: "Change my password",
+  mdpResetEnCours: "Changing…",
+  mdpResetDiscordance: "The two passwords do not match.",
+  mdpResetTropCourt: "The password must be at least 8 characters long.",
+  mdpResetSansJeton: "This link is incomplete. Request a new reset.",
+  mdpResetSucces: "Password changed. You can now sign in.",
+  mdpAllerConnexion: "Go to sign in",
+
+  // --- Around me (war room) ------------------------------------------------
+  autourTitre: "Around me",
+  autourIntro:
+    "The stops closest to your position, with the lines that serve them.",
+  marcheVers: "Walk to",
+  marcheDepuis: "Walk from",
+  marcheJusquAArrivee: "Walk to your destination",
+  marcheEstimation: "straight-line estimate",
+  marcheEstimationDetail:
+    "No pedestrian router is configured: this distance is measured as the crow flies, the real path is longer.",
+  itineraireToutAPied: "This trip is entirely on foot.",
+  autourActiver: "Use my location",
+  autourRecherche: "Looking for nearby stops…",
+  autourAucun: "No transport stop nearby.",
+  autourAucunDetail:
+    "Widen the area, or check that this territory's network is loaded.",
+  autourDistanceVolDOiseau:
+    "Distances and walking times estimated as the crow flies: no pedestrian router is configured, the real route is longer.",
+  autourHorairesTheoriques:
+    "Next departures from the operator's scheduled times. Delays and cancellations are not known.",
+  autourHorairesInconnus:
+    "Timetables for these lines are not imported: we cannot announce a next departure.",
+  autourDans: "in",
+  autourMinutes: "min",
+  autourPartirDIci: "Depart from here",
+  autourAllerIci: "Go here",
+  autourPmr: "Step-free access",
 
   navAccueil: "Home",
   navRecherche: "Search",
@@ -435,6 +551,10 @@ const ES: typeof FR = {
 
   // --- Página de inicio (sprint de defensa) --------------------------------
   accueilBaseline: "La movilidad urbana, sin zonas de sombra",
+  accueilSlogan1: "Muévase mejor.",
+  accueilSlogan2: "Emita menos.",
+  accueilCtaPrincipal: "Buscar un itinerario",
+  accueilCtaAccroche: "Su próximo trayecto empieza aquí.",
   accueilTitre: "Muévase por {territoire} sabiendo lo que cuesta",
   accueilIntro:
     "Compare sus itinerarios en tranvía, autobús y a pie, y vea la huella de carbono de cada uno antes de salir.",
@@ -454,6 +574,58 @@ const ES: typeof FR = {
   accueilHonneteteTitre: "Lo que no sabemos, lo decimos",
   accueilHonneteteTexte:
     "Una fuente ausente se anuncia como ausente. Ningún horario se inventa, ninguna incidencia se fabrica, ningún trayecto se rellena para hacer número.",
+
+  // --- Contraseña olvidada (war room) --------------------------------------
+  mdpOublieLien: "¿Olvidó su contraseña?",
+  mdpOublieTitre: "Contraseña olvidada",
+  mdpOublieIntro:
+    "Introduzca la dirección de su cuenta. Prepararemos un enlace de restablecimiento.",
+  mdpOublieChamp: "Dirección de correo electrónico",
+  mdpOublieEnvoyer: "Preparar un enlace",
+  mdpOublieEnCours: "Preparando…",
+  mdpOublieRetour: "Volver al inicio de sesión",
+  mdpOublieConfidentialite:
+    "Respondemos lo mismo tanto si la dirección está registrada como si no: así nadie puede averiguar quién tiene una cuenta aquí.",
+
+  mdpResetTitre: "Nueva contraseña",
+  mdpResetIntro: "Elija una contraseña de al menos 8 caracteres.",
+  mdpResetChamp: "Nueva contraseña",
+  mdpResetConfirmation: "Confirmar contraseña",
+  mdpResetValider: "Cambiar mi contraseña",
+  mdpResetEnCours: "Cambiando…",
+  mdpResetDiscordance: "Las dos contraseñas no coinciden.",
+  mdpResetTropCourt: "La contraseña debe tener al menos 8 caracteres.",
+  mdpResetSansJeton: "Este enlace está incompleto. Solicite un nuevo restablecimiento.",
+  mdpResetSucces: "Contraseña cambiada. Ya puede iniciar sesión.",
+  mdpAllerConnexion: "Ir al inicio de sesión",
+
+  // --- A mi alrededor (war room) -------------------------------------------
+  autourTitre: "A mi alrededor",
+  autourIntro:
+    "Las paradas más cercanas a su posición, con las líneas que las sirven.",
+  marcheVers: "Caminar hasta",
+  marcheDepuis: "Caminar desde",
+  marcheJusquAArrivee: "Caminar hasta su destino",
+  marcheEstimation: "estimación en línea recta",
+  marcheEstimationDetail:
+    "No hay ningún enrutador peatonal configurado: esta distancia se mide en línea recta, el camino real es más largo.",
+  itineraireToutAPied: "Este trayecto se realiza completamente a pie.",
+  autourActiver: "Usar mi ubicación",
+  autourRecherche: "Buscando paradas cercanas…",
+  autourAucun: "Ninguna parada de transporte en los alrededores.",
+  autourAucunDetail:
+    "Amplíe la zona o compruebe que la red de este territorio está cargada.",
+  autourDistanceVolDOiseau:
+    "Distancias y tiempos de marcha estimados en línea recta: no hay enrutador peatonal configurado, el trayecto real es más largo.",
+  autourHorairesTheoriques:
+    "Próximos pasos según los horarios teóricos del operador. No se conocen retrasos ni supresiones.",
+  autourHorairesInconnus:
+    "Los horarios de estas líneas no están importados: no podemos anunciar un próximo paso.",
+  autourDans: "en",
+  autourMinutes: "min",
+  autourPartirDIci: "Salir de aquí",
+  autourAllerIci: "Ir aquí",
+  autourPmr: "Accesible PMR",
 
   navAccueil: "Inicio",
   navRecherche: "Búsqueda",

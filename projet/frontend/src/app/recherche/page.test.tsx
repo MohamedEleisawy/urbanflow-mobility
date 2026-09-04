@@ -5,13 +5,7 @@ import RecherchePage from "./page";
 import { AuthProvider } from "@/components/AuthProvider";
 import { LangueProvider } from "@/components/LangueProvider";
 import { ApiError, NetworkError } from "@/lib/api";
-import type {
-  FavoriteAddress,
-  Itinerary,
-  ItineraryCarbon,
-  Stop,
-  User,
-} from "@/lib/types";
+import type { FavoriteAddress, Itinerary, ItineraryCarbon, Stop, User } from "@/lib/types";
 
 // Seul le RÉSEAU est simulé. Le formulaire, son état, sa validation et le
 // rendu des résultats sont les vrais : c'est précisément ce qu'on veut
@@ -48,10 +42,27 @@ let derniersProps: {
   onChoisirArret?: (arret: unknown, role: "depart" | "arrivee") => void;
   onCentreDeplace?: (latitude: number, longitude: number) => void;
   velib?: unknown[] | null;
+  centre?: readonly [number, number] | null;
 } = { arrets: [] };
 
+/**
+ * Toutes les valeurs de `centre` reçues, DANS L'ORDRE et par RÉFÉRENCE.
+ *
+ * ⚠️ C'est l'identité qui est éprouvée, pas le contenu. Un parent qui écrit
+ * `centre={[zone.lat, zone.lon]}` dans son JSX fabrique un tableau neuf à
+ * chaque rendu ; la carte le voit alors « changé », se recadre, provoque un
+ * `moveend`, donc un `setState`, donc un rendu — « Maximum update depth
+ * exceeded ». Voir `lib/carte-recadrage.ts`.
+ */
+let centresRecus: (readonly [number, number] | null | undefined)[] = [];
+
 /// Simule un clic sur le n-ième arrêt dessiné, avec le rôle choisi.
-const cliquerArret = (index: number, role: "depart" | "arrivee") => {
+///
+/// ⚠️ ATTEND QUE LES ARRÊTS SOIENT CHARGÉS. La carte est désormais montée en
+/// permanence — même vide, le temps que `listerArrets` réponde. Sans cette
+/// attente, le clic partirait sur un tableau d'arrêts encore vide.
+const cliquerArret = async (index: number, role: "depart" | "arrivee") => {
+  await waitFor(() => expect(derniersProps.arrets.length).toBeGreaterThan(index));
   act(() => {
     derniersProps.onChoisirArret?.(derniersProps.arrets[index], role);
   });
@@ -72,31 +83,33 @@ vi.mock("@/components/CarteLeaflet", () => ({
     onChoisirArret?: (arret: unknown, role: "depart" | "arrivee") => void;
     onCentreDeplace?: (latitude: number, longitude: number) => void;
     velib?: unknown[] | null;
+    centre?: readonly [number, number] | null;
   }) => {
     derniersProps = props;
+    centresRecus.push(props.centre);
     const { arrets, trace, troncons, velib } = props;
 
     return (
-    <div
-      data-testid="carte-leaflet"
-      data-arrets={arrets.length}
-      data-trace={
-        trace === null ? "aucun" : trace.map((p) => (p as { nom: string }).nom).join(" > ")
-      }
-      // Chaque tronçon est résumé par sa PROVENANCE et son nombre de points :
-      // c'est ce qui permet de vérifier qu'une géométrie réelle est bien
-      // suivie, et qu'une droite de repli est bien signalée comme telle.
-      data-troncons={
-        troncons == null
-          ? "aucun"
-          : troncons
-              .map((t) => {
-                const troncon = t as { source: string; points: unknown[] };
-                return `${troncon.source}:${troncon.points.length}`;
-              })
-              .join("|")
-      }
-      data-velib={velib == null ? "aucun" : String(velib.length)}
+      <div
+        data-testid="carte-leaflet"
+        data-arrets={arrets.length}
+        data-trace={
+          trace === null ? "aucun" : trace.map((p) => (p as { nom: string }).nom).join(" > ")
+        }
+        // Chaque tronçon est résumé par sa PROVENANCE et son nombre de points :
+        // c'est ce qui permet de vérifier qu'une géométrie réelle est bien
+        // suivie, et qu'une droite de repli est bien signalée comme telle.
+        data-troncons={
+          troncons == null
+            ? "aucun"
+            : troncons
+                .map((t) => {
+                  const troncon = t as { source: string; points: unknown[] };
+                  return `${troncon.source}:${troncon.points.length}`;
+                })
+                .join("|")
+        }
+        data-velib={velib == null ? "aucun" : String(velib.length)}
       />
     );
   },
@@ -117,6 +130,11 @@ vi.mock("@/lib/geocoding-api", () => ({ rechercherAdresses: vi.fn() }));
 // Le client Vélib' : la couche est masquée par défaut, donc la plupart des
 // tests ne le déclenchent jamais. Un appel inattendu se verrait ici.
 vi.mock("@/lib/velib-api", () => ({ velibProches: vi.fn() }));
+
+// Le territoire desservi. ⚠️ IL COMMANDE LE CENTRE DE LA CARTE : sans lui,
+// celle-ci s'ouvrirait sur le repli neutre (centre de la France) et rien ne
+// vérifierait qu'elle vise bien Strasbourg.
+vi.mock("@/lib/territoire-api", () => ({ territoire: vi.fn() }));
 
 vi.mock("@/lib/adresses-api", () => ({
   listerAdresses: vi.fn(),
@@ -143,6 +161,19 @@ const { listerArrets, modesDuReseau, rechercherItineraires, enregistrerItinerair
   await import("@/lib/itineraires-api");
 const { estimerCarbone } = await import("@/lib/carbone-api");
 const { velibProches } = await import("@/lib/velib-api");
+const { territoire } = await import("@/lib/territoire-api");
+
+/// L'Eurométropole, telle que `GET /api/territory` la publie réellement.
+const STRASBOURG = {
+  name: "strasbourg",
+  displayName: "Strasbourg et Eurometropole",
+  country: "FR",
+  // Place Kléber.
+  centerLat: 48.5834,
+  centerLon: 7.7452,
+  radiusM: 15_000,
+  timezone: "Europe/Paris",
+};
 const { utilisateurCourant } = await import("@/lib/auth-api");
 const { listerAdresses } = await import("@/lib/adresses-api");
 const { rechercherAdresses } = await import("@/lib/geocoding-api");
@@ -225,6 +256,8 @@ const RAPIDE: Itinerary = {
   criterion: "FASTEST",
   totalDistanceM: 4300,
   totalDurationMin: 24,
+  walkAccess: null,
+  walkEgress: null,
   numberOfTransfers: 0,
   carbon: carbone(316, 937, 621, 66.3),
   segments: [
@@ -289,6 +322,8 @@ const PROPRE: Itinerary = {
   criterion: "LOWEST_CO2",
   totalDistanceM: 3900,
   totalDurationMin: 31,
+  walkAccess: null,
+  walkEgress: null,
   numberOfTransfers: 0,
   carbon: carbone(200, 850, 650, 76.5),
   segments: [
@@ -369,6 +404,9 @@ const chercher = async (depart = "Gare du Nord", arrivee = "Bastille") => {
 
 describe("/recherche", () => {
   beforeEach(() => {
+    centresRecus = [];
+    vi.mocked(territoire).mockReset();
+    vi.mocked(territoire).mockResolvedValue(STRASBOURG);
     vi.mocked(listerArrets).mockReset();
     vi.mocked(rechercherItineraires).mockReset();
     vi.mocked(estimerCarbone).mockReset();
@@ -903,7 +941,9 @@ describe("/recherche", () => {
       // du voisinage, cliquables. C'est ce qui manquait — l'écran s'ouvrait
       // sur un cadre vide.
       expect(await screen.findByTestId("carte-leaflet")).toBeDefined();
-      expect(screen.getByText(/cliquez sur l'un d'eux/i)).toBeDefined();
+      // La carte est montée d'emblée ; la mention des arrêts cliquables
+      // apparaît dès que `listerArrets` a répondu.
+      expect(await screen.findByText(/cliquez sur l'un d'eux/i)).toBeDefined();
     });
 
     it("ne dessine QUE les arrêts du trajet, jamais le réseau entier", async () => {
@@ -959,11 +999,86 @@ describe("/recherche", () => {
       );
     });
 
+    // -----------------------------------------------------------------------
+    // Régression « Maximum update depth exceeded »
+    // -----------------------------------------------------------------------
+    // Le cycle qui s'est réellement produit :
+    //
+    //   rendu → `centre={[lat, lon]}` NEUF → la carte se recadre
+    //         → `moveend` → `onCentreDeplace` → `setState` → rendu → …
+    //
+    // Deux verrous le rendent impossible, et chacun est éprouvé ici : un
+    // `centre` d'identité STABLE, et un `setState` IDEMPOTENT.
+
+    it("ouvre la carte sur le CENTRE DU TERRITOIRE, jamais sur un repli", async () => {
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+
+      await waitFor(() =>
+        expect(derniersProps.centre).toEqual([STRASBOURG.centerLat, STRASBOURG.centerLon]),
+      );
+    });
+
+    it("transmet un `centre` d'identité STABLE d'un rendu à l'autre", async () => {
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+
+      await waitFor(() => expect(derniersProps.centre).not.toBeNull());
+
+      // Un rendu de plus, provoqué par une frappe dans le formulaire — qui
+      // n'apparaît qu'une fois les arrêts chargés.
+      const utilisateur = userEvent.setup();
+      await utilisateur.type(await screen.findByLabelText("Arrivée"), "Kléber");
+
+      // ⚠️ IDENTITÉ, PAS ÉGALITÉ. Deux tableaux de mêmes nombres mais
+      // d'identités différentes suffisaient à relancer le recadrage de la
+      // carte à chaque rendu — donc la boucle.
+      const resolus = centresRecus.filter((centre) => centre != null);
+      expect(resolus.length).toBeGreaterThan(1);
+      for (const centre of resolus) {
+        expect(centre).toBe(resolus[0]);
+      }
+    });
+
+    it("NE RECHARGE PAS les arrêts quand le centre n'a pas bougé", async () => {
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+      await waitFor(() => expect(listerArrets).toHaveBeenCalledTimes(1));
+
+      // ⚠️ C'EST LE VERROU QUI ROMPT LA BOUCLE. Un recadrage programmé — ou
+      // un `moveend` en écho — rapporte le centre COURANT. Si la page en
+      // refaisait un objet d'état à chaque fois, elle se re-rendrait sans
+      // fin. Sous le seuil, l'état doit rester INCHANGÉ.
+      deplacerLaCarte(STRASBOURG.centerLat, STRASBOURG.centerLon);
+      deplacerLaCarte(STRASBOURG.centerLat, STRASBOURG.centerLon);
+      // ~11 m plus au nord : du bruit d'arrondi, pas une intention.
+      deplacerLaCarte(STRASBOURG.centerLat + 0.0001, STRASBOURG.centerLon);
+
+      await new Promise((resoudre) => setTimeout(resoudre, 600));
+
+      expect(listerArrets).toHaveBeenCalledTimes(1);
+    });
+
+    it("recharge bien les arrêts pour un déplacement RÉEL", async () => {
+      rendre();
+      await screen.findByTestId("carte-leaflet");
+      await waitFor(() => expect(listerArrets).toHaveBeenCalledTimes(1));
+
+      // Schiltigheim, à trois kilomètres : une intention, pas du bruit.
+      deplacerLaCarte(48.6047, 7.7484);
+
+      await waitFor(() =>
+        expect(listerArrets).toHaveBeenCalledWith(
+          expect.objectContaining({ lat: 48.6047, lon: 7.7484 }),
+        ),
+      );
+    });
+
     it("fait d'un arrêt cliqué la DESTINATION", async () => {
       rendre();
       await screen.findByTestId("carte-leaflet");
 
-      cliquerArret(0, "arrivee");
+      await cliquerArret(0, "arrivee");
 
       // Le champ du formulaire porte le nom de l'arrêt : la carte n'impose
       // jamais un point que le formulaire ne montrerait pas.
@@ -976,7 +1091,7 @@ describe("/recherche", () => {
       rendre();
       await screen.findByTestId("carte-leaflet");
 
-      cliquerArret(1, "depart");
+      await cliquerArret(1, "depart");
 
       await waitFor(() =>
         expect(screen.getByLabelText("Départ")).toHaveProperty("value", ARRETS[1].name),
@@ -1050,9 +1165,7 @@ describe("/recherche", () => {
 
       // Le premier tronçon suit les trois points du `LineString`, converti de
       // [lon, lat] (GeoJSON) vers [lat, lon] (Leaflet).
-      await waitFor(() =>
-        expect(carte().getAttribute("data-troncons")).toBe("SHAPE:3|STRAIGHT:2"),
-      );
+      await waitFor(() => expect(carte().getAttribute("data-troncons")).toBe("SHAPE:3|STRAIGHT:2"));
     });
 
     it("distingue une portion approchée d'un tracé réel, et le DIT", async () => {
@@ -1168,9 +1281,7 @@ describe("/recherche", () => {
     });
 
     it("garde l'itinéraire visible quand l'empreinte est indisponible", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([
-        { ...RAPIDE, carbon: CARBONE_ABSENT },
-      ]);
+      vi.mocked(rechercherItineraires).mockResolvedValue([{ ...RAPIDE, carbon: CARBONE_ABSENT }]);
       rendre();
 
       await chercher();
@@ -1200,9 +1311,7 @@ describe("/recherche", () => {
     });
 
     it("n'affiche JAMAIS 0 g à la place d'une erreur", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([
-        { ...RAPIDE, carbon: CARBONE_ABSENT },
-      ]);
+      vi.mocked(rechercherItineraires).mockResolvedValue([{ ...RAPIDE, carbon: CARBONE_ABSENT }]);
       rendre();
 
       await chercher();
@@ -1362,7 +1471,9 @@ describe("/recherche", () => {
 
       await activer();
 
-      expect(await screen.findByText(/données des vélos en libre-service indisponibles/i)).toBeDefined();
+      expect(
+        await screen.findByText(/données des vélos en libre-service indisponibles/i),
+      ).toBeDefined();
       // La couche reste VIDE : aucune station fictive.
       expect(screen.getByTestId("carte-leaflet").getAttribute("data-velib")).toBe("aucun");
     });
@@ -1420,9 +1531,7 @@ describe("/recherche", () => {
 
       // L'attente est DITE, et non fondue dans le total : un usager doit
       // pouvoir savoir combien de temps il passera sur le quai.
-      expect(
-        await screen.findByText(/dont 7 min d’attente/i),
-      ).toBeDefined();
+      expect(await screen.findByText(/dont 7 min d’attente/i)).toBeDefined();
     });
 
     it("distingue « ces lignes ne passent pas » de « pas d’horaires »", async () => {
@@ -1447,12 +1556,8 @@ describe("/recherche", () => {
 
       await chercher();
 
-      expect(
-        await screen.findByText(/aucun horaire n’est connu pour ces lignes/i),
-      ).toBeDefined();
-      expect(
-        screen.queryByText(/ne sont pas importés pour ce réseau/i),
-      ).toBeNull();
+      expect(await screen.findByText(/aucun horaire n’est connu pour ces lignes/i)).toBeDefined();
+      expect(screen.queryByText(/ne sont pas importés pour ce réseau/i)).toBeNull();
     });
 
     it("le dit quand le réseau n’a AUCUN horaire importé", async () => {
@@ -1472,9 +1577,7 @@ describe("/recherche", () => {
 
       await chercher();
 
-      expect(
-        await screen.findByText(/ne sont pas importés pour ce réseau/i),
-      ).toBeDefined();
+      expect(await screen.findByText(/ne sont pas importés pour ce réseau/i)).toBeDefined();
     });
 
     it("N’AFFICHE AUCUNE HEURE quand le backend n’en fournit pas", async () => {
@@ -1531,9 +1634,7 @@ describe("/recherche", () => {
       await chercher();
       await screen.findByRole("button", { name: /bus/i });
 
-      expect(
-        screen.queryByRole("button", { name: /^🚇 Métro$/ }),
-      ).toBeNull();
+      expect(screen.queryByRole("button", { name: /^🚇 Métro$/ })).toBeNull();
     });
 
     it("DIT POURQUOI un mode absent l’est, sans le masquer", async () => {
@@ -1549,8 +1650,7 @@ describe("/recherche", () => {
       // porte le même motif. Un `findByText` échouerait sur l'ambiguïté — et
       // pour la bonne raison, ce qui est la pire façon d'échouer.
       expect(
-        (await screen.findAllByText(/n’existe pas sur le réseau de ce territoire/i))
-          .length,
+        (await screen.findAllByText(/n’existe pas sur le réseau de ce territoire/i)).length,
       ).toBeGreaterThan(0);
     });
 
@@ -1563,9 +1663,7 @@ describe("/recherche", () => {
 
       await chercher();
 
-      expect(
-        await screen.findByText(/routage détaillé n’est pas configuré/i),
-      ).toBeDefined();
+      expect(await screen.findByText(/routage détaillé n’est pas configuré/i)).toBeDefined();
     });
 
     it("MASQUE les itinéraires qui empruntent un mode écarté", async () => {
@@ -1585,9 +1683,7 @@ describe("/recherche", () => {
 
       await utilisateur.click(screen.getByRole("button", { name: "Bus" }));
 
-      await waitFor(() =>
-        expect(screen.queryByText("Le plus écologique")).toBeNull(),
-      );
+      await waitFor(() => expect(screen.queryByText("Le plus écologique")).toBeNull());
       // L'autre reste : le filtre masque, il ne vide pas.
       expect(screen.getByText("Le plus rapide")).toBeDefined();
     });
@@ -1607,9 +1703,7 @@ describe("/recherche", () => {
       await screen.findByText("Le plus rapide");
 
       expect(screen.queryByRole("button", { name: /^🚶 Marche$/ })).toBeNull();
-      expect(
-        screen.getByText(/fait partie de tout itinéraire/i),
-      ).toBeDefined();
+      expect(screen.getByText(/fait partie de tout itinéraire/i)).toBeDefined();
     });
 
     it("distingue « rien trouvé » de « tout masqué »", async () => {
@@ -1669,9 +1763,9 @@ describe("/recherche", () => {
 
       // ⚠️ C'EST BIEN L'ITINÉRAIRE CLIQUÉ qui est mémorisé, pas celui affiché
       // sur la carte : chaque carte porte son propre bouton.
-      const memorise = JSON.parse(
-        window.sessionStorage.getItem("urbanflow.itineraire")!,
-      ) as { itineraire: { criterion: string } };
+      const memorise = JSON.parse(window.sessionStorage.getItem("urbanflow.itineraire")!) as {
+        itineraire: { criterion: string };
+      };
 
       expect(memorise.itineraire.criterion).toBe("LOWEST_CO2");
     });
@@ -1685,9 +1779,10 @@ describe("/recherche", () => {
         await screen.findByRole("button", { name: /voir le trajet — le plus rapide/i }),
       );
 
-      const memorise = JSON.parse(
-        window.sessionStorage.getItem("urbanflow.itineraire")!,
-      ) as { origine: { latitude: number }; destination: { latitude: number } };
+      const memorise = JSON.parse(window.sessionStorage.getItem("urbanflow.itineraire")!) as {
+        origine: { latitude: number };
+        destination: { latitude: number };
+      };
 
       // Les coordonnées sont celles RÉELLEMENT envoyées à la recherche.
       expect(memorise.origine.latitude).toBe(48.88);
@@ -1776,9 +1871,7 @@ describe("/recherche", () => {
     });
 
     it("annonce le nombre de changements rendu par le backend", async () => {
-      vi.mocked(rechercherItineraires).mockResolvedValue([
-        { ...RAPIDE, numberOfTransfers: 2 },
-      ]);
+      vi.mocked(rechercherItineraires).mockResolvedValue([{ ...RAPIDE, numberOfTransfers: 2 }]);
       rendre();
 
       await chercher();
@@ -1852,8 +1945,12 @@ describe("/recherche", () => {
         await chercher();
 
         // Deux boutons DISTINCTS : leur nom dit ce qu'ils enregistrent.
-        expect(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i })).toBeDefined();
-        expect(screen.getByRole("button", { name: /enregistrer le trajet le plus écologique/i })).toBeDefined();
+        expect(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+        ).toBeDefined();
+        expect(
+          screen.getByRole("button", { name: /enregistrer le trajet le plus écologique/i }),
+        ).toBeDefined();
       });
 
       it("envoie le corps EXACT attendu par le backend", async () => {
@@ -1862,7 +1959,9 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
+        await utilisateur.click(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+        );
 
         // Coordonnées des arrêts CHOISIS, et pour chaque segment le seul
         // triplet du réseau. Ni durée, ni distance, ni CO2, ni éco-score :
@@ -1898,7 +1997,9 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus écologique/i }));
+        await utilisateur.click(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus écologique/i }),
+        );
 
         await waitFor(() => {
           const corps = vi.mocked(enregistrerItineraire).mock.calls[0][0];
@@ -1919,7 +2020,9 @@ describe("/recherche", () => {
         const utilisateur = await chercher();
 
         // On clique sur le SECOND bouton.
-        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus écologique/i }));
+        await utilisateur.click(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus écologique/i }),
+        );
 
         await waitFor(() => {
           const corps = vi.mocked(enregistrerItineraire).mock.calls[0][0];
@@ -1936,7 +2039,9 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
+        await utilisateur.click(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+        );
 
         await waitFor(() => {
           // Passage par `unknown` : le type du corps n'a pas de signature
@@ -1968,7 +2073,9 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
+        await utilisateur.click(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+        );
 
         // Sans ce verrou, un double clic créerait deux trajets identiques.
         await waitFor(() =>
@@ -1989,7 +2096,9 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
+        await utilisateur.click(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+        );
 
         // Pendant l'envoi : aucune confirmation.
         await screen.findByRole("button", { name: /enregistrement/i });
@@ -2006,7 +2115,9 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
+        await utilisateur.click(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+        );
 
         expect(await screen.findByText(/trajet enregistré/i)).toBeDefined();
         expect(screen.getByText("Le plus rapide")).toBeDefined();
@@ -2018,7 +2129,9 @@ describe("/recherche", () => {
         rendre();
         const utilisateur = await chercher();
 
-        await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
+        await utilisateur.click(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+        );
         await screen.findByText(/trajet enregistré/i);
 
         // L'autre carte garde son bouton : elle n'a pas été enregistrée.
@@ -2032,7 +2145,9 @@ describe("/recherche", () => {
           vi.mocked(enregistrerItineraire).mockRejectedValue(erreur);
           rendre();
           const utilisateur = await chercher();
-          await utilisateur.click(await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }));
+          await utilisateur.click(
+            await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+          );
           return screen.findByRole("alert");
         };
 
@@ -2528,6 +2643,8 @@ describe("/recherche", () => {
       criterion: "FASTEST",
       totalDistanceM: 4000,
       totalDurationMin: 10,
+      walkAccess: null,
+      walkEgress: null,
       numberOfTransfers: 0,
       carbon: carbone(16, 872, 856, 98.2),
       segments: Array.from({ length: 5 }, (_, i) => ({
@@ -2598,6 +2715,100 @@ describe("/recherche", () => {
       await screen.findByText("Métro 4");
       // Ouvrir un détail d'une seule ligne n'apprendrait rien.
       expect(screen.queryByText(/Voir les 1 arrêts/)).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Marche d'approche et de sortie
+  // ---------------------------------------------------------------------------
+  // Le moteur rendait un itinéraire qui COMMENÇAIT à un arrêt que l'usager
+  // n'avait pas demandé : « 15 min, 3 994 m » à partir de Jardiniers, sans
+  // jamais dire comment atteindre Jardiniers depuis le 15 rue Adler. Les
+  // minutes à pied n'étaient ni affichées, ni comptées.
+  describe("marche", () => {
+    /// Une marche d'approche telle que le backend la publie désormais.
+    const MARCHE_ACCES = {
+      fromLat: 48.6011,
+      fromLon: 7.784,
+      toLat: 48.5853,
+      toLon: 7.7355,
+      stopName: "Jardiniers",
+      distanceM: 207,
+      durationMin: 3,
+      source: "ESTIMATE" as const,
+    };
+
+    const MARCHE_SORTIE = {
+      fromLat: 48.5836,
+      fromLon: 7.7454,
+      toLat: 48.5834,
+      toLon: 7.7452,
+      stopName: "Homme de Fer",
+      distanceM: 118,
+      durationMin: 2,
+      source: "ESTIMATE" as const,
+    };
+
+    it("affiche la marche AVANT et APRÈS le trajet, avec sa distance", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        { ...RAPIDE, walkAccess: MARCHE_ACCES, walkEgress: MARCHE_SORTIE },
+      ]);
+      rendre();
+
+      await chercher();
+
+      expect(await screen.findByText(/Marche jusqu’à Jardiniers/)).toBeDefined();
+      expect(screen.getByText(/Marche depuis Homme de Fer/)).toBeDefined();
+      // Les mètres et les minutes sont dits, pas seulement le principe.
+      expect(screen.getByText(/207 m/)).toBeDefined();
+      expect(screen.getByText(/118 m/)).toBeDefined();
+    });
+
+    it("ANNONCE que la distance de marche est une estimation", async () => {
+      // ⚠️ Aucun routeur piéton n'est configuré : la distance est à vol
+      // d'oiseau, donc MINORÉE. La présenter comme un itinéraire de rues
+      // serait une fausse précision.
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        { ...RAPIDE, walkAccess: MARCHE_ACCES, walkEgress: null },
+      ]);
+      rendre();
+
+      await chercher();
+
+      expect(
+        await screen.findByText(/estimation à vol d’oiseau/),
+      ).toBeDefined();
+    });
+
+    it("rend LISIBLE un trajet entièrement à pied, sans aucun tronçon", async () => {
+      // ⚠️ « 15 rue Adler » → « 2 rue Mélanie », deux cents mètres : le
+      // moteur rendait AUCUN itinéraire. La carte de résultat doit désormais
+      // exister, et dire ce qu'elle propose.
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        {
+          ...RAPIDE,
+          totalDistanceM: 203,
+          totalDurationMin: 3,
+          numberOfTransfers: 0,
+          segments: [],
+          walkAccess: {
+            ...MARCHE_ACCES,
+            distanceM: 203,
+            // Marche de bout en bout : aucune des deux extrémités n'est un
+            // arrêt, donc aucun nom à afficher.
+            stopName: "",
+          },
+          walkEgress: null,
+        },
+      ]);
+      rendre();
+
+      await chercher();
+
+      expect(
+        await screen.findByText(/entièrement à pied/i),
+      ).toBeDefined();
+      expect(screen.getByText(/Marche jusqu’à votre destination/)).toBeDefined();
     });
   });
 });

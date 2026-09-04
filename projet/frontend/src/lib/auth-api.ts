@@ -72,3 +72,55 @@ export function connecter(donnees: { email: string; password: string }): Promise
 export function utilisateurCourant(jeton: string): Promise<User> {
   return apiFetch<User>("/users/me", { token: jeton });
 }
+
+// -----------------------------------------------------------------------------
+// Réinitialisation de mot de passe (war room)
+// -----------------------------------------------------------------------------
+
+export interface MessageReponse {
+  message: string;
+}
+
+/**
+ * Demande une réinitialisation. Répond TOUJOURS 200.
+ *
+ * ⚠️ NE PERMET PAS DE SAVOIR SI LE COMPTE EXISTE, et l'interface ne doit
+ * jamais essayer de le deviner. Le backend répond identiquement pour une
+ * adresse inscrite et pour une adresse inconnue : c'est ce qui empêche de lui
+ * soumettre une liste d'adresses pour apprendre lesquelles ont un compte.
+ *
+ * ⚠️ LE MESSAGE DIT « PRÉPARÉ », PAS « ENVOYÉ ». Aucun transport de courriel
+ * n'est configuré : annoncer un envoi serait faux. En développement, le lien
+ * est journalisé côté serveur.
+ *
+ * Seule erreur attendue : 400 si l'adresse est mal formée.
+ */
+export function demanderReinitialisation(
+  email: string,
+): Promise<MessageReponse> {
+  return apiFetch<MessageReponse>("/auth/forgot-password", {
+    method: "POST",
+    body: { email },
+  });
+}
+
+/**
+ * Consomme un jeton et remplace le mot de passe.
+ *
+ * Erreurs attendues :
+ *   400  jeton inconnu, expiré ou déjà utilisé — un seul message pour les
+ *        trois, ou mot de passe trop court.
+ *
+ * ⚠️ NE CONNECTE PAS. Réinitialiser son mot de passe ne doit pas ouvrir une
+ * session : quelqu'un qui aurait intercepté le lien obtiendrait un accès sans
+ * jamais prouver qu'il connaît le nouveau mot de passe.
+ */
+export function reinitialiserMotDePasse(
+  token: string,
+  password: string,
+): Promise<MessageReponse> {
+  return apiFetch<MessageReponse>("/auth/reset-password", {
+    method: "POST",
+    body: { token, password },
+  });
+}

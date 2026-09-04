@@ -14,6 +14,7 @@ import { RoleEnum } from '@prisma/client';
 import { StopsService } from './stops.service';
 import { CreateStopDto } from './dto/create-stop.dto';
 import { FindStopsQueryDto } from './dto/find-stops-query.dto';
+import { NearbyQueryDto } from './dto/nearby-query.dto';
 import { NetworkModesResponseDto } from './dto/network-modes.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -79,6 +80,26 @@ export class StopsController {
    * Public, comme le reste de ce controleur : savoir quels modes circulent
    * n'est pas une donnee personnelle.
    */
+  /**
+   * Les arrêts les plus proches d'un point, avec leurs lignes et leur
+   * prochain passage — l'écran « Autour de moi ».
+   *
+   *   200  `{ stops, departuresFreshness }`
+   *   400  coordonnées absentes ou hors bornes
+   *
+   * ⚠️ DÉCLARÉ AVANT `@Get(':id')`. Nest apparie les routes DANS L'ORDRE DE
+   * DÉCLARATION : placé après, « nearby » serait capturé par `:id` et
+   * produirait un 400 sur un UUID mal formé. C'est la même raison qui place
+   * `modes` avant.
+   *
+   * ⚠️ AUCUN GUARD. Savoir quels arrêts sont proches d'un point n'est pas une
+   * donnée personnelle, et le point transmis n'est ni stocké ni journalisé.
+   */
+  @Get('nearby')
+  findNearby(@Query() query: NearbyQueryDto) {
+    return this.stopsService.findNearby(query);
+  }
+
   @Get('modes')
   findModes(): Promise<NetworkModesResponseDto> {
     return this.stopsService.findNetworkModes();

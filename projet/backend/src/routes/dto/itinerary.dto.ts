@@ -234,6 +234,58 @@ export interface ItineraryScheduleDto {
   reason: string | null;
 }
 
+/**
+ * Une marche entre un point demandé par l'usager et le réseau.
+ *
+ * ═══ POURQUOI CE N'EST PAS UN `ItinerarySegmentDto` ═══
+ *
+ * Un segment relie deux ARRÊTS : il porte deux `stopId` qui sont des clés
+ * étrangères réelles, et c'est ce qui permet d'enregistrer un trajet dans
+ * l'historique. Or une marche d'approche part d'une ADRESSE — « 15 rue
+ * Adler » n'est pas un arrêt et n'a aucun identifiant en base.
+ *
+ * Lui en fabriquer un serait inventer une donnée, et surtout casser
+ * l'enregistrement : `POST /routes/:id/segments` résout chaque segment en
+ * `NetworkLink` réel et refuserait un arrêt qui n'existe pas.
+ *
+ * ⚠️ CES MINUTES ET CES MÈTRES SONT DANS `totalDistanceM` ET
+ * `totalDurationMin`. C'est tout l'objet de ce champ : avant lui, un trajet
+ * « 15 min » en cachait trois de plus à pied, et son premier arrêt tombait du
+ * ciel. La durée annoncée n'était pas approximative, elle était fausse.
+ */
+export interface ItineraryWalkLegDto {
+  /// Point de départ de la marche (l'adresse à l'aller, l'arrêt au retour).
+  fromLat: number;
+  fromLon: number;
+  /// Point d'arrivée de la marche (l'arrêt à l'aller, l'adresse au retour).
+  toLat: number;
+  toLon: number;
+
+  /**
+   * Nom de l'arrêt situé à l'extrémité RÉSEAU de cette marche.
+   *
+   * C'est le seul des deux bouts qui porte un nom : l'autre est le point que
+   * l'usager a désigné, et c'est LUI qui sait comment il s'appelle.
+   */
+  stopName: string;
+
+  distanceM: number;
+  durationMin: number;
+
+  /**
+   * ⚠️ D'OÙ VIENT CETTE DISTANCE, ET L'INTERFACE DOIT LE DIRE.
+   *
+   *   `ESTIMATE` vol d'oiseau × 4,5 km/h. MINORÉE par construction : ni rue,
+   *              ni traversée, ni pont ne sont connus.
+   *   `ROUTED`   trajet rue par rue d'un vrai routeur piéton.
+   *
+   * Aucune valeur `ROUTED` n'est produite tant que `WALK_ROUTING_PROVIDER`
+   * n'est pas configuré. Annoncer une estimation comme un itinéraire serait
+   * exactement le genre de fausse précision que ce projet refuse.
+   */
+  source: 'ESTIMATE' | 'ROUTED';
+}
+
 export interface ItineraryDto {
   // Permet au client de savoir à quelle question cet itinéraire répond,
   // sans avoir à comparer les totaux lui-même.
@@ -298,5 +350,28 @@ export interface ItineraryDto {
   /// Empreinte de cet itinéraire, ou l'aveu qu'elle est incalculable.
   carbon: ItineraryCarbonDto;
 
+  /**
+   * Marche d'approche : du point de départ demandé au premier arrêt.
+   *
+   * `null` quand l'usager part déjà d'un arrêt — et seulement dans ce cas.
+   */
+  walkAccess: ItineraryWalkLegDto | null;
+
+  /**
+   * Marche finale : du dernier arrêt à la destination demandée.
+   *
+   * `null` quand la destination EST l'arrêt d'arrivée.
+   */
+  walkEgress: ItineraryWalkLegDto | null;
+
+  /**
+   * Les tronçons empruntés sur le réseau, d'arrêt à arrêt.
+   *
+   * ⚠️ PEUT ÊTRE VIDE, ET C'EST UN RÉSULTAT LÉGITIME : deux points à trois
+   * cents mètres l'un de l'autre se rejoignent à pied, et l'itinéraire se
+   * réduit alors à `walkAccess`. Rendre une liste vide de propositions dans ce
+   * cas — ce que faisait le moteur — revenait à répondre « impossible » à
+   * quelqu'un qui n'avait qu'une rue à traverser.
+   */
   segments: ItinerarySegmentDto[];
 }

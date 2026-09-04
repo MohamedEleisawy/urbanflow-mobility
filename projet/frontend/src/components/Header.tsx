@@ -69,6 +69,10 @@ export function Header() {
   const liens: Lien[] = [
     { href: "/", libelle: t.navAccueil },
     { href: "/recherche", libelle: t.navRecherche },
+    // « Autour de moi » (war room) : accessible sans compte, comme la
+    // recherche. Savoir ce qui passe à côté de chez soi ne demande pas de
+    // s'inscrire.
+    { href: "/autour", libelle: t.autourTitre },
     { href: "/perturbations", libelle: t.navPerturbations },
   ];
 

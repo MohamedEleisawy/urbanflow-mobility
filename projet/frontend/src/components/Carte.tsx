@@ -81,6 +81,24 @@ export interface CarteProps {
 
   /** La carte doit-elle suivre la position ? */
   suivrePosition?: boolean;
+
+  /**
+   * Centre de la carte à l'ouverture, avant toute recherche — les coordonnées
+   * du territoire desservi (`GET /api/territory`).
+   *
+   * ⚠️ APPLIQUÉ UNE SEULE FOIS, tant qu'aucun trajet n'est tracé et que
+   * l'usager n'a encore rien déplacé. Ensuite la vue lui appartient.
+   */
+  centre?: readonly [number, number] | null;
+
+  /**
+   * Phrase affichée en incrustation quand la carte n'a encore rien à montrer.
+   *
+   * ⚠️ UNE INCRUSTATION, PAS UN REMPLACEMENT. La carte reste montée en dessous
+   * (fond cartographique, tuiles, futurs marqueurs). Une recherche sans arrêt
+   * ne doit jamais faire disparaître la carte.
+   */
+  messageVide?: string;
 }
 
 /**
@@ -102,7 +120,16 @@ export function Carte({
   velib = null,
   position = null,
   suivrePosition = false,
+  centre = null,
+  messageVide = "Aucun arrêt à proximité.",
 }: CarteProps) {
+  // ⚠️ LA CARTE N'EST JAMAIS CONDITIONNÉE PAR `arrets.length`. Elle reste
+  // montée en permanence : seuls ses calques (arrêts, trajet, position) sont
+  // optionnels. Une recherche sans résultat n'enlève donc que des points, pas
+  // le fond cartographique.
+  const rienAMontrer =
+    arrets.length === 0 && !trace && !troncons && !velib?.length && !position;
+
   return (
     <section aria-labelledby="carte" className="space-y-2">
       <h2 id="carte" className="text-ink text-lg font-semibold">
@@ -112,22 +139,26 @@ export function Carte({
       {/* HAUTEUR EXPLICITE, et en unités relatives à l'écran : un conteneur
           Leaflet sans hauteur mesurable ne dessine rien du tout. Plus basse
           sur mobile, où l'écran doit rester utilisable sous la carte. */}
-      <div className="h-64 w-full overflow-hidden rounded-lg border border-neutral-200 sm:h-96">
-        {arrets.length === 0 && !trace && !troncons && !velib?.length && !position ? (
-          <p className="flex h-full w-full items-center justify-center bg-neutral-100 px-6 text-center text-sm text-neutral-600">
-            Aucun arrêt à afficher sur la carte.
+      <div className="relative h-64 w-full overflow-hidden rounded-lg border border-neutral-200 sm:h-96">
+        <CarteLeaflet
+          arrets={arrets}
+          trace={trace}
+          troncons={troncons}
+          onChoisirArret={onChoisirArret}
+          onCentreDeplace={onCentreDeplace}
+          velib={velib}
+          position={position}
+          suivrePosition={suivrePosition}
+          centre={centre}
+        />
+
+        {/* Incrustation discrète en bas de carte, `pointer-events-none` : elle
+            informe sans jamais bloquer un geste sur la carte, qui reste
+            entièrement utilisable en dessous. */}
+        {rienAMontrer && (
+          <p className="pointer-events-none absolute inset-x-0 bottom-0 z-500 bg-white/85 px-4 py-2 text-center text-sm text-neutral-700 backdrop-blur-sm dark:bg-neutral-900/85 dark:text-neutral-200">
+            {messageVide}
           </p>
-        ) : (
-          <CarteLeaflet
-            arrets={arrets}
-            trace={trace}
-            troncons={troncons}
-            onChoisirArret={onChoisirArret}
-            onCentreDeplace={onCentreDeplace}
-            velib={velib}
-            position={position}
-            suivrePosition={suivrePosition}
-          />
         )}
       </div>
 

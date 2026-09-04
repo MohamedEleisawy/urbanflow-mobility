@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { PasswordResetService } from './password-reset.service';
 
 // Échoue immédiatement au démarrage si JWT_SECRET est absent, plutôt que de laisser JwtModule signer silencieusement
 // des tokens avec un secret "undefined" (voir CLAUDE.md : jamais de secret en dur, toujours une variable d'environnement).
@@ -20,7 +21,7 @@ if (!jwtSecret) {
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService],
+  providers: [AuthService, PasswordResetService],
   // JwtModule est réexporté pour que JwtService soit injectable dans les
   // autres modules qui protègent leurs routes avec JwtAuthGuard (ex :
   // UsersModule). Sans cet export, NestJS ne saurait pas construire le

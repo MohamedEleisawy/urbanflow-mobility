@@ -234,6 +234,29 @@ describe('POST /api/routes/search (e2e)', () => {
       .expect(200);
   });
 
+  /**
+   * Minutes et mètres de la MARCHE d'approche et de sortie.
+   *
+   * ⚠️ ILS ENTRENT DANS LES TOTAUX. Les points demandés par ces tests ne sont
+   * pas exactement sur les arrêts : il faut les rejoindre à pied, et cette
+   * marche est désormais annoncée ET comptée. Un total « exactement 3 800 m »
+   * signalerait qu'elle a de nouveau disparu.
+   */
+  const marches = (itineraire: {
+    walkAccess?: { distanceM: number; durationMin: number } | null;
+    walkEgress?: { distanceM: number; durationMin: number } | null;
+  }) => {
+    const legs = [itineraire.walkAccess, itineraire.walkEgress].filter(
+      (leg): leg is { distanceM: number; durationMin: number } =>
+        leg !== null && leg !== undefined,
+    );
+
+    return {
+      distanceM: legs.reduce((somme, leg) => somme + leg.distanceM, 0),
+      durationMin: legs.reduce((somme, leg) => somme + leg.durationMin, 0),
+    };
+  };
+
   it('renvoie deux itinéraires : le plus rapide et le moins émetteur', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/routes/search')
@@ -245,6 +268,8 @@ describe('POST /api/routes/search (e2e)', () => {
       totalDistanceM: number;
       totalDurationMin: number;
       numberOfTransfers: number;
+      walkAccess: { distanceM: number; durationMin: number } | null;
+      walkEgress: { distanceM: number; durationMin: number } | null;
       segments: { fromStopName: string; toStopName: string }[];
     }[];
 
@@ -254,8 +279,8 @@ describe('POST /api/routes/search (e2e)', () => {
     const propre = itineraires.find((i) => i.criterion === 'LOWEST_CO2');
 
     // Le plus rapide passe par B (20 min) plutôt que le direct (30 min).
-    expect(rapide?.totalDurationMin).toBe(20);
-    expect(rapide?.totalDistanceM).toBe(3800);
+    expect(rapide!.totalDurationMin).toBe(20 + marches(rapide!).durationMin);
+    expect(rapide!.totalDistanceM).toBe(3800 + marches(rapide!).distanceM);
     expect(rapide?.segments).toHaveLength(2);
 
     // Le moins émetteur est le trajet DIRECT, et le calcul est vérifiable à
@@ -266,8 +291,8 @@ describe('POST /api/routes/search (e2e)', () => {
     //
     // Il est plus lent de 10 minutes et émet 22,6 g de moins : c'est
     // exactement le compromis que ce critère doit rendre visible.
-    expect(propre?.totalDistanceM).toBe(3000);
-    expect(propre?.totalDurationMin).toBe(30);
+    expect(propre!.totalDistanceM).toBe(3000 + marches(propre!).distanceM);
+    expect(propre!.totalDurationMin).toBe(30 + marches(propre!).durationMin);
     expect(propre?.segments).toHaveLength(1);
 
     // ⚠️ AUCUN itinéraire FEWEST_TRANSFERS : le plus rapide n'en comporte
@@ -477,14 +502,22 @@ describe('POST /api/routes/search (e2e)', () => {
       .expect(400);
   });
 
-  it('renvoie 200 et [] quand aucun itinéraire n’est possible', async () => {
+  it('propose la MARCHE quand le réseau n’offre aucun trajet', async () => {
     // On cherche dans le sens inverse : aucun segment ne remonte de C vers A.
     const response = await request(app.getHttpServer())
       .post('/api/routes/search')
       .send({ fromLat: 0.02, fromLon: 0, toLat: 0, toLon: 0 })
       .expect(200);
 
-    expect(response.body).toEqual([]);
+    // ⚠️ « Le réseau n'y va pas » n'est pas « on ne peut pas y aller ».
+    const itineraires = response.body as {
+      segments: unknown[];
+      walkAccess: { source: string } | null;
+    }[];
+
+    expect(itineraires).toHaveLength(1);
+    expect(itineraires[0].segments).toEqual([]);
+    expect(itineraires[0].walkAccess?.source).toBe('ESTIMATE');
   });
 
   // ---------------------------------------------------------------------------
@@ -493,14 +526,16 @@ describe('POST /api/routes/search (e2e)', () => {
 
   it('accepte les coordonnées aux bornes exactes (±90 / ±180)', () => {
     // Ces valeurs sont valides : elles doivent passer la validation.
-    // Aucun arrêt ne s'y trouve, donc la réponse est un tableau vide —
-    // mais surtout PAS une erreur 400.
+    // Aucun arrêt ne s'y trouve — la réponse est donc une marche (d'un pôle à
+    // l'autre, ce qui est absurde mais mathématiquement honnête), et surtout
+    // PAS une erreur 400. C'est la validation qu'on éprouve ici.
     return request(app.getHttpServer())
       .post('/api/routes/search')
       .send({ fromLat: 90, fromLon: 180, toLat: -90, toLon: -180 })
       .expect(200)
       .expect((response) => {
-        expect(response.body).toEqual([]);
+        const itineraires = response.body as { segments: unknown[] }[];
+        expect(itineraires.every((i) => i.segments.length === 0)).toBe(true);
       });
   });
 
@@ -512,7 +547,7 @@ describe('POST /api/routes/search (e2e)', () => {
       .expect(400);
   });
 
-  it('renvoie [] quand le point demandé est trop éloigné du réseau', async () => {
+  it('propose la MARCHE quand le point demandé est trop éloigné du réseau', async () => {
     // Les arrêts du test sont autour de (0,0). Ce point en est distant de
     // plusieurs centaines de kilomètres : au-delà du rayon de 2 km, on
     // considère qu'aucun arrêt ne le dessert.
@@ -521,7 +556,9 @@ describe('POST /api/routes/search (e2e)', () => {
       .send({ fromLat: 10, fromLon: 10, toLat: 0.02, toLon: 0 })
       .expect(200);
 
-    expect(response.body).toEqual([]);
+    const itineraires = response.body as { segments: unknown[] }[];
+    expect(itineraires).toHaveLength(1);
+    expect(itineraires[0].segments).toEqual([]);
   });
 
   it('renvoie exactement le même résultat pour deux appels identiques', async () => {
@@ -658,15 +695,18 @@ describe('POST /api/routes/search (e2e)', () => {
         criterion: string;
         totalDurationMin: number;
         totalDistanceM: number;
+        walkAccess: { distanceM: number; durationMin: number } | null;
+        walkEgress: { distanceM: number; durationMin: number } | null;
         segments: { mode: string }[];
       }[]
     ).find((i) => i.criterion === 'FASTEST');
 
     // 20 min / 3800 m sont exactement les valeurs des liaisons réseau
-    // A→B (10 min, 600 m) + B→C (10 min, 3200 m). Elles ne peuvent pas
-    // provenir du trajet personnel, qui vaut 1 min / 100 m.
-    expect(rapide?.totalDurationMin).toBe(20);
-    expect(rapide?.totalDistanceM).toBe(3800);
+    // A→B (10 min, 600 m) + B→C (10 min, 3200 m), auxquelles s'ajoute la
+    // marche des deux bouts. Elles ne peuvent pas provenir du trajet
+    // personnel, qui vaut 1 min / 100 m.
+    expect(rapide!.totalDurationMin).toBe(20 + marches(rapide!).durationMin);
+    expect(rapide!.totalDistanceM).toBe(3800 + marches(rapide!).distanceM);
     // Les modes proviennent bien du réseau (WALK puis BUS), pas du BIKE
     // du raccourci personnel.
     expect(rapide?.segments.map((s) => s.mode)).toEqual(['WALK', 'BUS']);

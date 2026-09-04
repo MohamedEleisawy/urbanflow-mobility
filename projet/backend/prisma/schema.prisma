@@ -121,6 +121,9 @@ model User {
   carbonBudgets CarbonBudget[]
   routes        Route[]
 
+  // Demandes de réinitialisation de mot de passe (war room).
+  passwordResets PasswordResetToken[]
+
   @@map("users")
 }
 
@@ -699,5 +702,79 @@ model StopDeparture {
   /// trierait en mémoire les quelques centaines de passages quotidiens d'un
   /// arrêt — à chaque appel.
   @@index([stopId, departureSec])
+  /// L'index qui porte l'IDEMPOTENCE DE L'IMPORT.
+  ///
+  /// ⚠️ AJOUTÉ APRÈS UN TIMEOUT DE TEST, et l'oubli valait cher. Chaque import
+  /// commence par `deleteMany({ where: { lineId: { in: … } } })` — supprimer
+  /// les passages des lignes qu'on s'apprête à réécrire. Sans index sur
+  /// `lineId`, PostgreSQL balaie les 710 302 lignes de la table à chaque
+  /// import, et un réimport de vérification dépassait trente secondes.
+  ///
+  /// La lenteur ne se voyait pas sur le premier import — la table était vide.
+  /// Elle n'apparaissait qu'au SECOND, c'est-à-dire exactement dans le test
+  /// d'idempotence.
+  @@index([lineId])
+  /// L'index qui porte la recherche « quelles lignes circulent maintenant ».
+  ///
+  /// `lignesActives()` filtre sur `serviceId` puis sur une fenêtre horaire.
+  /// C'est la requête que le moteur d'itinéraires lance à CHAQUE recherche.
+  @@index([serviceId, departureSec])
   @@map("stop_departures")
+}
+
+// -----------------------------------------------------------------------------
+// Réinitialisation de mot de passe (war room)
+// -----------------------------------------------------------------------------
+/// Un jeton de réinitialisation, à usage unique et à durée courte.
+///
+/// ═══ CE QUI EST STOCKÉ, ET CE QUI NE L'EST PAS ═══
+///
+/// ⚠️ LE JETON N'EST PAS STOCKÉ. Seule son EMPREINTE l'est. Un jeton de
+/// réinitialisation vaut un mot de passe : quiconque lit la base pourrait
+/// sinon prendre la main sur n'importe quel compte ayant une demande en cours.
+///
+/// L'empreinte est un SHA-256 nu, et c'est délibérément différent des mots de
+/// passe, qui passent par scrypt. La raison tient à ce que chaque secret
+/// protège :
+///
+///   - un MOT DE PASSE est choisi par un humain, donc devinable : il faut un
+///     hachage LENT pour rendre une attaque par dictionnaire impraticable ;
+///   - un JETON fait 32 octets tirés d'un générateur cryptographique. Aucun
+///     dictionnaire n'existe pour cela, et un hachage lent ne protégerait de
+///     rien tout en ralentissant chaque vérification.
+///
+/// ═══ POURQUOI UNE TABLE, ET NON DEUX COLONNES SUR `User` ═══
+///
+/// Deux colonnes suffiraient pour UNE demande. Une table permet de garder la
+/// trace des demandes consommées, donc de refuser un jeton déjà utilisé au
+/// lieu de l'accepter parce que la colonne a été écrasée par une demande plus
+/// récente.
+model PasswordResetToken {
+  id String @id @default(uuid()) @db.Uuid
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @db.Uuid
+
+  /// SHA-256 hexadécimal du jeton envoyé à l'usager.
+  ///
+  /// UNIQUE : c'est par cette empreinte qu'on retrouve la demande. Un index
+  /// est donc indispensable — la vérification a lieu à chaque tentative.
+  tokenHash String @unique
+
+  expiresAt DateTime
+
+  /// Instant de consommation. `null` = jeton encore utilisable.
+  ///
+  /// ⚠️ ON MARQUE PLUTÔT QUE DE SUPPRIMER. Un jeton supprimé et un jeton
+  /// inexistant deviendraient indiscernables : impossible alors de distinguer
+  /// « déjà utilisé » de « jamais émis », et impossible de constater qu'un
+  /// jeton a servi deux fois.
+  usedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  /// Retrouver toutes les demandes d'un compte, pour les invalider en bloc
+  /// dès qu'une nouvelle est émise.
+  @@index([userId])
+  @@map("password_reset_tokens")
 }

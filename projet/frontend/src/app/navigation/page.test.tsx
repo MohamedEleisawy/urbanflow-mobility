@@ -73,6 +73,8 @@ const ITINERAIRE: Itinerary = {
   criterion: "FASTEST",
   totalDistanceM: 1500,
   totalDurationMin: 5,
+  walkAccess: null,
+  walkEgress: null,
   numberOfTransfers: 0,
   carbon: {
     status: "CARBON_AVAILABLE",
@@ -168,9 +170,7 @@ describe("/navigation", () => {
 
   const demarrer = async () => {
     const utilisateur = userEvent.setup();
-    await utilisateur.click(
-      await screen.findByRole("button", { name: /commencer le trajet/i }),
-    );
+    await utilisateur.click(await screen.findByRole("button", { name: /commencer le trajet/i }));
     return utilisateur;
   };
 
@@ -464,6 +464,8 @@ describe("/navigation", () => {
     /// Deux lignes distinctes : le trajet a donc deux étapes.
     const DEUX_ETAPES = {
       ...ITINERAIRE,
+      walkAccess: null,
+      walkEgress: null,
       numberOfTransfers: 1,
       segments: [
         segment(48.86, 2.34, 48.86, 2.35, {
@@ -496,9 +498,7 @@ describe("/navigation", () => {
 
       act(() => succes!(mesure(48.86, 2.345)));
 
-      const deroule = within(
-        await screen.findByRole("region", { name: /déroulé du trajet/i }),
-      );
+      const deroule = within(await screen.findByRole("region", { name: /déroulé du trajet/i }));
 
       expect(deroule.getByText(/Métro A/)).toBeDefined();
       expect(deroule.getByText(/Métro C/)).toBeDefined();
@@ -532,16 +532,12 @@ describe("/navigation", () => {
 
       act(() => succes!(mesure(48.86, 2.343)));
       await waitFor(() =>
-        expect(document.querySelector('[aria-current="step"]')?.textContent).toMatch(
-          /Métro A/,
-        ),
+        expect(document.querySelector('[aria-current="step"]')?.textContent).toMatch(/Métro A/),
       );
 
       act(() => succes!(mesure(48.86, 2.358)));
       await waitFor(() =>
-        expect(document.querySelector('[aria-current="step"]')?.textContent).toMatch(
-          /Métro C/,
-        ),
+        expect(document.querySelector('[aria-current="step"]')?.textContent).toMatch(/Métro C/),
       );
     });
 

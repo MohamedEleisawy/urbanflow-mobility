@@ -327,7 +327,48 @@ export interface Itinerary {
    */
   numberOfTransfers: number;
   carbon: ItineraryCarbon;
+
+  /**
+   * Marche d'approche : du point demandé au premier arrêt.
+   *
+   * ⚠️ CE N'EST PAS UN `ItinerarySegment`, et la distinction est structurelle :
+   * un segment relie deux ARRÊTS identifiés en base, une marche d'approche
+   * part d'une ADRESSE, qui n'en est pas un.
+   *
+   * ⚠️ SES MÈTRES ET SES MINUTES SONT DÉJÀ DANS `totalDistanceM` /
+   * `totalDurationMin`. Ne les additionnez pas une seconde fois.
+   *
+   * `null` quand l'usager part déjà d'un arrêt.
+   */
+  walkAccess: ItineraryWalkLeg | null;
+
+  /** Marche finale : du dernier arrêt au point demandé. */
+  walkEgress: ItineraryWalkLeg | null;
+
+  /**
+   * ⚠️ PEUT ÊTRE VIDE : un trajet entièrement à pied n'emprunte aucun
+   * véhicule. L'interface doit alors montrer la marche, pas une carte vide.
+   */
   segments: ItinerarySegment[];
+}
+
+/**
+ * Une marche entre un point demandé par l'usager et le réseau.
+ *
+ * ⚠️ `source` N'EST PAS DÉCORATIF. `ESTIMATE` signifie « distance à vol
+ * d'oiseau », donc MINORÉE : ni rue, ni traversée, ni pont ne sont connus.
+ * L'afficher comme un itinéraire de rues serait une fausse précision.
+ */
+export interface ItineraryWalkLeg {
+  fromLat: number;
+  fromLon: number;
+  toLat: number;
+  toLon: number;
+  /** Nom de l'arrêt à l'extrémité RÉSEAU. Vide pour une marche de bout en bout. */
+  stopName: string;
+  distanceM: number;
+  durationMin: number;
+  source: "ESTIMATE" | "ROUTED";
 }
 
 // ---------------------------------------------------------------------------
