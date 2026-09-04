@@ -23,6 +23,7 @@
 import type {
   GeoJsonLineString,
   ItinerarySegment,
+  ItineraryWalkLeg,
   Stop,
   TransportMode,
 } from "./types";
@@ -148,8 +149,18 @@ export interface TronconTrace {
   points: [number, number][];
   mode: TransportMode;
   lineName: string;
-  /** `STRAIGHT` = droite tracée faute de géométrie réelle. */
-  source: "SHAPE" | "STRAIGHT";
+  /**
+   * D'où vient le tracé — trois provenances, jamais confondues :
+   *
+   *   `SHAPE`         la voie réelle, publiée par l'opérateur.
+   *   `STRAIGHT`      une droite entre deux ARRÊTS, faute de `shapes.txt`.
+   *   `WALK_ROUTED`   un vrai chemin piéton, rue par rue, calculé par un
+   *                   moteur de routage sur les données OpenStreetMap.
+   *   `WALK_ESTIMATE` une droite entre deux POINTS À PIED, faute de moteur.
+   *                   Ce n'est PAS un itinéraire piéton : elle traverse les
+   *                   immeubles et minore la distance. L'interface doit le dire.
+   */
+  source: "SHAPE" | "STRAIGHT" | "WALK_ROUTED" | "WALK_ESTIMATE";
 }
 
 /**
@@ -280,4 +291,171 @@ export function arretsDItineraire(
  */
 export function comporteUnRepli(troncons: readonly TronconTrace[]): boolean {
   return troncons.some((troncon) => troncon.source === "STRAIGHT");
+}
+
+/**
+ * Tracé d'une marche, entre deux points connus.
+ *
+ * ═══ CE QUE CETTE FONCTION N'EST PAS ═══
+ *
+ * ⚠️ CE N'EST PAS UN CALCUL D'ITINÉRAIRE PIÉTON. Aucun routeur n'est
+ * configuré : on ne connaît ni les rues, ni les traversées, ni les ponts. Le
+ * segment rendu ici est la DROITE entre les deux points — de quoi montrer
+ * la direction et l'échelle, rien de plus. L'appeler « itinéraire piéton »
+ * serait un mensonge, et c'est pourquoi le tronçon qui la porte sort marqué
+ * `WALK_ESTIMATE` et se dessine en pointillés.
+ *
+ * ⚠️ REND `null` QUAND LES DEUX POINTS SONT CONFONDUS. Une « ligne » d'un
+ * seul point ne se dessine pas, et Leaflet en ferait un cadrage de largeur
+ * nulle — donc un zoom maximal sur un point, ce qui déroute plus que ça
+ * n'informe.
+ */
+export function geometrieMarcheEstimee(
+  depuis: { latitude: number; longitude: number },
+  vers: { latitude: number; longitude: number },
+): [number, number][] | null {
+  if (depuis.latitude === vers.latitude && depuis.longitude === vers.longitude) {
+    return null;
+  }
+
+  return [
+    [depuis.latitude, depuis.longitude],
+    [vers.latitude, vers.longitude],
+  ];
+}
+
+/**
+ * Tronçon dessinable d'une marche d'approche ou de sortie.
+ *
+ * Rend `null` quand il n'y a rien à tracer — marche absente, ou deux points
+ * confondus.
+ */
+export function tronconDeMarche(
+  marche: ItineraryWalkLeg | null,
+  cle: string,
+  libelle: string,
+): TronconTrace | null {
+  if (marche === null) {
+    return null;
+  }
+
+  // ═══ LE VRAI CHEMIN D'ABORD ═══
+  //
+  // ⚠️ QUAND LE BACKEND A CALCULÉ UN ITINÉRAIRE PIÉTON, ON LE DESSINE — et on
+  // ne retombe JAMAIS sur la droite. C'est toute la différence entre un tracé
+  // qui suit les trottoirs et un trait qui traverse un pâté de maisons.
+  if (marche.source === "ROUTED" && marche.geometry) {
+    return {
+      cle,
+      // GeoJSON dit [lon, lat] ; Leaflet veut [lat, lon].
+      points: marche.geometry.coordinates.map(
+        ([lon, lat]) => [lat, lon] as [number, number],
+      ),
+      mode: "WALK",
+      lineName: libelle,
+      source: "WALK_ROUTED",
+    };
+  }
+
+  const points = geometrieMarcheEstimee(
+    { latitude: marche.fromLat, longitude: marche.fromLon },
+    { latitude: marche.toLat, longitude: marche.toLon },
+  );
+
+  if (points === null) {
+    return null;
+  }
+
+  return {
+    cle,
+    points,
+    mode: "WALK",
+    lineName: libelle,
+    source: "WALK_ESTIMATE",
+  };
+}
+
+/**
+ * TOUS les tronçons d'un itinéraire : la marche d'approche, les tronçons du
+ * réseau, la marche de sortie.
+ *
+ * ⚠️ C'EST CETTE FONCTION QUE LA CARTE DOIT UTILISER, et non
+ * `tronconsDItineraire` seule. Un trajet entièrement à pied n'a AUCUN tronçon
+ * de réseau : la carte restait donc vide, et l'usager voyait un fond
+ * cartographique sans le moindre trait — comme si le trajet n'existait pas.
+ */
+export function tronconsDuTrajet(itineraire: {
+  segments: readonly ItinerarySegment[];
+  walkAccess: ItineraryWalkLeg | null;
+  walkEgress: ItineraryWalkLeg | null;
+}): TronconTrace[] {
+  const acces = tronconDeMarche(
+    itineraire.walkAccess,
+    "marche-acces",
+    "Marche",
+  );
+  const sortie = tronconDeMarche(
+    itineraire.walkEgress,
+    "marche-sortie",
+    "Marche",
+  );
+
+  return [
+    ...(acces ? [acces] : []),
+    ...tronconsDItineraire(itineraire.segments),
+    ...(sortie ? [sortie] : []),
+  ];
+}
+
+/**
+ * Les points à marquer sur la carte pour un itinéraire : le départ demandé,
+ * les arrêts traversés, la destination demandée.
+ *
+ * ⚠️ LE DÉPART ET L'ARRIVÉE SONT DES POINTS DEMANDÉS, PAS DES ARRÊTS. Leurs
+ * identifiants sont synthétiques et ne servent QU'à l'affichage : ils ne sont
+ * jamais renvoyés au serveur, où ils ne correspondraient à aucune ligne de la
+ * table des arrêts.
+ */
+export function pointsDuTrajet(
+  itineraire: {
+    segments: readonly ItinerarySegment[];
+    walkAccess: ItineraryWalkLeg | null;
+    walkEgress: ItineraryWalkLeg | null;
+  },
+  origine: { label: string; latitude: number; longitude: number } | null,
+  destination: { label: string; latitude: number; longitude: number } | null,
+): PointCarte[] {
+  const points: PointCarte[] = [];
+
+  // ⚠️ UN REPÈRE DE DÉPART N'EST AJOUTÉ QUE S'IL EST DISTINCT DU PREMIER
+  // ARRÊT — et la donnée le dit sans ambiguïté : une marche d'approche existe
+  // exactement quand le point demandé n'est pas le premier arrêt. Sans cette
+  // condition, choisir « Homme de Fer » comme départ dessinait DEUX marqueurs
+  // superposés portant le même nom.
+  //
+  // Un trajet sans aucun tronçon est le cas limite : ses deux bouts sont les
+  // seuls repères qu'il possède.
+  const aPied = itineraire.segments.length === 0;
+
+  if (origine && (aPied || itineraire.walkAccess !== null)) {
+    points.push({
+      id: "__origine__",
+      nom: origine.label,
+      latitude: origine.latitude,
+      longitude: origine.longitude,
+    });
+  }
+
+  points.push(...arretsDItineraire(itineraire.segments));
+
+  if (destination && (aPied || itineraire.walkEgress !== null)) {
+    points.push({
+      id: "__destination__",
+      nom: destination.label,
+      latitude: destination.latitude,
+      longitude: destination.longitude,
+    });
+  }
+
+  return points;
 }

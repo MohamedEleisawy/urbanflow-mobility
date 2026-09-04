@@ -42,7 +42,7 @@ export default function manifest(): MetadataRoute.Manifest {
     // tronque avec des points de suspension.
     short_name: "UrbanFlow",
     description:
-      "Planifiez vos trajets multimodaux, consultez les perturbations du réseau et mesurez l'empreinte carbone de vos déplacements.",
+      "Planifiez vos trajets multimodaux à Strasbourg et dans l'Eurométropole, et mesurez l'empreinte carbone de vos déplacements.",
 
     // L'accueil, et non un écran protégé : l'application s'ouvre sur du
     // contenu consultable sans compte.

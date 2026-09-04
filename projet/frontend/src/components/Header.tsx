@@ -73,7 +73,6 @@ export function Header() {
     // recherche. Savoir ce qui passe à côté de chez soi ne demande pas de
     // s'inscrire.
     { href: "/autour", libelle: t.autourTitre },
-    { href: "/perturbations", libelle: t.navPerturbations },
   ];
 
   if (statut === "authentifie" && utilisateur) {

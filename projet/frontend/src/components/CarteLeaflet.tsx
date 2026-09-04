@@ -43,8 +43,18 @@ const VERT = "#2d7d46";
  */
 const VELIB = "#0f766e";
 
-/// Position de l'usager. Rouge : c'est le seul point qui le concerne LUI.
-const POSITION = "#b91c1c";
+/**
+ * Position de l'usager.
+ *
+ * ⚠️ UN BLEU VIF, ET DISTINCT DU BLEU DES ARRÊTS (`#1e3a5f`, un marine
+ * sombre). C'est la convention que tous les usagers connaissent — « le point
+ * bleu, c'est moi » — et s'en écarter oblige à réapprendre une carte.
+ *
+ * Le contraste avec les arrêts ne repose pas que sur la teinte : le point de
+ * position porte en plus un anneau blanc épais et un halo de précision, que
+ * les arrêts n'ont pas.
+ */
+const POSITION = "#1d4ed8";
 
 /**
  * Couleur de chaque mode de transport.
@@ -505,15 +515,29 @@ export default function CarteLeaflet({
             // POINTILLÉS = « nous ne connaissons pas le tracé réel ». C'est
             // la seule chose qui distingue visuellement une voie publiée par
             // l'opérateur d'une droite tracée faute de mieux.
+            // ⚠️ LES POINTILLÉS SIGNIFIENT « CE N'EST PAS LE CHEMIN RÉEL »,
+            // et rien d'autre. Un tracé piéton calculé par un moteur EST le
+            // chemin réel : il se dessine en trait plein, comme une voie de
+            // tram publiée par l'opérateur. Le dessiner en pointillés
+            // reviendrait à s'excuser d'une donnée exacte.
             dashArray:
-              troncon.source === "STRAIGHT" || troncon.mode === "WALK"
+              troncon.source === "STRAIGHT" ||
+              troncon.source === "WALK_ESTIMATE"
                 ? "6 6"
                 : undefined,
           })
             .bindTooltip(
-              troncon.source === "STRAIGHT"
-                ? `${troncon.lineName} — tracé approché`
-                : troncon.lineName,
+              // ⚠️ TROIS PHRASES POUR TROIS PROVENANCES. Confondre « la voie
+              // réelle », « une droite entre deux arrêts » et « une droite
+              // entre deux points à pied » ferait passer une estimation pour
+              // un itinéraire.
+              troncon.source === "WALK_ESTIMATE"
+                ? "Tracé piéton estimé — ligne droite, pas le chemin réel"
+                : troncon.source === "WALK_ROUTED"
+                  ? "Chemin piéton, rue par rue"
+                  : troncon.source === "STRAIGHT"
+                    ? `${troncon.lineName} — tracé approché`
+                    : troncon.lineName,
             )
             .addTo(groupe);
         }

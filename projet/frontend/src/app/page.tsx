@@ -154,12 +154,6 @@ export default function AccueilPage() {
                 {t.accueilCtaAccroche}
               </p>
 
-              <Link
-                href="/perturbations"
-                className="hover:text-brand mt-8 text-sm font-medium text-neutral-600 underline underline-offset-4 transition-colors"
-              >
-                {t.accueilCtaSecondaire}
-              </Link>
             </div>
           </div>
         </Container>

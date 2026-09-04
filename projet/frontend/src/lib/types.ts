@@ -369,6 +369,16 @@ export interface ItineraryWalkLeg {
   distanceM: number;
   durationMin: number;
   source: "ESTIMATE" | "ROUTED";
+
+  /**
+   * Tracé rue par rue, en GeoJSON `LineString` (`[longitude, latitude]`).
+   *
+   * ⚠️ `null` VA TOUJOURS AVEC `source: "ESTIMATE"` : sans moteur piéton il
+   * n'existe aucun tracé, seulement deux points. C'est alors au client de
+   * relier ces points par une droite ET DE LE DIRE — jamais de la faire passer
+   * pour un chemin de rues.
+   */
+  geometry: GeoJsonLineString | null;
 }
 
 // ---------------------------------------------------------------------------

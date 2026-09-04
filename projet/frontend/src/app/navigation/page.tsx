@@ -10,8 +10,12 @@ import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
 import { useTraduction } from "@/components/LangueProvider";
 import type { Textes } from "@/lib/i18n/dictionnaire";
-import { arretsDItineraire, tronconsDItineraire } from "@/lib/carte";
-import { regrouperSegments, type GroupeEtapes } from "@/lib/itineraire";
+import { pointsDuTrajet, tronconsDuTrajet } from "@/lib/carte";
+import {
+  etapesDuTrajet,
+  regrouperSegments,
+  type GroupeEtapes,
+} from "@/lib/itineraire";
 import { formaterCo2, formaterDistance, formaterDuree, LIBELLES_MODES } from "@/lib/format";
 import {
   analyserSelection,
@@ -25,14 +29,18 @@ import { rechercherItineraires } from "@/lib/itineraires-api";
 import { messageDErreur } from "@/lib/api";
 import {
   avancement,
-  COOLDOWN_RECALCUL_MS,
   estArrive,
-  estHorsTrajet,
   instructionCourante,
   type EtatNavigation,
   type LibellesInstruction,
   type PositionSuivie,
 } from "@/lib/navigation-suivi";
+import { decisionRecalcul } from "@/lib/recalcul-itineraire";
+import {
+  journaliserDecision,
+  journaliserPosition,
+  journaliserRecalcul,
+} from "@/lib/journal-navigation";
 import { useNavigationTracking } from "@/lib/useNavigationTracking";
 import { useVoiceGuidance } from "@/lib/useVoiceGuidance";
 import type { Itinerary } from "@/lib/types";
@@ -112,7 +120,7 @@ function Guidage({ selection }: { selection: SelectionItineraire }) {
   // la ferait RÉÉNONCER, la clé changeant avec elle.
   const LIBELLES = useMemo(() => libelles(t), [t]);
 
-  const { destination } = selection;
+  const { origine, destination } = selection;
 
   /**
    * L'itinéraire SUIVI, qui n'est plus forcément celui de départ : un recalcul
@@ -155,6 +163,22 @@ function Guidage({ selection }: { selection: SelectionItineraire }) {
   const [dernierRecalcul, setDernierRecalcul] = useState(0);
 
   /**
+   * Point d'où le trajet actuellement affiché a été calculé.
+   *
+   * ⚠️ INDISPENSABLE POUR MESURER UN DÉPLACEMENT. Après un recalcul, la
+   * nouvelle route PART de la position courante : l'usager n'est donc plus
+   * jamais « hors trajet », même en sautant de plusieurs centaines de mètres.
+   * Sans ce point de référence, un second déplacement ne déclencherait plus
+   * rien — et la démonstration au capteur semblerait figée.
+   *
+   * `null` tant que le trajet vient de la recherche initiale.
+   */
+  const [origineDuCalcul, setOrigineDuCalcul] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
+
+  /**
    * Position déjà examinée.
    *
    * ⚠️ C'EST LE PATRON « AJUSTER L'ÉTAT PENDANT LE RENDU » documenté par
@@ -179,7 +203,21 @@ function Guidage({ selection }: { selection: SelectionItineraire }) {
     longitude: number;
   } | null>(null);
 
-  const segments = itineraire.segments;
+  // ═══ LES ÉTAPES RÉELLEMENT PARCOURUES, MARCHE COMPRISE ═══
+  //
+  // ⚠️ `itineraire.segments` SEUL NE SUFFIT PAS AU GUIDAGE. Un trajet
+  // entièrement à pied n'en contient AUCUN : le suivi ne pouvait alors ni
+  // situer l'usager, ni conclure à l'arrivée, ni afficher la moindre étape.
+  // Et même en tram, la marche jusqu'au premier arrêt n'était pas guidée.
+  //
+  // ⚠️ CES ÉTAPES NE SONT JAMAIS ENVOYÉES AU SERVEUR. Les deux extrémités
+  // demandées portent des identifiants synthétiques ; l'enregistrement d'un
+  // trajet continue de passer par `itineraire.segments`, seul à désigner des
+  // liaisons réelles.
+  const segments = useMemo(
+    () => etapesDuTrajet(itineraire, origine, destination),
+    [itineraire, origine, destination],
+  );
 
   // --- La décision de suivi, prise au rendu ----------------------------------
   //
@@ -191,24 +229,38 @@ function Guidage({ selection }: { selection: SelectionItineraire }) {
     const position = suivi.position;
 
     if (position && etat === "tracking") {
+      journaliserPosition(position);
+
       if (estArrive(position, segments)) {
         setEtat("completed");
-      } else if (
-        // ⚠️ TROIS VERROUS AVANT DE RECALCULER, et chacun évite une boucle :
-        //   1. `estHorsTrajet` refuse de conclure quand le GPS est trop
-        //      imprécis — un tunnel ne doit pas passer pour une déviation ;
-        //   2. le délai de garde empêche une rafale de recherches ;
-        //   3. l'état `recalculating` bloque le suivant tant que le premier
-        //      court (la condition `etat === "tracking"` ci-dessus).
-        estHorsTrajet(position, segments) &&
-        position.timestamp - dernierRecalcul > COOLDOWN_RECALCUL_MS
-      ) {
-        setDernierRecalcul(position.timestamp);
-        setEtat("recalculating");
-        setRecalculDemande({
-          latitude: position.latitude,
-          longitude: position.longitude,
+      } else {
+        // ⚠️ TOUTES LES RÈGLES SONT DANS `decisionRecalcul`, et aucune ici :
+        // écart au trajet, précision du GPS, délai de garde, recalcul déjà en
+        // cours, déplacement franc. Elles se testent sur des nombres, sans
+        // GPS ni horloge — et chaque refus porte sa cause, que le journal de
+        // développement affiche.
+        const decision = decisionRecalcul({
+          position,
+          segments,
+          origineDuCalcul,
+          // L'état `recalculating` est déjà exclu par `etat === "tracking"`
+          // au-dessus ; on le passe explicitement pour que la fonction reste
+          // vraie indépendamment de l'appelant.
+          recalculEnCours: false,
+          dernierRecalculMs: dernierRecalcul,
+          maintenantMs: position.timestamp,
         });
+
+        journaliserDecision(decision);
+
+        if (decision.recalculer) {
+          setDernierRecalcul(position.timestamp);
+          setEtat("recalculating");
+          setRecalculDemande({
+            latitude: position.latitude,
+            longitude: position.longitude,
+          });
+        }
       }
     }
   }
@@ -218,8 +270,13 @@ function Guidage({ selection }: { selection: SelectionItineraire }) {
     [suivi.position, segments],
   );
 
-  const troncons = useMemo(() => tronconsDItineraire(segments), [segments]);
-  const arrets = useMemo(() => arretsDItineraire(segments), [segments]);
+  // Le tracé complet : la marche est dessinée en pointillés, marquée
+  // « tracé piéton estimé », et le trajet en transport garde sa géométrie.
+  const troncons = useMemo(() => tronconsDuTrajet(itineraire), [itineraire]);
+  const arrets = useMemo(
+    () => pointsDuTrajet(itineraire, origine, destination),
+    [itineraire, origine, destination],
+  );
 
   /**
    * Les étapes lisibles, regroupées par ligne.
@@ -302,12 +359,22 @@ function Guidage({ selection }: { selection: SelectionItineraire }) {
             "Aucun itinéraire depuis votre position. L’itinéraire précédent reste affiché.",
           );
           setEtat("tracking");
+          // ⚠️ ON DÉPLACE QUAND MÊME LA RÉFÉRENCE. Sans cela, chaque relevé
+          // suivant reverrait le même déplacement « significatif » et
+          // relancerait la même recherche vouée au même échec.
+          setOrigineDuCalcul({ latitude, longitude });
+          journaliserRecalcul("aucun-itineraire");
           return;
         }
 
         setItineraire(remplacant);
         setErreurRecalcul(null);
         setEtat("tracking");
+        // ⚠️ LE NOUVEAU POINT DE RÉFÉRENCE. C'est lui qui permettra de mesurer
+        // le PROCHAIN déplacement — sans quoi le second saut du capteur ne
+        // déclencherait rien.
+        setOrigineDuCalcul({ latitude, longitude });
+        journaliserRecalcul("abouti");
 
         // ⚠️ ON MÉMORISE LE NOUVEAU CHEMIN. Sans cela, revenir sur
         // `/itineraire` montrerait le trajet d'ORIGINE — celui dont l'usager
@@ -488,7 +555,7 @@ function Guidage({ selection }: { selection: SelectionItineraire }) {
             titre="Votre position sur le trajet"
             description={
               suivi.position
-                ? "Le point rouge est votre position, entourée de son incertitude quand l'appareil l'annonce."
+                ? "Le point bleu est votre position, entourée de son incertitude quand l'appareil l'annonce."
                 : "Votre position s'affichera ici une fois le suivi démarré."
             }
             arrets={arrets}

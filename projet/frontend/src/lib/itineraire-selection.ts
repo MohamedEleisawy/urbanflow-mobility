@@ -191,10 +191,35 @@ function estSelection(valeur: unknown): valeur is SelectionItineraire {
     return false;
   }
 
-  // ⚠️ `segments` NON VIDE : l'écran lit `segments[0]` sans condition pour
-  // nommer le départ. Un tableau vide le ferait planter, et un itinéraire
-  // sans segment n'aurait de toute façon rien à montrer.
-  if (!Array.isArray(itineraire.segments) || itineraire.segments.length === 0) {
+  if (!Array.isArray(itineraire.segments)) {
+    return false;
+  }
+
+  // ═══ UN TRAJET PEUT N'AVOIR AUCUN TRONÇON : IL EST À PIED ═══
+  //
+  // ⚠️ CETTE VÉRIFICATION EXIGEAIT AUTREFOIS `segments.length > 0`, au motif
+  // que l'écran lisait `segments[0]` sans condition. Conséquence mesurée :
+  // « 19 rue Finkmatt » → « 6 rue des Cigognes » se calculait bien, mais
+  // cliquer sur le résultat ouvrait une page VIDE — la sélection était écrite,
+  // puis refusée à la relecture.
+  //
+  // Un itinéraire doit décrire un DÉPLACEMENT RÉEL : au moins un tronçon, ou
+  // au moins une marche. C'est cela qu'on vérifie, et non la présence d'un
+  // véhicule.
+  const marche = (cle: string) => {
+    const valeur = itineraire[cle];
+    return (
+      typeof valeur === "object" &&
+      valeur !== null &&
+      typeof (valeur as Record<string, unknown>).distanceM === "number"
+    );
+  };
+
+  if (
+    itineraire.segments.length === 0 &&
+    !marche("walkAccess") &&
+    !marche("walkEgress")
+  ) {
     return false;
   }
 

@@ -952,9 +952,12 @@ describe("/recherche", () => {
 
       await chercher();
 
-      // ⚠️ TROIS arrêts — ceux des deux segments — et non les 1 934 du
-      // réseau. La carte n'a plus besoin d'aucun référentiel : chaque segment
-      // porte les coordonnées de ses deux extrémités.
+      // ⚠️ TROIS arrêts — ceux des deux segments — et non les 1 380 du
+      // réseau. La carte n'a besoin d'aucun référentiel : chaque segment porte
+      // les coordonnées de ses deux extrémités.
+      //
+      // Cet itinéraire n'a pas de marche d'approche : le point demandé EST le
+      // premier arrêt, et aucun repère supplémentaire ne s'y superpose.
       await waitFor(() => expect(carte().getAttribute("data-arrets")).toBe("3"));
     });
 
@@ -2736,6 +2739,7 @@ describe("/recherche", () => {
       distanceM: 207,
       durationMin: 3,
       source: "ESTIMATE" as const,
+      geometry: null,
     };
 
     const MARCHE_SORTIE = {
@@ -2747,6 +2751,7 @@ describe("/recherche", () => {
       distanceM: 118,
       durationMin: 2,
       source: "ESTIMATE" as const,
+      geometry: null,
     };
 
     it("affiche la marche AVANT et APRÈS le trajet, avec sa distance", async () => {
@@ -2775,9 +2780,7 @@ describe("/recherche", () => {
 
       await chercher();
 
-      expect(
-        await screen.findByText(/estimation à vol d’oiseau/),
-      ).toBeDefined();
+      expect(await screen.findByText(/estimation à vol d’oiseau/)).toBeDefined();
     });
 
     it("rend LISIBLE un trajet entièrement à pied, sans aucun tronçon", async () => {
@@ -2805,9 +2808,7 @@ describe("/recherche", () => {
 
       await chercher();
 
-      expect(
-        await screen.findByText(/entièrement à pied/i),
-      ).toBeDefined();
+      expect(await screen.findByText(/entièrement à pied/i)).toBeDefined();
       expect(screen.getByText(/Marche jusqu’à votre destination/)).toBeDefined();
     });
   });

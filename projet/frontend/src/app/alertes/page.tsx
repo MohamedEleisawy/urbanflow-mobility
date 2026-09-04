@@ -3,9 +3,9 @@ import { redirect } from "next/navigation";
 // =============================================================================
 // Ancienne adresse des perturbations (sprint soutenance)
 // =============================================================================
-// L'écran vit désormais sur `/perturbations`, un mot que l'usager reconnaît :
-// « alertes » désigne aussi bien des notifications de compte, et l'en-tête
-// affichait déjà « Perturbations » vers une URL nommée autrement.
+// L'écran des perturbations a été RETIRÉ : aucune source de temps réel n'est
+// configurée, et une page qui n'affiche jamais aucune perturbation rassure à
+// tort. Voir `app/perturbations/page.tsx`.
 //
 // ⚠️ CETTE REDIRECTION N'EST PAS UNE POLITESSE. Des liens existent : le
 // manifeste PWA, des favoris, l'historique des navigateurs. Supprimer l'URL
@@ -15,5 +15,5 @@ import { redirect } from "next/navigation";
 // page vide ni script à charger.
 // =============================================================================
 export default function AlertesPage() {
-  redirect("/perturbations");
+  redirect("/recherche");
 }

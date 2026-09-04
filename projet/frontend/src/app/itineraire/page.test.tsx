@@ -363,11 +363,15 @@ describe("/itineraire", () => {
       expect(carte.getAttribute("data-troncons")).toBe("SHAPE:3|STRAIGHT:2");
     });
 
-    it("ne dessine que les arrêts DU TRAJET", () => {
+    it("ne dessine que les arrêts DU TRAJET quand on part d'un arrêt", () => {
       rendre();
 
       // Trois arrêts pour deux segments : le `toStop` du premier est le
       // `fromStop` du second, et n'est pas dessiné deux fois.
+      //
+      // ⚠️ AUCUN REPÈRE DE DÉPART EN PLUS : cet itinéraire n'a pas de marche
+      // d'approche, donc le point demandé EST le premier arrêt. En ajouter un
+      // superposerait deux marqueurs du même nom.
       expect(screen.getByTestId("carte-leaflet").getAttribute("data-arrets")).toBe("3");
     });
 
@@ -466,6 +470,93 @@ describe("/itineraire", () => {
       // perturbations ; l'inverse serait absurde.
       expect(await screen.findByText("6 min")).toBeDefined();
       expect(screen.queryByText(/perturbations/i)).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Trajet entièrement à pied
+  // ---------------------------------------------------------------------------
+  // « 19 rue Finkmatt » → « 6 rue des Cigognes », deux cent quarante mètres.
+  // Le moteur trouvait bien le trajet, mais cliquer sur le résultat ouvrait une
+  // page VIDE : la sélection était refusée à la relecture parce qu'elle
+  // n'avait aucun tronçon. Et même acceptée, la carte n'aurait rien dessiné.
+  describe("trajet entièrement à pied", () => {
+    const A_PIED: SelectionItineraire = {
+      ...SELECTION,
+      origine: {
+        label: "19 Rue Finkmatt, Strasbourg",
+        latitude: 48.5902513,
+        longitude: 7.7468657,
+      },
+      destination: {
+        label: "6 Rue des Cigognes, Strasbourg",
+        latitude: 48.5886297,
+        longitude: 7.7447026,
+      },
+      itineraire: {
+        ...SELECTION.itineraire,
+        totalDistanceM: 240,
+        totalDurationMin: 4,
+        numberOfTransfers: 0,
+        segments: [],
+        walkAccess: {
+          fromLat: 48.5902513,
+          fromLon: 7.7468657,
+          toLat: 48.5886297,
+          toLon: 7.7447026,
+          stopName: "",
+          distanceM: 240,
+          durationMin: 4,
+          source: "ESTIMATE",
+          geometry: null,
+        },
+        walkEgress: null,
+      },
+    };
+
+    it("N'OUVRE PAS une page vide", () => {
+      memoriserSelection(A_PIED);
+      rendre();
+
+      expect(screen.queryByText(/n'est plus disponible/i)).toBeNull();
+      expect(
+        screen.getByRole("heading", {
+          name: /19 Rue Finkmatt.*6 Rue des Cigognes/,
+        }),
+      ).toBeDefined();
+    });
+
+    it("DESSINE le trajet : un tracé piéton et les deux bouts", () => {
+      memoriserSelection(A_PIED);
+      rendre();
+
+      const carte = screen.getByTestId("carte-leaflet");
+
+      // ⚠️ UN tronçon — la marche — et non zéro. La carte restait sans le
+      // moindre trait.
+      expect(carte.getAttribute("data-troncons")).toBe("WALK_ESTIMATE:2");
+      // Les deux bouts demandés : seuls repères d'un trajet sans arrêt.
+      expect(carte.getAttribute("data-arrets")).toBe("2");
+    });
+
+    it("annonce que le tracé est ESTIMÉ, jamais un itinéraire de rues", () => {
+      memoriserSelection(A_PIED);
+      rendre();
+
+      expect(screen.getByText(/entièrement à pied/i)).toBeDefined();
+      expect(screen.getByText(/ligne droite/i)).toBeDefined();
+    });
+
+    it("affiche durée, distance, CO₂ et permet de COMMENCER le trajet", () => {
+      memoriserSelection(A_PIED);
+      rendre();
+
+      expect(screen.getByText("4 min")).toBeDefined();
+      expect(screen.getByText("240 m")).toBeDefined();
+      // Le bouton mène bien à la navigation : un trajet à pied se guide aussi.
+      expect(screen.getByRole("link", { name: /commencer/i }).getAttribute("href")).toBe(
+        "/navigation",
+      );
     });
   });
 });

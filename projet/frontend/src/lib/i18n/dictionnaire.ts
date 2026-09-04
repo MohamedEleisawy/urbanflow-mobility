@@ -155,6 +155,13 @@ const FR = {
   // --- Marche d'approche et de sortie ---
   // ⚠️ « estimation » n'est pas une précaution de style : la distance est à
   // vol d'oiseau, donc MINORÉE. Le trajet réel est toujours plus long.
+  tracePietonReel: "Tracé piéton",
+  tracePietonReelDetail:
+    "Les portions à pied suivent les rues, d’après les données OpenStreetMap.",
+  tracePietonEstime: "Tracé piéton estimé",
+  tracePietonEstimeDetail:
+    "Le trait en pointillés relie les deux points en ligne droite : aucun routeur piéton n’est configuré, ce n’est pas le chemin exact des rues.",
+  marcheVersDestination: "Marchez jusqu’à votre destination.",
   marcheVers: "Marche jusqu’à",
   marcheDepuis: "Marche depuis",
   marcheJusquAArrivee: "Marche jusqu’à votre destination",
@@ -387,6 +394,13 @@ const EN: typeof FR = {
   autourTitre: "Around me",
   autourIntro:
     "The stops closest to your position, with the lines that serve them.",
+  tracePietonReel: "Walking route",
+  tracePietonReelDetail:
+    "Walking sections follow the streets, based on OpenStreetMap data.",
+  tracePietonEstime: "Estimated walking route",
+  tracePietonEstimeDetail:
+    "The dashed line joins the two points in a straight line: no pedestrian router is configured, this is not the exact street path.",
+  marcheVersDestination: "Walk to your destination.",
   marcheVers: "Walk to",
   marcheDepuis: "Walk from",
   marcheJusquAArrivee: "Walk to your destination",
@@ -603,6 +617,13 @@ const ES: typeof FR = {
   autourTitre: "A mi alrededor",
   autourIntro:
     "Las paradas más cercanas a su posición, con las líneas que las sirven.",
+  tracePietonReel: "Ruta a pie",
+  tracePietonReelDetail:
+    "Los tramos a pie siguen las calles, según los datos de OpenStreetMap.",
+  tracePietonEstime: "Ruta a pie estimada",
+  tracePietonEstimeDetail:
+    "La línea discontinua une los dos puntos en línea recta: no hay ningún enrutador peatonal configurado, no es el trazado exacto de las calles.",
+  marcheVersDestination: "Camina hasta tu destino.",
   marcheVers: "Caminar hasta",
   marcheDepuis: "Caminar desde",
   marcheJusquAArrivee: "Caminar hasta su destino",

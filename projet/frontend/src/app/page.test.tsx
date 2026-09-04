@@ -99,12 +99,14 @@ describe("/", () => {
     expect(screen.getByText(/émettez moins/i)).toBeDefined();
   });
 
-  it("mène aussi aux perturbations", () => {
+  it("NE PROMET PLUS de perturbations : aucune source ne les fournit", () => {
+    // ⚠️ La page publique des perturbations a été retirée. La CTS ne publie
+    // pas de GTFS-RT et son flux SIRI-Lite exige un jeton absent : une page
+    // qui annonce « perturbations en cours » sans jamais en montrer aucune
+    // ne renseigne pas, elle RASSURE À TORT.
     rendre();
 
-    expect(
-      screen.getByRole("link", { name: /perturbations/i }).getAttribute("href"),
-    ).toBe("/perturbations");
+    expect(screen.queryByRole("link", { name: /perturbations/i })).toBeNull();
   });
 
   it("NOMME LE TERRITOIRE, depuis l’API et non en dur", async () => {

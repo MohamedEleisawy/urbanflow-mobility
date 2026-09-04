@@ -118,12 +118,57 @@ describe("relecture défensive", () => {
     expect(analyserSelection("null")).toBeNull();
   });
 
-  it("rejette un itinéraire SANS segment", () => {
-    // L'écran lit `segments[0]` sans condition : un tableau vide le ferait
-    // planter, et un itinéraire sans segment n'aurait rien à montrer.
+  it("ACCEPTE un trajet entièrement à pied, sans aucun tronçon", () => {
+    // ═══ RÉGRESSION VERROUILLÉE ═══
+    //
+    // Cette vérification exigeait `segments.length > 0`. Conséquence mesurée :
+    // « 19 rue Finkmatt » → « 6 rue des Cigognes » se calculait bien, mais
+    // cliquer sur le résultat ouvrait une page VIDE — la sélection était
+    // écrite, puis REFUSÉE à la relecture.
+    const aPied = {
+      ...SELECTION,
+      itineraire: {
+        ...ITINERAIRE,
+        segments: [],
+        walkAccess: {
+          fromLat: 48.5902513,
+          fromLon: 7.7468657,
+          toLat: 48.5886297,
+          toLon: 7.7447026,
+          stopName: "",
+          distanceM: 240,
+          durationMin: 4,
+          source: "ESTIMATE",
+          geometry: null,
+        },
+        walkEgress: null,
+      },
+    };
+
+    const relu = analyserSelection(JSON.stringify(aPied));
+
+    expect(relu).not.toBeNull();
+    // ⚠️ AUCUNE PERTE : la marche survit au passage par `sessionStorage`.
+    expect(relu?.itineraire.walkAccess?.distanceM).toBe(240);
+    expect(relu?.itineraire.walkAccess?.source).toBe("ESTIMATE");
+    expect(relu?.origine.label).toBe(SELECTION.origine.label);
+    expect(relu?.destination.label).toBe(SELECTION.destination.label);
+  });
+
+  it("rejette un itinéraire sans tronçon NI marche — il ne décrit aucun trajet", () => {
+    // Un itinéraire doit décrire un DÉPLACEMENT RÉEL. Ni véhicule ni marche :
+    // il n'y a rien à montrer, et l'écran ne doit pas prétendre le contraire.
     expect(
       analyserSelection(
-        JSON.stringify({ ...SELECTION, itineraire: { ...ITINERAIRE, segments: [] } }),
+        JSON.stringify({
+          ...SELECTION,
+          itineraire: {
+            ...ITINERAIRE,
+            segments: [],
+            walkAccess: null,
+            walkEgress: null,
+          },
+        }),
       ),
     ).toBeNull();
   });

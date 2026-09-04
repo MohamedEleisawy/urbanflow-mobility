@@ -26,17 +26,21 @@ const geistSans = Geist({
 });
 
 export const metadata: Metadata = {
-  title: "UrbanFlow Mobility",
-  // ⚠️ « EN TEMPS RÉEL » A ÉTÉ RETIRÉ DE CETTE PHRASE au sprint soutenance.
-  // Elle annonçait « les perturbations du réseau en temps réel », alors
-  // qu'aucune source temps réel n'est configurée : la CTS ne publie ces
-  // informations qu'en SIRI-Lite, sous jeton nominatif.
+  title: "UrbanFlow — Mobilité écologique à Strasbourg",
+  // ⚠️ CETTE PHRASE NE PROMET QUE CE QUI EXISTE, et elle a été corrigée deux
+  // fois pour cela.
   //
-  // C'était le mensonge le plus large du produit — une description reprise
-  // par les moteurs de recherche, les aperçus de lien et l'écran d'accueil
-  // d'une application installée.
+  // 1. « en temps réel » a d'abord été retiré : aucune source temps réel n'est
+  //    configurée — la CTS ne publie ces informations qu'en SIRI-Lite, sous
+  //    jeton nominatif.
+  // 2. La mention des perturbations a suivi, quand la page publique qui les
+  //    affichait a été retirée pour la même raison.
+  //
+  // C'était le mensonge le plus large du produit : une description reprise par
+  // les moteurs de recherche, les aperçus de lien et l'écran d'accueil d'une
+  // application installée.
   description:
-    "Planifiez vos trajets multimodaux, consultez les perturbations signalées sur le réseau et mesurez l'empreinte carbone de vos déplacements.",
+    "Itinéraires multimodaux et mobilité écologique à Strasbourg et dans l'Eurométropole : comparez les trajets et mesurez l'empreinte carbone de vos déplacements.",
 
   // iOS n'implémente pas `display: standalone` du manifeste : il lui faut
   // cette métadonnée pour ouvrir l'application sans barre d'adresse une fois

@@ -10,7 +10,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
 import { useTraduction } from "@/components/LangueProvider";
 import type { Textes } from "@/lib/i18n/dictionnaire";
-import { arretsDItineraire, tronconsDItineraire } from "@/lib/carte";
+import { pointsDuTrajet, tronconsDuTrajet } from "@/lib/carte";
 import {
   formaterCo2,
   formaterDistance,
@@ -117,10 +117,27 @@ function Detail({ selection }: { selection: SelectionItineraire }) {
   const { itineraire, origine, destination } = selection;
 
   const groupes = useMemo(() => regrouperSegments(itineraire.segments), [itineraire]);
-  const arrets = useMemo(() => arretsDItineraire(itineraire.segments), [itineraire]);
-  const troncons = useMemo(() => tronconsDItineraire(itineraire.segments), [itineraire]);
 
-  const approches = troncons.filter((troncon) => troncon.source === "STRAIGHT").length;
+  // ⚠️ LE TRAJET COMPLET, MARCHE COMPRISE. `tronconsDItineraire(segments)`
+  // seule rendait un tableau VIDE pour un trajet entièrement à pied : la carte
+  // n'affichait alors aucun trait, comme si le trajet n'existait pas.
+  const troncons = useMemo(() => tronconsDuTrajet(itineraire), [itineraire]);
+
+  // Les repères : le départ demandé, les arrêts traversés, la destination
+  // demandée. Un trajet à pied n'a aucun arrêt — il a quand même deux bouts.
+  const points = useMemo(
+    () => pointsDuTrajet(itineraire, origine, destination),
+    [itineraire, origine, destination],
+  );
+
+  const approches = troncons.filter(
+    (troncon) => troncon.source === "STRAIGHT",
+  ).length;
+  const marcheEstimee = troncons.some(
+    (troncon) => troncon.source === "WALK_ESTIMATE",
+  );
+  // Un trajet SANS aucun tronçon de réseau : il n'y a que de la marche.
+  const toutAPied = itineraire.segments.length === 0;
 
   /**
    * Perturbations en cours, ou `null` tant qu'on ne sait pas.
@@ -174,10 +191,17 @@ function Detail({ selection }: { selection: SelectionItineraire }) {
 
           <Carte
             titre="Le trajet sur la carte"
-            description={descriptionCarte(troncons.length, approches)}
-            arrets={arrets}
-            trace={arrets}
+            description={descriptionCarte(
+              troncons.length,
+              approches,
+              marcheEstimee,
+              toutAPied,
+              t,
+            )}
+            arrets={points}
+            trace={points}
             troncons={troncons}
+            messageVide={t.itineraireToutAPied}
           />
 
           {perturbations.length > 0 && <Perturbations items={perturbations} />}
@@ -531,16 +555,48 @@ function Etape({
  * portent une géométrie réelle ; les autres sont reliées en droite. Annoncer
  * « le tracé suit la voie » serait donc faux une fois sur deux.
  */
-function descriptionCarte(total: number, approches: number): string {
+function descriptionCarte(
+  total: number,
+  approches: number,
+  marcheEstimee: boolean,
+  toutAPied: boolean,
+  t: Textes,
+): string {
+  // ⚠️ UN TRAJET SANS AUCUN TRONÇON DE RÉSEAU EST UN TRAJET À PIED. Le décrire
+  // par « aucun tracé de voie n'est publié » laisserait croire à une donnée
+  // manquante, alors qu'il n'y a simplement aucun véhicule.
+  //
+  // ⚠️ ET LES DEUX CAS NE SE DISENT PAS PAREIL. Un chemin calculé rue par rue
+  // est un VRAI itinéraire ; une droite entre deux points n'en est pas un. Les
+  // annoncer de la même façon reviendrait soit à s'excuser d'une donnée
+  // exacte, soit à faire passer une estimation pour un parcours.
+  if (toutAPied) {
+    return marcheEstimee
+      ? `${t.itineraireToutAPied} ${t.tracePietonEstimeDetail}`
+      : `${t.itineraireToutAPied} ${t.tracePietonReelDetail}`;
+  }
+
+  const suffixe = marcheEstimee
+    ? ` ${t.tracePietonEstimeDetail}`
+    : ` ${t.tracePietonReelDetail}`;
+
   if (approches === 0) {
-    return "Le tracé suit la voie réelle publiée par l'opérateur de transport.";
+    return (
+      "Le tracé suit la voie réelle publiée par l'opérateur de transport." +
+      suffixe
+    );
   }
 
   if (approches === total) {
-    return "Aucun tracé de voie n'est publié pour ce trajet : les arrêts sont reliés en ligne droite, ce qui n'est PAS le chemin suivi par le véhicule.";
+    return (
+      "Aucun tracé de voie n'est publié pour ce trajet : les arrêts sont reliés en ligne droite, ce qui n'est PAS le chemin suivi par le véhicule." +
+      suffixe
+    );
   }
 
-  return `Le tracé suit la voie réelle, sauf sur ${approches} ${
-    approches === 1 ? "portion dessinée" : "portions dessinées"
-  } en pointillés, où aucune géométrie n'est publiée — la ligne droite n'y est pas le chemin réel.`;
+  return (
+    `Le tracé suit la voie réelle, sauf sur ${approches} ${
+      approches === 1 ? "portion dessinée" : "portions dessinées"
+    } en pointillés, où aucune géométrie n'est publiée — la ligne droite n'y est pas le chemin réel.` + suffixe
+  );
 }

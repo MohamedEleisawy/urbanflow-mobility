@@ -1,4 +1,5 @@
 import { ModeTransport } from '@prisma/client';
+import { LineStringGeoJson } from '../../gtfs/shape-geometry';
 
 // Formes des données RENVOYÉES par POST /api/routes/search.
 // Ce sont de simples interfaces de sortie (pas de class-validator : on ne
@@ -284,6 +285,17 @@ export interface ItineraryWalkLegDto {
    * exactement le genre de fausse précision que ce projet refuse.
    */
   source: 'ESTIMATE' | 'ROUTED';
+
+  /**
+   * Tracé rue par rue, en GeoJSON `LineString` (`[longitude, latitude]`).
+   *
+   * ⚠️ `null` QUAND `source` VAUT `ESTIMATE`, et les deux vont toujours
+   * ensemble : sans moteur piéton, il n'existe aucun tracé — seulement deux
+   * points. Dessiner la droite qui les relie est le repli du CLIENT, qui doit
+   * alors la marquer comme telle ; ce n'est pas une géométrie que le serveur
+   * fabriquerait.
+   */
+  geometry: LineStringGeoJson | null;
 }
 
 export interface ItineraryDto {

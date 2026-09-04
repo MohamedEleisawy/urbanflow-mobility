@@ -2,6 +2,7 @@ import { BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CarbonService } from '../carbon/carbon.service';
 import { ScheduleService } from '../schedule/schedule.service';
+import { WalkRoutingService } from '../walk-routing/walk-routing.service';
 import { CarbonResultDto } from '../carbon/dto/carbon-result.dto';
 import { RoutesService } from './routes.service';
 import { CreateRouteDto } from './dto/create-route.dto';
@@ -17,6 +18,10 @@ beforeAll(() => {
 // les méthodes réellement utilisées sont mockées. Ce sont des tests
 // unitaires, pas des tests d'intégration.
 describe('RoutesService', () => {
+  let walkRouting: {
+    estConfigure: jest.Mock;
+    itineraire: jest.Mock;
+  };
   let schedule: {
     lignesActives: jest.Mock;
     horairesDisponibles: jest.Mock;
@@ -224,10 +229,21 @@ describe('RoutesService', () => {
       prochainsPassages: jest.fn().mockResolvedValue([]),
     };
 
+    // ⚠️ ROUTEUR PIÉTON DÉLIBÉRÉMENT « NON CONFIGURÉ » PAR DÉFAUT. Ces tests
+    // vérifient le MOTEUR D'ITINÉRAIRES, pas le routage piéton : laisser
+    // passer un appel réseau les rendrait lents et dépendants d'un service
+    // extérieur. Les marches y restent donc des estimations à vol d'oiseau,
+    // exactement comme sur une installation sans moteur configuré.
+    walkRouting = {
+      estConfigure: jest.fn().mockReturnValue(false),
+      itineraire: jest.fn().mockResolvedValue(null),
+    };
+
     service = new RoutesService(
       prisma as unknown as PrismaService,
       carbonService as unknown as CarbonService,
       schedule as unknown as ScheduleService,
+      walkRouting as unknown as WalkRoutingService,
     );
   });
 

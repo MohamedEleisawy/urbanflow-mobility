@@ -26,6 +26,8 @@ import { CarbonFactorsDto } from '../carbon/dto/carbon-factors.dto';
 import { cheminOptimal, type AreteGenerique, type Cout } from './dijkstra';
 import { haversineDistanceM } from '../common/geo/distance.util';
 import { minutesDeMarche } from '../common/geo/marche.util';
+import { WalkRoutingService } from '../walk-routing/walk-routing.service';
+import { WalkRouteDto } from '../walk-routing/dto/walk-route.dto';
 
 // Une "arête" du graphe : un déplacement possible d'un arrêt vers un autre.
 interface GraphEdge {
@@ -272,6 +274,12 @@ export class RoutesService {
     // Et il est indispensable là : sans lui, le moteur propose des lignes qui
     // ne circulent pas, et annonce des durées qui excluent l'attente.
     private readonly schedule: ScheduleService,
+    // ⚠️ ROUTEUR PIÉTON RÉEL. Comme `ScheduleService`, il EST appelé par
+    // `searchRoutes()` — mais contrairement à lui, il interroge un service
+    // EXTERNE. C'est pourquoi il ne lève jamais : il rend `null`, et la
+    // marche retombe sur l'estimation à vol d'oiseau, annoncée comme telle.
+    // Une panne du routeur dégrade la précision, jamais la disponibilité.
+    private readonly walkRouting: WalkRoutingService,
   ) {}
 
   /**
@@ -890,23 +898,55 @@ export class RoutesService {
     // relie pas ces deux quais, et l'écran répondait « nous ne savons pas vous
     // y emmener » pour une rue à traverser.
     //
-    // ⚠️ UNIQUEMENT QUAND LE RÉSEAU N'OFFRE RIEN, et c'est une retenue
-    // délibérée. Il serait tentant de proposer aussi la marche dès qu'elle
-    // paraît plus rapide — mais ce serait opposer une ESTIMATION à vol
-    // d'oiseau, minorée par construction, à des durées MESURÉES dans le flux
-    // de l'opérateur. Deux grandeurs qui ne se comparent pas honnêtement.
+    // ═══ QUAND PRENDRE UN VÉHICULE N'A AUCUN SENS ═══
     //
-    // ⚠️ AUCUN SEUIL DE DISTANCE N'EST INVENTÉ ICI. Le seul critère est
-    // « le graphe n'a rien trouvé », qui se constate.
+    // ⚠️ MESURÉ : « 19 rue Finkmatt » → « 6 rue des Cigognes », deux cent
+    // quarante mètres à vol d'oiseau. Le moteur proposait 3 min de marche +
+    // 1 min de bus + 4 min de marche, soit 8 min et 991 m — pour un trajet
+    // qu'on fait en quatre minutes à pied.
     //
-    // LIMITE CONNUE, ASSUMÉE : quand le réseau propose un détour absurde pour
-    // trois cents mètres, il reste proposé. La corriger demanderait soit un
-    // routeur piéton réel (`WALK_ROUTING_PROVIDER`), soit un seuil arbitraire
-    // — et c'est exactement le genre de nombre que ce projet refuse d'inventer.
-    if (itineraires.length === 0) {
-      itineraires.push(this.itineraireAPied(dto));
+    // ═══ LE CRITÈRE, ET POURQUOI IL N'EST PAS ARBITRAIRE ═══
+    //
+    // Un itinéraire est DOMINÉ par la marche quand ses propres marches
+    // d'approche et de sortie cumulées atteignent déjà la distance qui sépare
+    // directement les deux points. Il fait alors marcher AU MOINS AUTANT
+    // qu'un trajet à pied — et demande en plus d'attendre un véhicule.
+    //
+    // ⚠️ AUCUN SEUIL N'EST INVENTÉ, et rien d'incomparable n'est comparé : ce
+    // sont deux distances À VOL D'OISEAU mises face à face, produites par la
+    // même méthode. C'est précisément ce qui manquait à la version
+    // précédente, qui opposait une estimation à des durées mesurées et
+    // refusait donc — à juste titre — de trancher.
+    //
+    // Un trajet où le véhicule fait gagner du chemin (l'écrasante majorité)
+    // n'est jamais dominé : Adler → Kléber marche 325 m pour 3,4 km parcourus.
+    const aPied = this.itineraireAPied(dto);
+    const distanceDirecteM = aPied.totalDistanceM;
+
+    const domineParLaMarche = (itineraire: ItineraryDto) =>
+      (itineraire.walkAccess?.distanceM ?? 0) +
+        (itineraire.walkEgress?.distanceM ?? 0) >=
+      distanceDirecteM;
+
+    const utiles = itineraires.filter(
+      (itineraire) => !domineParLaMarche(itineraire),
+    );
+
+    if (utiles.length === 0) {
+      // Aucun trajet en transport ne vaut la peine — ou le graphe n'a rien
+      // trouvé du tout. Dans les deux cas, la réponse est : marchez.
+      itineraires.length = 0;
+      itineraires.push(aPied);
+    } else if (utiles.length < itineraires.length) {
+      // On retire les propositions absurdes, on garde les autres.
+      itineraires.length = 0;
+      itineraires.push(...utiles);
     }
 
+    // ⚠️ AVANT LE CARBONE : le calcul des émissions se fonde sur les
+    // distances, que le routeur piéton peut corriger de plusieurs dizaines de
+    // pour cent.
+    await this.enrichirMarche(itineraires);
     await this.enrichirCarbone(itineraires, facteurs);
     await this.enrichirHoraires(itineraires, instant, lignesActives);
 
@@ -1775,6 +1815,120 @@ export class RoutesService {
   }
 
   /**
+   * Remplace les marches ESTIMÉES par de vrais trajets piétons.
+   *
+   * ═══ CE QUE CETTE PASSE CORRIGE ═══
+   *
+   * Une marche estimée est une DROITE : sur la carte elle traverse les
+   * immeubles, et sa longueur est systématiquement inférieure au chemin réel.
+   * Mesuré sur le trajet de démonstration : 240 m annoncés contre 327 m par
+   * les rues.
+   *
+   * ═══ POURQUOI UNE PASSE SÉPARÉE, ET NON DANS `toItinerary` ═══
+   *
+   * `toItinerary` est SYNCHRONE et appelé dans une boucle, y compris pour des
+   * chemins seulement évalués puis jetés. Y placer un appel réseau ferait
+   * interroger le moteur pour des itinéraires que personne ne verra.
+   *
+   * C'est le même patron que `enrichirCarbone` et `enrichirHoraires`.
+   *
+   * ⚠️ APPELÉE AVANT `enrichirCarbone`. Le calcul carbone se fonde sur les
+   * distances : les corriger APRÈS lui ferait annoncer une économie assise sur
+   * des mètres qui ne sont plus les bons.
+   *
+   * ⚠️ UN SEUL APPEL PAR COUPLE DE POINTS. Trois itinéraires partagent
+   * généralement la même marche d'approche ; sans cette mémoïsation, le même
+   * trajet piéton serait demandé trois fois.
+   *
+   * ⚠️ NE LÈVE JAMAIS. Un moteur absent, lent ou en panne laisse simplement la
+   * marche en `ESTIMATE` — et l'interface continue de l'annoncer comme telle.
+   */
+  private async enrichirMarche(itineraires: ItineraryDto[]): Promise<void> {
+    if (!this.walkRouting.estConfigure()) {
+      return;
+    }
+
+    const marches = itineraires.flatMap((itineraire) =>
+      [itineraire.walkAccess, itineraire.walkEgress].filter(
+        (marche): marche is ItineraryWalkLegDto => marche !== null,
+      ),
+    );
+
+    if (marches.length === 0) {
+      return;
+    }
+
+    const cle = (marche: ItineraryWalkLegDto) =>
+      `${marche.fromLat},${marche.fromLon}->${marche.toLat},${marche.toLon}`;
+
+    const demandes = new Map<string, Promise<WalkRouteDto | null>>();
+
+    for (const marche of marches) {
+      if (!demandes.has(cle(marche))) {
+        demandes.set(
+          cle(marche),
+          this.walkRouting.itineraire(
+            { latitude: marche.fromLat, longitude: marche.fromLon },
+            { latitude: marche.toLat, longitude: marche.toLon },
+          ),
+        );
+      }
+    }
+
+    // Parallèles : trois marches ne doivent pas coûter trois fois le délai.
+    const traces = new Map<string, WalkRouteDto | null>(
+      await Promise.all(
+        [...demandes].map(
+          async ([id, promesse]) =>
+            [id, await promesse] as [string, WalkRouteDto | null],
+        ),
+      ),
+    );
+
+    for (const marche of marches) {
+      const trace = traces.get(cle(marche));
+
+      if (!trace) {
+        continue;
+      }
+
+      // ⚠️ TOUT EST REMPLACÉ, pas seulement le tracé. Garder la distance à vol
+      // d'oiseau à côté d'une géométrie de rues afficherait « 240 m » sous un
+      // trait qui en fait manifestement 327.
+      marche.distanceM = trace.distanceM;
+      marche.durationMin = trace.durationMin;
+      marche.geometry = trace.geometry;
+      marche.source = 'ROUTED';
+    }
+
+    // Les totaux dépendent des marches : ils sont donc refaits ici.
+    for (const itineraire of itineraires) {
+      this.recalculerTotaux(itineraire);
+    }
+  }
+
+  /**
+   * Recalcule durée et distance totales depuis les tronçons et les marches.
+   *
+   * Source unique : dès qu'une marche change de longueur, les totaux affichés
+   * doivent suivre — sans quoi l'écran additionne des étapes qui ne font pas
+   * la somme annoncée.
+   */
+  private recalculerTotaux(itineraire: ItineraryDto): void {
+    const marches = [itineraire.walkAccess, itineraire.walkEgress].filter(
+      (marche): marche is ItineraryWalkLegDto => marche !== null,
+    );
+
+    itineraire.totalDistanceM =
+      itineraire.segments.reduce((somme, s) => somme + s.distanceM, 0) +
+      marches.reduce((somme, m) => somme + m.distanceM, 0);
+
+    itineraire.totalDurationMin =
+      itineraire.segments.reduce((somme, s) => somme + s.durationMin, 0) +
+      marches.reduce((somme, m) => somme + m.durationMin, 0);
+  }
+
+  /**
    * Complète chaque itinéraire par son empreinte carbone.
    *
    * ⚠️ AUCUN ÉCHEC NE REMONTE. Un itinéraire dont l'empreinte n'a pas pu être
@@ -2035,6 +2189,9 @@ export class RoutesService {
       distanceM,
       durationMin: minutesDeMarche(distanceM),
       source: 'ESTIMATE',
+      // Aucun tracé : il n'existe que deux points. Le client dessinera la
+      // droite qui les relie EN LA MARQUANT comme une estimation.
+      geometry: null,
     };
   }
 
@@ -2065,6 +2222,9 @@ export class RoutesService {
   private async seulementAPied(dto: SearchRouteDto): Promise<ItineraryDto[]> {
     const itineraires = [this.itineraireAPied(dto)];
 
+    // ⚠️ LE TRAJET 100 % À PIED EN A LE PLUS BESOIN : c'est le seul dont la
+    // TOTALITÉ du tracé serait une droite à travers les immeubles.
+    await this.enrichirMarche(itineraires);
     await this.enrichirCarbone(
       itineraires,
       await this.carbonService.facteurs(),

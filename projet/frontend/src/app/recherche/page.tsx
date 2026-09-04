@@ -19,10 +19,10 @@ import { Spinner } from "@/components/Spinner";
 import { messageDErreur } from "@/lib/api";
 import { haversineDistanceM } from "@/lib/geo";
 import {
-  arretsDItineraire,
   CENTRE_DEFAUT,
   pointDepuisArret,
-  tronconsDItineraire,
+  pointsDuTrajet,
+  tronconsDuTrajet,
   type PointCarte,
   type TronconTrace,
 } from "@/lib/carte";
@@ -462,18 +462,35 @@ export default function RecherchePage() {
     resultatsAffiches?.[0] ??
     null;
 
-  // Les arrêts DU TRAJET, et eux seuls : on ne dessine plus le réseau entier
-  // en fond. Avant une recherche, la carte est simplement vide.
+  // Les repères DU TRAJET : le départ demandé, les arrêts traversés, la
+  // destination demandée. ⚠️ LES DEUX BOUTS SONT DES POINTS DEMANDÉS, pas des
+  // arrêts — un trajet entièrement à pied n'en traverse aucun, et n'aurait
+  // sinon rien du tout à montrer sur la carte.
   const trace = useMemo(
-    () => (selectionne ? arretsDItineraire(selectionne.segments) : null),
-    [selectionne],
+    () =>
+      selectionne
+        ? pointsDuTrajet(
+            selectionne,
+            pointsRecherches
+              ? { label: depart?.label ?? "Départ", ...pointsRecherches.origine }
+              : null,
+            pointsRecherches
+              ? {
+                  label: arrivee?.label ?? "Arrivée",
+                  ...pointsRecherches.destination,
+                }
+              : null,
+          )
+        : null,
+    [selectionne, pointsRecherches, depart?.label, arrivee?.label],
   );
 
-  // Le tracé RÉEL, un tronçon par segment, coloré par mode. Les tronçons
-  // dépourvus de géométrie sont marqués `STRAIGHT` et dessinés en pointillés :
-  // une droite ne doit jamais passer pour le chemin du véhicule.
+  // Le tracé RÉEL, un tronçon par segment, coloré par mode — MARCHE COMPRISE.
+  // Les tronçons dépourvus de géométrie sont marqués `STRAIGHT`, la marche
+  // `WALK_ESTIMATE`, et tous deux sont dessinés en pointillés : une droite ne
+  // doit jamais passer pour le chemin réel.
   const troncons = useMemo(
-    () => (selectionne ? tronconsDItineraire(selectionne.segments) : null),
+    () => (selectionne ? tronconsDuTrajet(selectionne) : null),
     [selectionne],
   );
 
@@ -980,6 +997,24 @@ export default function RecherchePage() {
               onCentreDeplace={surCentreDeplace}
               velib={velib.statut === "ok" ? velib.stations : null}
               centre={centreDuTerritoire}
+              // ⚠️ LE POINT BLEU APPARAÎT DÈS QUE LA POSITION EST CONNUE, et
+              // pas seulement en navigation : « Ma position » demandait la
+              // permission, remplissait le champ… et ne montrait rien sur la
+              // carte. L'usager ne pouvait pas vérifier que le point retenu
+              // était le bon.
+              //
+              // `accuracyM: null` : `positionActuelle()` ne rend pas la
+              // précision. On ne dessine donc AUCUN halo plutôt qu'un halo
+              // inventé, qui donnerait une fausse impression d'exactitude.
+              position={
+                position.statut === "ok"
+                  ? {
+                      latitude: position.coordonnees.latitude,
+                      longitude: position.coordonnees.longitude,
+                      accuracyM: null,
+                    }
+                  : null
+              }
             />
           </div>
 
