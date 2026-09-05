@@ -43,6 +43,7 @@ let derniersProps: {
   onCentreDeplace?: (latitude: number, longitude: number) => void;
   velib?: unknown[] | null;
   centre?: readonly [number, number] | null;
+  position?: { latitude: number; longitude: number; accuracyM: number | null } | null;
 } = { arrets: [] };
 
 /**
@@ -157,8 +158,18 @@ vi.mock("@/lib/carbone-api", async (original) => ({
   estimerCarbone: vi.fn(),
 }));
 
+// ⚠️ SANS CE MOCK, `capacites()` PART EN VRAI SUR LE RÉSEAU. `fetch` n'est pas
+// simulé ici ; si un backend écoute sur localhost pendant que la suite tourne,
+// la page reçoit ses vraies capacités et les tests qui dépendent d'un routeur
+// ABSENT échouent au gré de ce qui tourne sur la machine.
+vi.mock("@/lib/capacites-api", async (original) => ({
+  ...(await original<typeof import("@/lib/capacites-api")>()),
+  capacites: vi.fn(),
+}));
+
 const { listerArrets, modesDuReseau, rechercherItineraires, enregistrerItineraire } =
   await import("@/lib/itineraires-api");
+const { capacites } = await import("@/lib/capacites-api");
 const { estimerCarbone } = await import("@/lib/carbone-api");
 const { velibProches } = await import("@/lib/velib-api");
 const { territoire } = await import("@/lib/territoire-api");
@@ -418,6 +429,16 @@ describe("/recherche", () => {
     vi.mocked(listerAdresses).mockResolvedValue([]);
     vi.mocked(rechercherAdresses).mockReset();
     vi.mocked(velibProches).mockReset();
+    // Une installation de démonstration nue : ni routeur piéton, ni routeur
+    // cyclable, ni temps réel. Les tests qui exigent un routeur le posent
+    // explicitement.
+    vi.mocked(capacites).mockResolvedValue({
+      walkRouting: { status: "NOT_CONFIGURED", provider: null },
+      bikeRouting: { status: "NOT_CONFIGURED", provider: null },
+      transitRealtime: { status: "NOT_CONFIGURED", provider: null },
+      legal: { entityName: null, contactEmail: null, privacyContactEmail: null },
+    });
+
     vi.mocked(modesDuReseau).mockReset();
     // Le réseau de démonstration : du tram et du bus, comme la CTS.
     vi.mocked(modesDuReseau).mockResolvedValue({
@@ -703,6 +724,10 @@ describe("/recherche", () => {
       coords: { latitude: 48.8712, longitude: 2.3501 },
     } as GeolocationPosition;
 
+    const POSITION_PARIS_PRECISE = {
+      coords: { latitude: 48.8712, longitude: 2.3501, accuracy: 25 },
+    } as GeolocationPosition;
+
     /// Demande la position via le BOUTON dédié (Phase 3A).
     ///
     /// C'était auparavant une option de la liste d'arrêts. La saisie libre
@@ -792,6 +817,35 @@ describe("/recherche", () => {
           expect.objectContaining({ fromLat: 48.8712, fromLon: 2.3501 }),
         ),
       );
+    });
+
+    it("montre le point bleu sur la carte, avec le halo de précision de l'appareil", async () => {
+      // « Ma position » remplissait le champ mais ne montrait rien sur la
+      // carte : l'usager ne pouvait pas vérifier le point retenu.
+      installerPosition((succes) => succes(POSITION_PARIS_PRECISE));
+      rendre();
+
+      await choisirMaPosition();
+      await screen.findByText(/position trouvée/i);
+
+      await waitFor(() =>
+        expect(derniersProps.position).toEqual({
+          latitude: 48.8712,
+          longitude: 2.3501,
+          // Le rayon vient de l'appareil (`accuracy: 25`), jamais inventé.
+          accuracyM: 25,
+        }),
+      );
+    });
+
+    it("ne dessine AUCUN halo quand l'appareil n'annonce pas de précision", async () => {
+      installerPosition((succes) => succes(POSITION_PARIS));
+      rendre();
+
+      await choisirMaPosition();
+      await screen.findByText(/position trouvée/i);
+
+      await waitFor(() => expect(derniersProps.position?.accuracyM).toBeNull());
     });
 
     describe("échecs", () => {
@@ -1739,6 +1793,71 @@ describe("/recherche", () => {
       // Sans cette phrase, décocher « Bus » laisserait attendre de meilleures
       // propositions sans bus, qui ne viendront pas.
       expect(await screen.findByText(/ne relancent pas la recherche/i)).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Mode de déplacement (à pied / à vélo / transports)
+  // ---------------------------------------------------------------------------
+  describe("mode de déplacement", () => {
+    it("n'envoie PAS de `mode` tant qu'on reste sur les transports", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await chercher();
+
+      await waitFor(() => expect(rechercherItineraires).toHaveBeenCalled());
+      // `TRANSIT` est le défaut du contrat : l'envoyer explicitement
+      // n'apporterait rien.
+      const argument = vi.mocked(rechercherItineraires).mock.calls[0][0];
+      expect(argument).not.toHaveProperty("mode");
+    });
+
+    it("bascule la requête en « à pied »", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      const utilisateur = userEvent.setup();
+      await utilisateur.click(await screen.findByRole("radio", { name: /à pied/i }));
+      await chercher();
+
+      await waitFor(() =>
+        expect(rechercherItineraires).toHaveBeenCalledWith(
+          expect.objectContaining({ mode: "WALK" }),
+        ),
+      );
+    });
+
+    it("ne propose le vélo QUE si un routeur cyclable est configuré", async () => {
+      vi.mocked(capacites).mockResolvedValue({
+        walkRouting: { status: "CONFIGURED", provider: "valhalla" },
+        bikeRouting: { status: "CONFIGURED", provider: "valhalla" },
+        transitRealtime: { status: "NOT_CONFIGURED", provider: null },
+        legal: { entityName: null, contactEmail: null, privacyContactEmail: null },
+      });
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      const utilisateur = userEvent.setup();
+      await utilisateur.click(await screen.findByRole("radio", { name: /à vélo/i }));
+      await chercher();
+
+      await waitFor(() =>
+        expect(rechercherItineraires).toHaveBeenCalledWith(
+          expect.objectContaining({ mode: "BIKE" }),
+        ),
+      );
+    });
+
+    it("CACHE le bouton vélo sans routeur cyclable", async () => {
+      // Le défaut du `beforeEach` : aucun routeur. Proposer « à vélo »
+      // enverrait l'usager vers un tracé en ligne droite à travers les
+      // immeubles.
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await screen.findByRole("radio", { name: /transports/i });
+      expect(screen.queryByRole("radio", { name: /à vélo/i })).toBeNull();
     });
   });
 
@@ -2808,8 +2927,13 @@ describe("/recherche", () => {
 
       await chercher();
 
-      expect(await screen.findByText(/entièrement à pied/i)).toBeDefined();
+      // La carte ET la carte de résultat le disent : « entièrement à pied »
+      // apparaît donc deux fois, et c'est voulu.
+      expect((await screen.findAllByText(/entièrement à pied/i)).length).toBeGreaterThan(0);
       expect(screen.getByText(/Marche jusqu’à votre destination/)).toBeDefined();
+      // ⚠️ La carte ne présente JAMAIS le trait comme une vraie voie
+      // d'opérateur pour un trajet à pied.
+      expect(screen.queryByText(/voie réelle publiée par l'opérateur/i)).toBeNull();
     });
   });
 });

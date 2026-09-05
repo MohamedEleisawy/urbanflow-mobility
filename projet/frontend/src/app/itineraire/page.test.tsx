@@ -559,4 +559,103 @@ describe("/itineraire", () => {
       );
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Trajet entièrement à vélo (bouton « Vélo uniquement »)
+  // ---------------------------------------------------------------------------
+  describe("trajet entièrement à vélo", () => {
+    const segmentVelo = (surcharge: Partial<ItinerarySegment> = {}): ItinerarySegment => ({
+      fromStopId: "__velo_origine__",
+      fromStopName: "Départ",
+      fromStopLat: 48.5834,
+      fromStopLon: 7.7452,
+      toStopId: "__velo_destination__",
+      toStopName: "Destination",
+      toStopLat: 48.5977,
+      toStopLon: 7.7674,
+      mode: "BIKE",
+      lineName: "",
+      operator: "",
+      lineId: "__velo__",
+      gtfsLineId: null,
+      distanceM: 4000,
+      durationMin: 16,
+      geometry: null,
+      geometrySource: "STRAIGHT",
+      ...surcharge,
+    });
+
+    const A_VELO = (segmentSurcharge: Partial<ItinerarySegment> = {}): SelectionItineraire => ({
+      ...SELECTION,
+      origine: { label: "Place Kléber, Strasbourg", latitude: 48.5834, longitude: 7.7452 },
+      destination: { label: "Parlement européen", latitude: 48.5977, longitude: 7.7674 },
+      itineraire: {
+        ...SELECTION.itineraire,
+        totalDistanceM: 4000,
+        totalDurationMin: 16,
+        numberOfTransfers: 0,
+        walkAccess: null,
+        walkEgress: null,
+        carbon: {
+          status: "CARBON_AVAILABLE",
+          co2Grams: 0,
+          carCo2Grams: 760,
+          savedVsCarGrams: 760,
+          ecoScore: 100,
+          reason: null,
+        },
+        segments: [segmentVelo(segmentSurcharge)],
+      },
+    });
+
+    it("annonce « Itinéraire vélo estimé » quand aucun routeur n'a répondu", () => {
+      memoriserSelection(A_VELO());
+      rendre();
+
+      expect(screen.getByText(/entièrement à vélo/i)).toBeDefined();
+      expect(screen.getByText(/itinéraire vélo estimé/i)).toBeDefined();
+      // JAMAIS le vocabulaire du transport en commun pour un trajet vélo.
+      expect(screen.queryByText(/publiée par l'opérateur/i)).toBeNull();
+      expect(screen.queryByText(/chemin suivi par le véhicule/i)).toBeNull();
+    });
+
+    it("dessine le tracé vélo en pointillés (STRAIGHT), pas comme une vraie voie", () => {
+      memoriserSelection(A_VELO());
+      rendre();
+
+      expect(screen.getByTestId("carte-leaflet").getAttribute("data-troncons")).toBe(
+        "STRAIGHT:2",
+      );
+    });
+
+    it("suit la géométrie du routeur quand il a répondu (ROUTED)", () => {
+      memoriserSelection(
+        A_VELO({
+          geometrySource: "ROUTED",
+          geometry: {
+            type: "LineString",
+            coordinates: [
+              [7.7452, 48.5834],
+              [7.755, 48.59],
+              [7.7674, 48.5977],
+            ],
+          },
+        }),
+      );
+      rendre();
+
+      expect(screen.getByTestId("carte-leaflet").getAttribute("data-troncons")).toBe(
+        "ROUTED:3",
+      );
+      expect(screen.getByText(/voies cyclables/i)).toBeDefined();
+    });
+
+    it("affiche 0 g de CO₂ et un éco-score de 100", () => {
+      memoriserSelection(A_VELO());
+      rendre();
+
+      expect(screen.getByText("0 g")).toBeDefined();
+      expect(screen.getByText(/éco-score 100/i)).toBeDefined();
+    });
+  });
 });

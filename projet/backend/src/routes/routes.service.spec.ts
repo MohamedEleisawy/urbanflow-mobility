@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CarbonService } from '../carbon/carbon.service';
 import { ScheduleService } from '../schedule/schedule.service';
 import { WalkRoutingService } from '../walk-routing/walk-routing.service';
+import { BikeRoutingService } from '../walk-routing/bike-routing.service';
 import { CarbonResultDto } from '../carbon/dto/carbon-result.dto';
 import { RoutesService } from './routes.service';
 import { CreateRouteDto } from './dto/create-route.dto';
@@ -19,6 +20,10 @@ beforeAll(() => {
 // unitaires, pas des tests d'intégration.
 describe('RoutesService', () => {
   let walkRouting: {
+    estConfigure: jest.Mock;
+    itineraire: jest.Mock;
+  };
+  let bikeRouting: {
     estConfigure: jest.Mock;
     itineraire: jest.Mock;
   };
@@ -238,12 +243,19 @@ describe('RoutesService', () => {
       estConfigure: jest.fn().mockReturnValue(false),
       itineraire: jest.fn().mockResolvedValue(null),
     };
+    // Même raison : routeur vélo « non configuré » par défaut. Les tests qui
+    // portent sur le vélo l'activent explicitement.
+    bikeRouting = {
+      estConfigure: jest.fn().mockReturnValue(false),
+      itineraire: jest.fn().mockResolvedValue(null),
+    };
 
     service = new RoutesService(
       prisma as unknown as PrismaService,
       carbonService as unknown as CarbonService,
       schedule as unknown as ScheduleService,
       walkRouting as unknown as WalkRoutingService,
+      bikeRouting as unknown as BikeRoutingService,
     );
   });
 
@@ -2109,6 +2121,113 @@ describe('RoutesService', () => {
 
         expect(result).toHaveLength(1);
         expect(result[0].segments[0].fromStopName).toBe('Gare du Nord');
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Mode de déplacement : à pied / à vélo / transports
+    // -----------------------------------------------------------------------
+    describe('mode de déplacement', () => {
+      it('`mode: WALK` court-circuite le graphe et rend UN trajet à pied', async () => {
+        // ⚠️ AUCUNE REQUÊTE RÉSEAU : le graphe n'est pas construit du tout.
+        const result = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+          mode: 'WALK',
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].segments).toEqual([]);
+        expect(result[0].walkAccess).toMatchObject({ source: 'ESTIMATE' });
+        expect(result[0].walkEgress).toBeNull();
+        expect(prisma.stop.findMany).not.toHaveBeenCalled();
+      });
+
+      it('`mode: BIKE` rend UN segment de mode BIKE, sans marche d’approche', async () => {
+        const result = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+          mode: 'BIKE',
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].walkAccess).toBeNull();
+        expect(result[0].walkEgress).toBeNull();
+        expect(result[0].segments).toHaveLength(1);
+        expect(result[0].segments[0].mode).toBe('BIKE');
+        expect(result[0].totalDurationMin).toBeGreaterThanOrEqual(1);
+        expect(prisma.stop.findMany).not.toHaveBeenCalled();
+      });
+
+      it('un segment BIKE non routé reste `STRAIGHT` — jamais présenté comme un vrai tracé', async () => {
+        // Routeur vélo « non configuré » (défaut du beforeEach).
+        const result = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+          mode: 'BIKE',
+        });
+
+        expect(result[0].segments[0].geometrySource).toBe('STRAIGHT');
+        expect(result[0].segments[0].geometry).toBeNull();
+      });
+
+      it('un segment BIKE routé passe en `ROUTED` avec la géométrie du moteur', async () => {
+        bikeRouting.estConfigure.mockReturnValue(true);
+        bikeRouting.itineraire.mockResolvedValue({
+          distanceM: 7685,
+          durationMin: 28,
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [7.7339, 48.5853],
+              [7.72, 48.55],
+              [7.7113, 48.5299],
+            ],
+          },
+        });
+        carbonService.calculate.mockResolvedValue({
+          totalCo2Grams: 0,
+          carCo2Grams: 1598,
+          savedVsCarGrams: 1598,
+          ecoScore: 100,
+          breakdown: [{ mode: 'BIKE', distanceM: 7685, co2Grams: 0 }],
+        });
+
+        const result = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+          mode: 'BIKE',
+        });
+
+        const seg = result[0].segments[0];
+        expect(seg.geometrySource).toBe('ROUTED');
+        expect(seg.distanceM).toBe(7685);
+        expect(seg.durationMin).toBe(28);
+        // Les totaux SUIVENT le tracé du moteur.
+        expect(result[0].totalDistanceM).toBe(7685);
+        expect(result[0].totalDurationMin).toBe(28);
+      });
+
+      it('le vélo n’émet rien : le calcul carbone reçoit bien `mode: BIKE`', async () => {
+        carbonService.calculate.mockResolvedValue({
+          totalCo2Grams: 0,
+          carCo2Grams: 1598,
+          savedVsCarGrams: 1598,
+          ecoScore: 100,
+          breakdown: [
+            {
+              mode: 'BIKE',
+              distanceM: expect.any(Number) as number,
+              co2Grams: 0,
+            },
+          ],
+        });
+
+        await service.searchRoutes({ ...depuisA, ...versC, mode: 'BIKE' });
+
+        expect(carbonService.calculate).toHaveBeenCalledWith({
+          segments: [{ mode: 'BIKE', distanceM: expect.any(Number) as number }],
+        });
       });
     });
   });

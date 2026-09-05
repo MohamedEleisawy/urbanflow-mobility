@@ -138,6 +138,14 @@ function Detail({ selection }: { selection: SelectionItineraire }) {
   );
   // Un trajet SANS aucun tronçon de réseau : il n'y a que de la marche.
   const toutAPied = itineraire.segments.length === 0;
+  // Un trajet d'UN SEUL segment vélo : le bouton « Vélo uniquement ». Le vélo
+  // n'est PAS un véhicule d'opérateur — sa description ne peut pas parler de
+  // « voie publiée par l'opérateur » ni de suffixe de marche.
+  const toutAVelo =
+    itineraire.segments.length === 1 && itineraire.segments[0].mode === "BIKE";
+  const veloEstime = troncons.some(
+    (troncon) => troncon.mode === "BIKE" && troncon.source === "STRAIGHT",
+  );
 
   /**
    * Perturbations en cours, ou `null` tant qu'on ne sait pas.
@@ -196,6 +204,8 @@ function Detail({ selection }: { selection: SelectionItineraire }) {
               approches,
               marcheEstimee,
               toutAPied,
+              toutAVelo,
+              veloEstime,
               t,
             )}
             arrets={points}
@@ -560,6 +570,8 @@ function descriptionCarte(
   approches: number,
   marcheEstimee: boolean,
   toutAPied: boolean,
+  toutAVelo: boolean,
+  veloEstime: boolean,
   t: Textes,
 ): string {
   // ⚠️ UN TRAJET SANS AUCUN TRONÇON DE RÉSEAU EST UN TRAJET À PIED. Le décrire
@@ -574,6 +586,15 @@ function descriptionCarte(
     return marcheEstimee
       ? `${t.itineraireToutAPied} ${t.tracePietonEstimeDetail}`
       : `${t.itineraireToutAPied} ${t.tracePietonReelDetail}`;
+  }
+
+  // ⚠️ LE VÉLO N'EST PAS UN VÉHICULE D'OPÉRATEUR. Pas de « voie publiée par
+  // l'opérateur », pas de suffixe de marche : un trajet vélo va d'un bout à
+  // l'autre, son tracé vient d'un routeur (OSM) ou n'est qu'une estimation.
+  if (toutAVelo) {
+    return veloEstime
+      ? `${t.itineraireToutAVelo} ${t.traceVeloEstime}`
+      : `${t.itineraireToutAVelo} ${t.traceVeloReel}`;
   }
 
   const suffixe = marcheEstimee

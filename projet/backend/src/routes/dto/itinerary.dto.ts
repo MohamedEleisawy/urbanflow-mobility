@@ -87,16 +87,17 @@ export interface ItinerarySegmentDto {
   geometry: unknown;
 
   /**
-   * D'où vient le tracé que le client va dessiner.
+   * D'où vient le tracé que le client va dessiner. Ce champ existe pour que
+   * l'interface ne puisse jamais présenter une droite comme un tracé réel.
    *
-   * `SHAPE`    : géométrie réelle de l'opérateur, `geometry` est renseignée ;
-   * `STRAIGHT` : aucune géométrie publiée, au client de relier les deux
-   *              arrêts par une droite — qui n'est PAS le trajet réel.
-   *
-   * Ce champ existe pour que l'interface ne puisse pas présenter les deux
-   * cas de la même façon. Sans lui, une droite passerait pour un tracé.
+   *   `SHAPE`    tracé publié par l'opérateur (`shapes.txt` du flux GTFS) ;
+   *   `ROUTED`   tracé calculé rue par rue par un moteur de routage — le cas
+   *              d'un segment vélo, dont la voie n'existe dans aucun flux GTFS
+   *              mais que Valhalla connaît d'après OpenStreetMap ;
+   *   `STRAIGHT` une droite entre deux arrêts, faute des deux précédents — ce
+   *              n'est PAS le trajet réel, et l'interface doit le dire.
    */
-  geometrySource: 'SHAPE' | 'STRAIGHT';
+  geometrySource: 'SHAPE' | 'ROUTED' | 'STRAIGHT';
 
   /**
    * Minutes d'attente AVANT de monter dans ce segment.

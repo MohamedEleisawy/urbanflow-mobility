@@ -27,7 +27,8 @@ import { cheminOptimal, type AreteGenerique, type Cout } from './dijkstra';
 import { haversineDistanceM } from '../common/geo/distance.util';
 import { minutesDeMarche } from '../common/geo/marche.util';
 import { WalkRoutingService } from '../walk-routing/walk-routing.service';
-import { WalkRouteDto } from '../walk-routing/dto/walk-route.dto';
+import type { RouteGeometrieDto } from '../walk-routing/valhalla.client';
+import { BikeRoutingService } from '../walk-routing/bike-routing.service';
 
 // Une "arête" du graphe : un déplacement possible d'un arrêt vers un autre.
 interface GraphEdge {
@@ -280,6 +281,9 @@ export class RoutesService {
     // marche retombe sur l'estimation à vol d'oiseau, annoncée comme telle.
     // Une panne du routeur dégrade la précision, jamais la disponibilité.
     private readonly walkRouting: WalkRoutingService,
+    // Routage VÉLO — même moteur que la marche, capacité déclarée à part.
+    // Comme `walkRouting`, il ne lève jamais : `null` = repli sur l'estimation.
+    private readonly bikeRouting: BikeRoutingService,
   ) {}
 
   /**
@@ -755,6 +759,20 @@ export class RoutesService {
    * usagers.
    */
   async searchRoutes(dto: SearchRouteDto): Promise<ItineraryDto[]> {
+    // ═══ TRAJET DIRECT : À PIED OU À VÉLO, D'UN BOUT À L'AUTRE ═══
+    //
+    // ⚠️ ON NE TOUCHE PAS AU GRAPHE DES TRANSPORTS. « À pied » et « à vélo »
+    // ne sont pas des critères parmi d'autres : ce sont des trajets d'une
+    // seule pièce, sans arrêt, sans correspondance, sans marche d'approche.
+    // Un seul itinéraire est rendu — il n'existe pas trois façons d'aller
+    // quelque part à pied.
+    if (dto.mode === 'WALK') {
+      return this.seulementAPied(dto);
+    }
+    if (dto.mode === 'BIKE') {
+      return this.seulementAVelo(dto);
+    }
+
     // ⚠️ LE GRAPHE EST BORNÉ SPATIALEMENT, et ce n'est pas une optimisation
     // prématurée : c'est ce qui rend l'ajout du bus possible. Ces deux
     // requêtes chargeaient TOUT le réseau à CHAQUE recherche.
@@ -1861,7 +1879,7 @@ export class RoutesService {
     const cle = (marche: ItineraryWalkLegDto) =>
       `${marche.fromLat},${marche.fromLon}->${marche.toLat},${marche.toLon}`;
 
-    const demandes = new Map<string, Promise<WalkRouteDto | null>>();
+    const demandes = new Map<string, Promise<RouteGeometrieDto | null>>();
 
     for (const marche of marches) {
       if (!demandes.has(cle(marche))) {
@@ -1876,11 +1894,11 @@ export class RoutesService {
     }
 
     // Parallèles : trois marches ne doivent pas coûter trois fois le délai.
-    const traces = new Map<string, WalkRouteDto | null>(
+    const traces = new Map<string, RouteGeometrieDto | null>(
       await Promise.all(
         [...demandes].map(
           async ([id, promesse]) =>
-            [id, await promesse] as [string, WalkRouteDto | null],
+            [id, await promesse] as [string, RouteGeometrieDto | null],
         ),
       ),
     );
@@ -2231,6 +2249,114 @@ export class RoutesService {
     );
 
     return itineraires;
+  }
+
+  /**
+   * La seule réponse quand l'usager demande le vélo : y aller à vélo.
+   *
+   * ⚠️ MÊME FORME QU'UN ITINÉRAIRE DE TRANSPORT — un `ItinerarySegmentDto` de
+   * mode `BIKE` — et non un `walkAccess` détourné. Le vélo N'EST PAS de la
+   * marche : il a sa propre vitesse, son propre facteur d'émission (zéro), et
+   * son propre tracé. Le faire passer pour une marche fausserait le calcul
+   * carbone et l'affichage.
+   */
+  private async seulementAVelo(dto: SearchRouteDto): Promise<ItineraryDto[]> {
+    const itineraires = [this.itineraireAVelo(dto)];
+
+    await this.enrichirVelo(itineraires);
+    await this.enrichirCarbone(
+      itineraires,
+      await this.carbonService.facteurs(),
+    );
+
+    return itineraires;
+  }
+
+  /**
+   * Squelette d'un trajet vélo : un seul segment, du départ à la destination.
+   *
+   * Distance et durée sont d'abord ESTIMÉES (vol d'oiseau, 15 km/h), puis
+   * remplacées par les valeurs du moteur dans `enrichirVelo`. Le
+   * `geometrySource: 'STRAIGHT'` initial dit franchement « pas encore de
+   * tracé » ; il devient `'ROUTED'` quand Valhalla a répondu.
+   */
+  private itineraireAVelo(dto: SearchRouteDto): ItineraryDto {
+    const distanceM = Math.round(
+      haversineDistanceM(dto.fromLat, dto.fromLon, dto.toLat, dto.toLon),
+    );
+
+    const segment: ItinerarySegmentDto = {
+      // Identifiants synthétiques : les deux bouts sont des POINTS DEMANDÉS,
+      // pas des arrêts. Ils ne sont jamais renvoyés au serveur pour un
+      // enregistrement — un trajet vélo ne s'enregistre pas via des liaisons.
+      fromStopId: '__velo_origine__',
+      fromStopName: 'Départ',
+      fromStopLat: dto.fromLat,
+      fromStopLon: dto.fromLon,
+      toStopId: '__velo_destination__',
+      toStopName: 'Destination',
+      toStopLat: dto.toLat,
+      toStopLon: dto.toLon,
+      mode: 'BIKE',
+      lineName: '',
+      operator: '',
+      lineId: '__velo__',
+      gtfsLineId: null,
+      distanceM,
+      // ~15 km/h à vélo urbain — remplacé par la durée du moteur.
+      durationMin: Math.max(1, Math.round(distanceM / 250)),
+      geometry: null,
+      geometrySource: 'STRAIGHT',
+    };
+
+    return {
+      criterion: 'FASTEST',
+      totalDistanceM: distanceM,
+      totalDurationMin: segment.durationMin,
+      numberOfTransfers: 0,
+      carbon: indisponible('Empreinte non encore calculée.'),
+      walkAccess: null,
+      walkEgress: null,
+      segments: [segment],
+    };
+  }
+
+  /**
+   * Remplace le segment vélo par le vrai tracé du moteur, quand il répond.
+   *
+   * ⚠️ MÊME CONTRAT QUE `enrichirMarche` : ne lève jamais. Si le routeur vélo
+   * est absent ou en panne, le segment garde son estimation et son
+   * `geometrySource: 'STRAIGHT'` — l'interface trace alors une droite EN
+   * POINTILLÉS et le dit.
+   */
+  private async enrichirVelo(itineraires: ItineraryDto[]): Promise<void> {
+    if (!this.bikeRouting.estConfigure()) {
+      return;
+    }
+
+    for (const itineraire of itineraires) {
+      const segment = itineraire.segments[0];
+
+      if (!segment || segment.mode !== 'BIKE') {
+        continue;
+      }
+
+      const trace = await this.bikeRouting.itineraire(
+        { latitude: segment.fromStopLat, longitude: segment.fromStopLon },
+        { latitude: segment.toStopLat, longitude: segment.toStopLon },
+      );
+
+      if (!trace) {
+        continue;
+      }
+
+      segment.distanceM = trace.distanceM;
+      segment.durationMin = trace.durationMin;
+      segment.geometry = trace.geometry;
+      segment.geometrySource = 'ROUTED';
+
+      this.recalculerTotaux(itineraire);
+    }
   }
 
   private itineraireAPied(dto: SearchRouteDto): ItineraryDto {

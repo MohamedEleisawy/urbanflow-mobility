@@ -1,10 +1,15 @@
 import { Module } from '@nestjs/common';
 import { WalkRoutingService } from './walk-routing.service';
+import { BikeRoutingService } from './bike-routing.service';
 
-// Aucun import : ce module ne touche pas la base. Il ne fait qu'interroger un
-// moteur de routage extérieur, et rend `null` quand il n'y en a pas.
+// Routage rue par rue — piéton ET vélo. Aucun import : ces services ne
+// touchent pas la base, ils interrogent un moteur extérieur (Valhalla) et
+// rendent `null` quand il n'y en a pas.
+//
+// Le nom du fichier reste `walk-routing` pour ne pas casser les imports
+// existants ; le module, lui, couvre les deux profils.
 @Module({
-  providers: [WalkRoutingService],
-  exports: [WalkRoutingService],
+  providers: [WalkRoutingService, BikeRoutingService],
+  exports: [WalkRoutingService, BikeRoutingService],
 })
 export class WalkRoutingModule {}

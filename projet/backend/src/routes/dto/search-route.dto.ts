@@ -1,4 +1,5 @@
 import {
+  IsIn,
   IsISO8601,
   IsLatitude,
   IsLongitude,
@@ -55,4 +56,22 @@ export class SearchRouteDto {
   @IsOptional()
   @IsISO8601()
   departAt?: string;
+
+  /**
+   * Mode de déplacement souhaité.
+   *
+   *   `TRANSIT` (défaut) : marche + tram/bus + marche, comme toujours ;
+   *   `WALK`             : le trajet ENTIER à pied, rue par rue ;
+   *   `BIKE`             : le trajet ENTIER à vélo, rue par rue.
+   *
+   * ⚠️ `WALK` ET `BIKE` COURT-CIRCUITENT LE GRAPHE DES TRANSPORTS. Ils ne
+   * renvoient qu'UN itinéraire — il n'y a pas trois façons d'aller quelque
+   * part à pied — et n'ont ni `walkAccess` ni `walkEgress` : le trajet n'est
+   * pas « de l'adresse à un arrêt », il va d'un bout à l'autre.
+   *
+   * ⚠️ FACULTATIF. Son absence vaut `TRANSIT`, le cas courant.
+   */
+  @IsOptional()
+  @IsIn(['TRANSIT', 'WALK', 'BIKE'])
+  mode?: 'TRANSIT' | 'WALK' | 'BIKE';
 }

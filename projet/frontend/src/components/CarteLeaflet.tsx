@@ -535,9 +535,15 @@ export default function CarteLeaflet({
                 ? "Tracé piéton estimé — ligne droite, pas le chemin réel"
                 : troncon.source === "WALK_ROUTED"
                   ? "Chemin piéton, rue par rue"
-                  : troncon.source === "STRAIGHT"
-                    ? `${troncon.lineName} — tracé approché`
-                    : troncon.lineName,
+                  : troncon.source === "ROUTED"
+                    ? "Itinéraire vélo, rue par rue"
+                    : troncon.source === "STRAIGHT"
+                      ? troncon.mode === "BIKE"
+                        ? "Itinéraire vélo estimé — ligne droite, pas le chemin réel"
+                        : troncon.lineName
+                          ? `${troncon.lineName} — tracé approché`
+                          : "Tracé approché — pas le chemin réel"
+                      : troncon.lineName,
             )
             .addTo(groupe);
         }

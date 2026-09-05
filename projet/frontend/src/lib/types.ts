@@ -141,18 +141,27 @@ export interface PaginatedStops {
 // Recherche d'itinéraire
 // ---------------------------------------------------------------------------
 
+/** Mode de déplacement demandé pour la recherche. */
+export type ModeVoyage = "TRANSIT" | "WALK" | "BIKE";
+
 /**
  * Corps attendu par `POST /api/routes/search`.
  *
- * ⚠️ Des COORDONNÉES, pas des noms d'arrêt. L'écran de recherche devra donc
- * faire choisir des arrêts (via `GET /api/stops`) et transmettre leurs
- * coordonnées.
+ * ⚠️ Des COORDONNÉES, pas des noms d'arrêt : l'écran fait choisir des adresses
+ * et transmet leurs coordonnées.
  */
 export interface SearchItineraryRequest {
   fromLat: number;
   fromLon: number;
   toLat: number;
   toLon: number;
+
+  /**
+   * `TRANSIT` (défaut) : marche + tram/bus + marche.
+   * `WALK` / `BIKE`     : le trajet ENTIER à pied ou à vélo, rue par rue —
+   *                       un seul itinéraire, sans arrêt ni correspondance.
+   */
+  mode?: ModeVoyage;
 }
 
 /**
@@ -223,7 +232,13 @@ export interface GeoJsonLineString {
  *
  * L'interface ne doit jamais présenter les deux de la même façon.
  */
-export type GeometrySource = "SHAPE" | "STRAIGHT";
+/**
+ *   `SHAPE`    tracé publié par l'opérateur (GTFS `shapes.txt`) ;
+ *   `ROUTED`   tracé calculé rue par rue par un moteur de routage — un segment
+ *              vélo, dont la voie n'est dans aucun flux GTFS mais qu'OSM connaît ;
+ *   `STRAIGHT` une droite faute des deux précédents — PAS le trajet réel.
+ */
+export type GeometrySource = "SHAPE" | "ROUTED" | "STRAIGHT";
 
 /** Une portion de trajet, entre deux arrêts. */
 export interface ItinerarySegment {

@@ -160,7 +160,7 @@ export interface TronconTrace {
    *                   Ce n'est PAS un itinéraire piéton : elle traverse les
    *                   immeubles et minore la distance. L'interface doit le dire.
    */
-  source: "SHAPE" | "STRAIGHT" | "WALK_ROUTED" | "WALK_ESTIMATE";
+  source: "SHAPE" | "ROUTED" | "STRAIGHT" | "WALK_ROUTED" | "WALK_ESTIMATE";
 }
 
 /**
@@ -222,14 +222,21 @@ export function tronconsDItineraire(
       lineName: segment.lineName,
     };
 
-    if (segment.geometrySource === "SHAPE" && estLineString(segment.geometry)) {
+    // ⚠️ `SHAPE` (opérateur) ET `ROUTED` (moteur de routage, cas du vélo) sont
+    // tous deux de VRAIS tracés : ils se dessinent en trait plein. Seule
+    // l'infobulle les distingue.
+    if (
+      (segment.geometrySource === "SHAPE" ||
+        segment.geometrySource === "ROUTED") &&
+      estLineString(segment.geometry)
+    ) {
       return {
         ...commun,
         // GeoJSON dit [lon, lat] ; Leaflet veut [lat, lon].
         points: segment.geometry.coordinates.map(
           ([lon, lat]) => [lat, lon] as [number, number],
         ),
-        source: "SHAPE" as const,
+        source: segment.geometrySource === "ROUTED" ? ("ROUTED" as const) : ("SHAPE" as const),
       };
     }
 

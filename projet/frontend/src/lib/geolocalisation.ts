@@ -23,10 +23,24 @@
 // donnée de géolocalisation sans nécessité, ce que le RGPD proscrit (C8).
 // =============================================================================
 
-/** Une position, dans la forme exacte qu'attend `rechercherItineraires`. */
+/**
+ * Une position obtenue de l'appareil.
+ *
+ * `latitude` / `longitude` sont les SEULES valeurs transmises au backend
+ * (`rechercherItineraires` ne lit qu'elles). `accuracyM` — le rayon
+ * d'incertitude en mètres annoncé par l'appareil, ou `null` s'il ne le donne
+ * pas — reste CÔTÉ CLIENT : il ne sert qu'à dessiner le halo de précision
+ * autour du point bleu sur la carte, et n'est jamais envoyé.
+ */
 export interface Coordonnees {
   latitude: number;
   longitude: number;
+  /**
+   * Rayon d'incertitude en mètres annoncé par l'appareil, `null` s'il ne le
+   * donne pas. FACULTATIF : une adresse choisie ou un favori n'en a pas, seule
+   * une position GPS le porte.
+   */
+  accuracyM?: number | null;
 }
 
 /**
@@ -91,6 +105,12 @@ export function positionActuelle(options: PositionOptions = {}): Promise<Coordon
         resoudre({
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
+          // ⚠️ POUR LE HALO DE PRÉCISION, PAS POUR LE BACKEND. Un appareil qui
+          // n'annonce pas de précision (ou une valeur non finie) donne `null` :
+          // on ne dessine alors aucun halo plutôt qu'un cercle inventé.
+          accuracyM: Number.isFinite(position.coords.accuracy)
+            ? position.coords.accuracy
+            : null,
         }),
       (echec) => rejeter(new ErreurGeolocalisation(raisonDe(echec), MESSAGES[raisonDe(echec)])),
       {

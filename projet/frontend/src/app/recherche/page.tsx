@@ -60,9 +60,11 @@ import type {
   Itinerary,
   ItineraryCarbon,
   ItineraryCriterion,
+  ModeVoyage,
   Stop,
   TransportMode,
 } from "@/lib/types";
+import { SelecteurModeVoyage } from "@/components/SelecteurModeVoyage";
 
 // =============================================================================
 // Recherche d'itinéraire (étape 5A-5, UC01)
@@ -374,6 +376,16 @@ export default function RecherchePage() {
    * resterait vide après une recherche réussie, ce qui donnerait l'impression
    * qu'elle est cassée.
    */
+  /**
+   * Mode de déplacement choisi : transports (défaut), à pied, ou à vélo.
+   *
+   * ⚠️ « À pied » et « à vélo » NE SONT PAS des filtres d'affichage. Ils
+   * changent la requête envoyée au backend, qui renvoie alors un trajet d'une
+   * seule pièce — sans arrêt, sans correspondance. Une nouvelle recherche est
+   * donc nécessaire à chaque changement, comme pour le départ ou l'arrivée.
+   */
+  const [modeVoyage, setModeVoyage] = useState<ModeVoyage>("TRANSIT");
+
   const [selection, setSelection] = useState<ItineraryCriterion | null>(null);
   const [recherche, setRecherche] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
@@ -761,6 +773,10 @@ export default function RecherchePage() {
         fromLon: origine.longitude,
         toLat: destination.latitude,
         toLon: destination.longitude,
+        // ⚠️ `mode` N'EST TRANSMIS QUE S'IL DIFFÈRE DU DÉFAUT. `TRANSIT` est la
+        // valeur par défaut du contrat : l'envoyer explicitement n'ajoute
+        // rien et alourdirait chaque requête pour rien.
+        ...(modeVoyage === "TRANSIT" ? {} : { mode: modeVoyage }),
       });
 
       // Les deux vont ENSEMBLE : les résultats et les points qui les ont
@@ -916,6 +932,14 @@ export default function RecherchePage() {
                   />
                 </div>
 
+                <SelecteurModeVoyage
+                  valeur={modeVoyage}
+                  onChanger={setModeVoyage}
+                  veloDisponible={
+                    capacitesInstallation?.bikeRouting.status === "CONFIGURED"
+                  }
+                />
+
                 {/* Les arrêts du réseau restent accessibles, en RETRAIT : le
                     réseau réel en compte 1 383, et une liste de cette taille
                     ne peut pas être l'entrée principale. Repliée par défaut,
@@ -1003,15 +1027,15 @@ export default function RecherchePage() {
               // carte. L'usager ne pouvait pas vérifier que le point retenu
               // était le bon.
               //
-              // `accuracyM: null` : `positionActuelle()` ne rend pas la
-              // précision. On ne dessine donc AUCUN halo plutôt qu'un halo
-              // inventé, qui donnerait une fausse impression d'exactitude.
+              // `accuracyM` vient de l'appareil : un halo de précision est
+              // dessiné quand il l'annonce, aucun halo quand il ne le donne
+              // pas (`null`) — jamais un cercle inventé.
               position={
                 position.statut === "ok"
                   ? {
                       latitude: position.coordonnees.latitude,
                       longitude: position.coordonnees.longitude,
-                      accuracyM: null,
+                      accuracyM: position.coordonnees.accuracyM ?? null,
                     }
                   : null
               }
@@ -1849,6 +1873,28 @@ function descriptionCarte(
   }, ${formaterDistance(selectionne.totalDistanceM)} en ${formaterDuree(
     selectionne.totalDurationMin,
   )}.`;
+
+  // ⚠️ MARCHE ET VÉLO NE SONT PAS DES VÉHICULES D'OPÉRATEUR. Un trajet
+  // « À pied » ou « À vélo » ne se décrit ni par « la voie publiée par
+  // l'opérateur », ni par « le chemin suivi par le véhicule ».
+  const marcheEstimee = troncons.some((troncon) => troncon.source === "WALK_ESTIMATE");
+
+  if (selectionne.segments.length === 0) {
+    const detail = marcheEstimee ? t.tracePietonEstimeDetail : t.tracePietonReelDetail;
+    return `${entete} ${t.itineraireToutAPied} ${detail}`;
+  }
+
+  const toutAVelo =
+    selectionne.segments.length === 1 && selectionne.segments[0].mode === "BIKE";
+
+  if (toutAVelo) {
+    const veloEstime = troncons.some(
+      (troncon) => troncon.mode === "BIKE" && troncon.source === "STRAIGHT",
+    );
+    return `${entete} ${t.itineraireToutAVelo} ${
+      veloEstime ? t.traceVeloEstime : t.traceVeloReel
+    }`;
+  }
 
   const approche = troncons.filter((troncon) => troncon.source === "STRAIGHT").length;
 

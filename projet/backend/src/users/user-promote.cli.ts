@@ -1,7 +1,10 @@
 // =============================================================================
 // Promotion d'un utilisateur en administrateur (étape 6-2)
 // =============================================================================
-//   npm run user:promote -- utilisateur@example.com
+//   npm run admin:promote -- utilisateur@example.com     (alias : user:promote)
+//
+//   En production (image Docker, sans ts-node) :
+//     node dist/users/user-promote.cli.js utilisateur@example.com
 //
 // ═══ POURQUOI UNE COMMANDE, ET PAS UNE ROUTE HTTP ═══
 //
@@ -54,7 +57,8 @@ async function main(): Promise<void> {
   if (!email || email.trim() === '') {
     throw new Error(
       'Adresse électronique manquante.\n' +
-        '  Utilisation : npm run user:promote -- utilisateur@example.com',
+        '  Utilisation : npm run admin:promote -- utilisateur@example.com\n' +
+        '  En production : node dist/users/user-promote.cli.js utilisateur@example.com',
     );
   }
 

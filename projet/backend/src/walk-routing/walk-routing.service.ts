@@ -1,159 +1,56 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { capabilitiesConfig } from '../config/capabilities.config';
-import { LineStringGeoJson } from '../gtfs/shape-geometry';
-import { decoderPolyligne } from './polyline.util';
-import { WalkRouteDto } from './dto/walk-route.dto';
+import { Disjoncteur } from './disjoncteur';
+import {
+  itineraireValhalla,
+  type PointGeo,
+  type RouteGeometrieDto,
+} from './valhalla.client';
+
+// Ré-exports pour ne pas casser les imports existants.
+export type { PointGeo } from './valhalla.client';
+export type { RouteGeometrieDto as WalkRouteDto } from './valhalla.client';
 
 // =============================================================================
-// Routage piéton réel
+// Routage PIÉTON réel
 // =============================================================================
 // ═══ LE MENSONGE QUE CE SERVICE SUPPRIME ═══
 //
-// La marche était tracée par une DROITE entre deux points. Sur une carte, cette
-// droite traverse les immeubles, les jardins et les voies ferrées — et sa
-// longueur est systématiquement inférieure au chemin réel. Mesuré sur le trajet
-// de démonstration : 240 m à vol d'oiseau contre 327 m par les rues, soit 36 %
-// d'écart.
-//
-// Une droite n'est pas un itinéraire piéton. Ce service en calcule un vrai.
+// La marche était tracée par une DROITE entre deux points. Sur une carte,
+// cette droite traverse les immeubles, les jardins et les voies ferrées — et
+// sa longueur est systématiquement inférieure au chemin réel. Mesuré : 240 m à
+// vol d'oiseau contre 327 m par les rues, soit 36 % d'écart.
 //
 // ═══ CE QUI EST CACHÉ DERRIÈRE CETTE FRONTIÈRE ═══
 //
 // Le frontend ne connaît QUE `walkAccess` / `walkEgress` et leur `source`. Il
-// ignore quel moteur les a produits, et n'appelle jamais un fournisseur
-// extérieur lui-même : changer de moteur ne touchera pas une ligne d'interface.
+// ignore quel moteur les a produits et n'appelle jamais un fournisseur
+// extérieur lui-même : changer de moteur ne touche pas une ligne d'interface.
 //
 // ═══ CE SERVICE NE LÈVE JAMAIS ═══
 //
-// ⚠️ `null` EST UNE RÉPONSE NORMALE : moteur non configuré, injoignable, en
-// erreur, ou sans chemin. L'appelant retombe alors sur l'estimation à vol
-// d'oiseau, marquée `ESTIMATE` — et l'interface le DIT. Une recherche
-// d'itinéraire ne doit jamais échouer parce qu'un routeur piéton est en panne.
+// ⚠️ `null` EST UNE RÉPONSE NORMALE : moteur non configuré, en panne, ou sans
+// chemin. L'appelant retombe sur l'estimation à vol d'oiseau, marquée
+// `ESTIMATE` — et l'interface le DIT. Une recherche d'itinéraire ne doit
+// jamais échouer parce qu'un routeur piéton est en panne.
 // =============================================================================
-
-/**
- * Profil de coût demandé au moteur.
- *
- * ⚠️ `pedestrian`, ET JAMAIS UN PROFIL AUTOMOBILE. Un moteur voiture évite les
- * ruelles, ignore les passages piétons et les escaliers, et respecte des sens
- * interdits qui ne s'appliquent pas à un piéton. Le tracé serait plausible et
- * faux — bien plus trompeur qu'une droite assumée.
- */
-const PROFIL_PIETON = 'pedestrian';
-
-/**
- * Précision d'encodage des polylignes de Valhalla : 10⁻⁶ degré.
- *
- * ⚠️ CE N'EST PAS LA CONVENTION DE GOOGLE NI D'OSRM (10⁻⁵). Se tromper d'un
- * facteur dix place le tracé en mer du Nord sans lever la moindre erreur.
- */
-const PRECISION_VALHALLA = 6;
-
-/**
- * Délai au-delà duquel on renonce au moteur.
- *
- * ⚠️ COURT, ET DÉLIBÉRÉMENT. Ce calcul s'insère dans une recherche
- * d'itinéraire que l'usager attend : mieux vaut une estimation immédiate,
- * annoncée comme telle, qu'un tracé exact au bout de dix secondes.
- */
-const DELAI_MS = 4_000;
-
-/**
- * Nombre d'échecs consécutifs avant d'ouvrir le disjoncteur.
- *
- * TROIS, et non un : un échec isolé arrive — un paquet perdu, une seconde de
- * latence. Couper dès le premier priverait le produit de tout routage piéton
- * pour un incident sans lendemain.
- */
-const ECHECS_AVANT_OUVERTURE = 3;
-
-/**
- * Durée pendant laquelle on cesse d'interroger un moteur déclaré en panne.
- *
- * ═══ POURQUOI UN DISJONCTEUR, ET PAS SEULEMENT UN REPLI ═══
- *
- * Le repli sur l'estimation existait déjà : un moteur injoignable rendait
- * `null`, et la marche redevenait une droite annoncée comme telle. Correct,
- * mais COÛTEUX : chaque recherche d'itinéraire attendait quand même le délai
- * complet. Un Valhalla indisponible ajoutait donc quatre secondes à CHAQUE
- * recherche, indéfiniment.
- *
- * Passé ce seuil d'échecs, on arrête d'appeler : la réponse redevient
- * instantanée, dégradée mais franche. Une minute plus tard, un appel est
- * retenté — le service a pu revenir.
- */
-const DUREE_OUVERTURE_MS = 60_000;
-
-/** Forme partielle de la réponse Valhalla — seuls les champs consommés. */
-interface ReponseValhalla {
-  trip?: {
-    legs?: {
-      shape?: unknown;
-      summary?: { length?: unknown; time?: unknown };
-    }[];
-  };
-}
-
-export interface PointGeo {
-  latitude: number;
-  longitude: number;
-}
 
 @Injectable()
 export class WalkRoutingService {
   private readonly logger = new Logger(WalkRoutingService.name);
+  private readonly disjoncteur = new Disjoncteur(this.logger, 'Routeur piéton');
 
-  /// Échecs consécutifs depuis le dernier succès.
-  private echecsConsecutifs = 0;
-
-  /**
-   * Instant (ms) jusqu'auquel le moteur est considéré en panne.
-   *
-   * `0` = disjoncteur fermé, les appels passent normalement.
-   */
-  private ouvertJusqua = 0;
-
-  /**
-   * Le disjoncteur est-il ouvert — autrement dit : renonce-t-on à appeler ?
-   *
-   * ⚠️ OBSERVABLE DE L'EXTÉRIEUR À DESSEIN. Un disjoncteur qu'on ne peut pas
-   * interroger est un disjoncteur qu'on ne peut pas diagnostiquer.
-   */
+  /** Voir `Disjoncteur.ouvert`. Public pour être diagnosticable. */
   disjoncteurOuvert(maintenant = Date.now()): boolean {
-    return maintenant < this.ouvertJusqua;
-  }
-
-  /// Un appel a abouti : le moteur répond, on repart de zéro.
-  private succes(): void {
-    if (this.echecsConsecutifs > 0 || this.ouvertJusqua !== 0) {
-      this.logger.log('Routeur piéton de nouveau disponible.');
-    }
-
-    this.echecsConsecutifs = 0;
-    this.ouvertJusqua = 0;
-  }
-
-  /// Un appel a échoué : au troisième d'affilée, on cesse d'insister.
-  private echec(): null {
-    this.echecsConsecutifs += 1;
-
-    if (this.echecsConsecutifs >= ECHECS_AVANT_OUVERTURE) {
-      this.ouvertJusqua = Date.now() + DUREE_OUVERTURE_MS;
-      this.logger.warn(
-        `Routeur piéton déclaré indisponible après ${this.echecsConsecutifs} échecs. ` +
-          `Aucun appel pendant ${DUREE_OUVERTURE_MS / 1000} s : la marche reste une estimation.`,
-      );
-    }
-
-    return null;
+    return this.disjoncteur.ouvert(maintenant);
   }
 
   /**
    * Le moteur est-il configuré ?
    *
    * Lu à CHAQUE APPEL et non figé au démarrage : `GET /api/capabilities` doit
-   * pouvoir refléter un changement d'environnement sans redémarrage, et les
-   * tests doivent pouvoir basculer d'un cas à l'autre.
+   * refléter un changement d'environnement sans redémarrage, et les tests
+   * doivent pouvoir basculer d'un cas à l'autre.
    */
   estConfigure(): boolean {
     return capabilitiesConfig().walkRouting.status === 'CONFIGURED';
@@ -168,17 +65,17 @@ export class WalkRoutingService {
   async itineraire(
     depuis: PointGeo,
     vers: PointGeo,
-  ): Promise<WalkRouteDto | null> {
+  ): Promise<RouteGeometrieDto | null> {
     const base = process.env.WALK_ROUTING_BASE_URL?.trim();
 
     if (!this.estConfigure() || !base) {
       return null;
     }
 
-    // ⚠️ AUCUN APPEL RÉSEAU QUAND LE MOTEUR EST DÉCLARÉ EN PANNE. C'est tout
-    // l'objet du disjoncteur : rendre la main immédiatement plutôt que
-    // d'attendre quatre secondes pour un échec prévisible.
-    if (this.disjoncteurOuvert()) {
+    // ⚠️ AUCUN APPEL RÉSEAU QUAND LE MOTEUR EST DÉCLARÉ EN PANNE. Rendre la
+    // main immédiatement plutôt que d'attendre quatre secondes pour un échec
+    // prévisible.
+    if (this.disjoncteur.ouvert()) {
       return null;
     }
 
@@ -191,97 +88,26 @@ export class WalkRoutingService {
       return null;
     }
 
-    try {
-      const reponse = await fetch(`${base.replace(/\/+$/, '')}/route`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          locations: [
-            { lat: depuis.latitude, lon: depuis.longitude },
-            { lat: vers.latitude, lon: vers.longitude },
-          ],
-          costing: PROFIL_PIETON,
-          directions_options: { units: 'kilometers' },
-        }),
-        signal: AbortSignal.timeout(DELAI_MS),
-      });
+    const resultat = await itineraireValhalla(
+      this.logger,
+      base,
+      'pedestrian',
+      depuis,
+      vers,
+    );
 
-      if (!reponse.ok) {
-        this.logger.warn(
-          `Routeur piéton : HTTP ${reponse.status}. Repli sur l'estimation.`,
-        );
-        return this.echec();
-      }
-
-      const trace = this.lire((await reponse.json()) as ReponseValhalla);
-
-      // ⚠️ UNE RÉPONSE ILLISIBLE COMPTE COMME UN ÉCHEC, une absence de chemin
-      // NON. La première signale un moteur en mauvais état ; la seconde est
-      // une réponse légitime — il arrive qu'aucun chemin piéton n'existe.
-      if (trace !== null) {
-        this.succes();
-      }
-
-      return trace;
-    } catch (erreur) {
-      // ⚠️ ON NE JOURNALISE PAS LES COORDONNÉES. Un trajet à pied dit où
-      // quelqu'un part et où il va : les voir dans les journaux du serveur à
-      // chaque panne reviendrait à constituer un historique par accident.
-      this.logger.warn(
-        `Routeur piéton injoignable (${
-          erreur instanceof Error ? erreur.name : 'erreur inconnue'
-        }). Repli sur l'estimation.`,
-      );
-      return this.echec();
+    if ('erreur' in resultat) {
+      return this.disjoncteur.echec();
     }
-  }
 
-  /**
-   * Traduit la réponse du moteur, ou rend `null`.
-   *
-   * ⚠️ CHAQUE CHAMP EST VÉRIFIÉ. Un fournisseur externe n'est pas un contrat
-   * qu'on maîtrise ; le caster ferait passer un `undefined` jusqu'à une carte
-   * qui tenterait de le dessiner.
-   */
-  private lire(corps: ReponseValhalla): WalkRouteDto | null {
-    const leg = corps.trip?.legs?.[0];
-    const forme = leg?.shape;
-    const longueurKm = leg?.summary?.length;
-    const secondes = leg?.summary?.time;
-
-    if (
-      typeof forme !== 'string' ||
-      typeof longueurKm !== 'number' ||
-      typeof secondes !== 'number' ||
-      !Number.isFinite(longueurKm) ||
-      !Number.isFinite(secondes)
-    ) {
-      this.logger.warn('Routeur piéton : réponse inexploitable.');
+    // ⚠️ UNE ABSENCE DE CHEMIN N'EST PAS UNE PANNE : on ne la compte pas
+    // contre le disjoncteur, mais elle n'est pas non plus un succès à
+    // célébrer. On rend `null`, l'appelant estimera.
+    if (resultat.route === null) {
       return null;
     }
 
-    const points = decoderPolyligne(forme, PRECISION_VALHALLA);
-
-    // Un tracé d'un seul point ne se dessine pas — et signale une réponse
-    // dégradée qu'il vaut mieux traiter comme une absence.
-    if (points.length < 2) {
-      return null;
-    }
-
-    const geometry: LineStringGeoJson = {
-      type: 'LineString',
-      // ⚠️ GeoJSON impose [longitude, latitude] — l'inverse de l'ordre rendu
-      // par le décodeur, et de celui de Leaflet. Une inversion ne lève aucune
-      // erreur : elle place simplement Strasbourg en Somalie.
-      coordinates: points.map(([lat, lon]) => [lon, lat]),
-    };
-
-    return {
-      distanceM: Math.round(longueurKm * 1000),
-      // ⚠️ MINIMUM UNE MINUTE, comme l'estimation : « 0 min de marche » se lit
-      // « vous y êtes », ce qui est faux à cinquante mètres.
-      durationMin: Math.max(1, Math.round(secondes / 60)),
-      geometry,
-    };
+    this.disjoncteur.succes();
+    return resultat.route;
   }
 }

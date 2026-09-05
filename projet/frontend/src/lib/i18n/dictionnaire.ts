@@ -86,6 +86,15 @@ const FR = {
   domicile: "Domicile",
   travail: "Travail",
   rechercher: "Rechercher",
+  modeVoyageLabel: "Comment vous déplacer",
+  modeVoyageTransit: "Transports",
+  modeVoyageMarche: "À pied",
+  modeVoyageVelo: "À vélo",
+  modeVoyageAideTransit:
+    "Marche + tram/bus + marche, avec plusieurs itinéraires comparés.",
+  modeVoyageAideDirect:
+    "Trajet d'une seule pièce. Changer de mode relance une recherche.",
+
   rechercheEnCours: "Recherche en cours…",
   // ⚠️ DISTINCT du libellé du bouton : les deux apparaissent EN MÊME TEMPS
   // pendant une recherche, et les confondre rendrait l'écran illisible — et
@@ -169,6 +178,11 @@ const FR = {
   marcheEstimationDetail:
     "Aucun routeur piéton n’est configuré : cette distance est mesurée à vol d’oiseau, le chemin réel est plus long.",
   itineraireToutAPied: "Ce trajet se fait entièrement à pied.",
+  itineraireToutAVelo: "Ce trajet se fait entièrement à vélo.",
+  traceVeloReel:
+    "Le tracé suit les voies cyclables, d’après les données OpenStreetMap.",
+  traceVeloEstime:
+    "Itinéraire vélo estimé : le trait en pointillés relie les deux points en ligne droite, ce n’est pas le chemin cyclable réel.",
   autourActiver: "Utiliser ma position",
   autourRecherche: "Recherche des arrêts proches…",
   autourAucun: "Aucun arrêt de transport dans les environs.",
@@ -333,6 +347,15 @@ const EN: typeof FR = {
   domicile: "Home",
   travail: "Work",
   rechercher: "Search",
+  modeVoyageLabel: "How to travel",
+  modeVoyageTransit: "Transit",
+  modeVoyageMarche: "Walk",
+  modeVoyageVelo: "Bike",
+  modeVoyageAideTransit:
+    "Walk + tram/bus + walk, with several itineraries compared.",
+  modeVoyageAideDirect:
+    "A single-leg trip. Changing mode runs a new search.",
+
   rechercheEnCours: "Searching…",
   rechercheIndicateur: "Looking for routes…",
   memePoint: "Start and destination must be different.",
@@ -408,6 +431,10 @@ const EN: typeof FR = {
   marcheEstimationDetail:
     "No pedestrian router is configured: this distance is measured as the crow flies, the real path is longer.",
   itineraireToutAPied: "This trip is entirely on foot.",
+  itineraireToutAVelo: "This trip is entirely by bike.",
+  traceVeloReel: "The route follows cycle paths, based on OpenStreetMap data.",
+  traceVeloEstime:
+    "Estimated bike route: the dashed line joins the two points in a straight line — it is not the actual cycle path.",
   autourActiver: "Use my location",
   autourRecherche: "Looking for nearby stops…",
   autourAucun: "No transport stop nearby.",
@@ -556,6 +583,15 @@ const ES: typeof FR = {
   domicile: "Casa",
   travail: "Trabajo",
   rechercher: "Buscar",
+  modeVoyageLabel: "Cómo desplazarse",
+  modeVoyageTransit: "Transporte",
+  modeVoyageMarche: "A pie",
+  modeVoyageVelo: "En bici",
+  modeVoyageAideTransit:
+    "A pie + tranvía/autobús + a pie, con varios itinerarios comparados.",
+  modeVoyageAideDirect:
+    "Un trayecto de un solo tramo. Cambiar de modo lanza una nueva búsqueda.",
+
   rechercheEnCours: "Buscando…",
   rechercheIndicateur: "Buscando itinerarios…",
   memePoint: "El origen y el destino deben ser diferentes.",
@@ -631,6 +667,11 @@ const ES: typeof FR = {
   marcheEstimationDetail:
     "No hay ningún enrutador peatonal configurado: esta distancia se mide en línea recta, el camino real es más largo.",
   itineraireToutAPied: "Este trayecto se realiza completamente a pie.",
+  itineraireToutAVelo: "Este trayecto se realiza completamente en bici.",
+  traceVeloReel:
+    "El trazado sigue los carriles bici, según los datos de OpenStreetMap.",
+  traceVeloEstime:
+    "Ruta en bici estimada: la línea discontinua une los dos puntos en línea recta, no es el carril bici real.",
   autourActiver: "Usar mi ubicación",
   autourRecherche: "Buscando paradas cercanas…",
   autourAucun: "Ninguna parada de transporte en los alrededores.",

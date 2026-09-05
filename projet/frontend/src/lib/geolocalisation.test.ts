@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe("positionActuelle", () => {
-  it("rend la latitude et la longitude, et RIEN d'autre", async () => {
+  it("rend lat/lon et la précision, et RIEN d'autre", async () => {
     installer((succes) =>
       succes({
         coords: {
@@ -62,11 +62,25 @@ describe("positionActuelle", () => {
 
     const position = await positionActuelle();
 
-    // Exactement la forme attendue par `rechercherItineraires`. La vitesse,
-    // le cap et l'altitude ne sont pas retenus : le backend n'en a que faire,
-    // et une donnée de géolocalisation qu'on ne transporte pas est une donnée
-    // qui ne peut pas fuiter (minimisation, C8).
-    expect(position).toEqual({ latitude: 48.8809, longitude: 2.3553 });
+    // Lat/lon pour le backend, `accuracyM` pour le seul halo de précision de
+    // la carte (jamais transmis). La vitesse, le cap et l'altitude ne sont pas
+    // retenus : une donnée de géolocalisation qu'on ne garde pas est une
+    // donnée qui ne peut pas fuiter (minimisation, C8).
+    expect(position).toEqual({ latitude: 48.8809, longitude: 2.3553, accuracyM: 12 });
+  });
+
+  it("rend `accuracyM: null` quand l'appareil n'annonce pas de précision", async () => {
+    installer((succes) =>
+      succes({
+        coords: { latitude: 1, longitude: 2, accuracy: NaN },
+      } as GeolocationPosition),
+    );
+
+    const position = await positionActuelle();
+
+    // On ne dessine alors AUCUN halo plutôt qu'un cercle inventé qui
+    // donnerait une fausse impression d'exactitude.
+    expect(position.accuracyM).toBeNull();
   });
 
   it("demande une position ÉCONOME par défaut", async () => {

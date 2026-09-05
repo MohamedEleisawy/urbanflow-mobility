@@ -25,7 +25,8 @@
     "gtfs:import": "ts-node src/gtfs/gtfs-import.cli.ts",
     "gtfs:purge": "ts-node src/gtfs/purge-reseau.cli.ts",
     "gtfs-rt:import": "ts-node src/gtfs-rt/gtfs-rt-import.cli.ts",
-    "user:promote": "ts-node src/users/user-promote.cli.ts"
+    "user:promote": "ts-node src/users/user-promote.cli.ts",
+    "admin:promote": "ts-node src/users/user-promote.cli.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
