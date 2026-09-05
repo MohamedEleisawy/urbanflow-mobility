@@ -1,0 +1,61 @@
+# =============================================================================
+# HTTPS — surcouche Caddy (étape 12)
+# =============================================================================
+# Ce fichier se SUPERPOSE à docker-compose.production.yml, il ne le remplace
+# pas :
+#
+#   docker compose --env-file .env.production \
+#     -f docker-compose.production.yml \
+#     -f docker-compose.caddy.yml \
+#     up -d --build
+#
+# ═══ CE QU'IL CHANGE ═══
+#
+#   1. Le backend n'est PLUS publié sur le port 3001 de la machine. Il devient
+#      joignable uniquement par le réseau interne de Docker — donc uniquement
+#      par Caddy. Sans cela, l'API resterait accessible en clair sur
+#      http://IP:3001, et n'importe qui pourrait contourner le HTTPS.
+#   2. Caddy prend les ports 80 et 443, et obtient TOUT SEUL un certificat
+#      Let's Encrypt pour le domaine déclaré dans `API_DOMAIN`.
+#
+# ═══ CE QU'IL FAUT AVANT DE LANCER ═══
+#
+#   - un nom de domaine dont l'enregistrement A pointe vers l'IP du serveur ;
+#   - les ports 80 ET 443 ouverts (Caddy a besoin du 80 pour la validation) ;
+#   - `API_DOMAIN=api.mon-domaine.fr` dans `.env.production`.
+#
+# ⚠️ SANS DNS VALIDE, CADDY BOUCLE sur l'obtention du certificat. Ce n'est pas
+# une panne du produit : c'est Let's Encrypt qui ne peut pas vérifier que le
+# domaine vous appartient.
+# =============================================================================
+
+services:
+  backend:
+    # `!reset` efface la valeur du fichier de base au lieu de s'y ajouter.
+    # Une simple liste vide serait FUSIONNÉE, et le port resterait publié.
+    ports: !reset []
+    # Toujours joignable par les autres conteneurs, jamais depuis l'extérieur.
+    expose:
+      - '3001'
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?API_DOMAIN manquant — le domaine de l API, ex. api.mon-domaine.fr}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Les certificats SURVIVENT aux redémarrages. Sans ce volume, Caddy en
+      # redemanderait à chaque `up` et atteindrait vite les quotas de
+      # Let's Encrypt (5 échecs par heure et par domaine).
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+
+volumes:
+  caddy_data:
+  caddy_config:

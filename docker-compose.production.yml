@@ -1,0 +1,124 @@
+# =============================================================================
+# UrbanFlow Mobility — orchestration de PRODUCTION
+# =============================================================================
+# Le frontend n'est PAS ici : il est déployé sur Vercel. Ce fichier ne décrit
+# que ce qui tourne sur le serveur — la base, l'API et le service carbone.
+#
+#   docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
+#
+# ⚠️ AUCUNE VALEUR PAR DÉFAUT SUR LES SECRETS. Le fichier de développement
+# écrit `${POSTGRES_PASSWORD:-urbanflow_dev_password}` : pratique en local,
+# catastrophique en production, où une variable oubliée donnerait une base au
+# mot de passe public. Ici, `${VAR:?message}` FAIT ÉCHOUER le démarrage avec
+# une phrase claire plutôt que de déployer une installation vulnérable.
+# =============================================================================
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER manquant dans .env.production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD manquant dans .env.production}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB manquant dans .env.production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # ⚠️ AUCUN `ports:` ICI, ET C'EST VOLONTAIRE. Publier 5432 exposerait la
+    # base à l'internet entier. Le backend l'atteint par le réseau interne de
+    # Docker, sous le nom d'hôte `postgres`. Pour l'administrer depuis votre
+    # poste, passez par un tunnel SSH plutôt que par un port ouvert.
+    healthcheck:
+      # `-d ${POSTGRES_DB}` : sans la base, `pg_isready` répond « prêt » alors
+      # que la base applicative n'existe pas encore, et le backend démarre trop
+      # tôt sur une erreur P1001.
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  carbon-service:
+    build:
+      context: ./projet
+      dockerfile: docker/carbon-service.Dockerfile
+    restart: unless-stopped
+    environment:
+      CARBON_ENVIRONMENT: production
+    # ⚠️ LE `--reload` DU DOCKERFILE EST NEUTRALISÉ ICI. Il fait surveiller le
+    # système de fichiers par uvicorn — utile en développement, où le code est
+    # monté depuis l'hôte ; inutile et déconseillé en production, où le code
+    # est figé dans l'image.
+    command: ['uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', '8000']
+    # Pas de `ports:` : seul le backend l'appelle, par le réseau interne.
+
+  backend:
+    build:
+      context: ./projet
+      dockerfile: docker/backend.production.Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+
+      # `postgres` = nom du service ci-dessus, résolu par le réseau Docker.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET manquant — générez-le avec openssl rand -hex 32}
+      CARBON_SERVICE_URL: http://carbon-service:8000
+
+      # ⚠️ ORIGINE(S) AUTORISÉE(S) PAR CORS. Sans elle, seul localhost:3000 est
+      # accepté et le frontend Vercel se verra refuser toutes ses requêtes.
+      # Plusieurs domaines se séparent par des virgules.
+      FRONTEND_URL: ${FRONTEND_URL:?FRONTEND_URL manquant — le domaine du frontend Vercel}
+
+      # ⚠️ INDISPENSABLE AU LIEN DE RÉINITIALISATION DE MOT DE PASSE. Absent,
+      # le lien pointerait vers http://localhost:3000 — inutilisable pour un
+      # usager. Ce champ manquait au premier jet de ce fichier.
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:?APP_PUBLIC_URL manquant — l URL publique du frontend}
+
+      GEOCODING_URL: ${GEOCODING_URL}
+
+      # ---- Territoire desservi ----
+      TERRITORY_NAME: ${TERRITORY_NAME}
+      TERRITORY_DISPLAY_NAME: ${TERRITORY_DISPLAY_NAME}
+      TERRITORY_COUNTRY: ${TERRITORY_COUNTRY}
+      TERRITORY_CENTER_LAT: ${TERRITORY_CENTER_LAT}
+      TERRITORY_CENTER_LON: ${TERRITORY_CENTER_LON}
+      TERRITORY_RADIUS_M: ${TERRITORY_RADIUS_M}
+      TERRITORY_TIMEZONE: ${TERRITORY_TIMEZONE}
+
+      # ---- Sources extérieures ----
+      BIKE_GBFS_URL: ${BIKE_GBFS_URL}
+      WALK_ROUTING_PROVIDER: ${WALK_ROUTING_PROVIDER}
+      WALK_ROUTING_BASE_URL: ${WALK_ROUTING_BASE_URL}
+
+      # ---- Identité légale (RGPD) ----
+      # Vides, les pages légales affichent un encadré « installation de
+      # démonstration » au lieu d'inventer un responsable de traitement.
+      LEGAL_ENTITY_NAME: ${LEGAL_ENTITY_NAME:-}
+      LEGAL_CONTACT_EMAIL: ${LEGAL_CONTACT_EMAIL:-}
+      PRIVACY_CONTACT_EMAIL: ${PRIVACY_CONTACT_EMAIL:-}
+    ports:
+      # ⚠️ N'EXPOSEZ CE PORT QUE DERRIÈRE UN REVERSE PROXY. Avec Caddy (voir
+      # docker-compose.caddy.yml), remplacez par `expose: ["3001"]` pour que
+      # l'API ne soit plus joignable en clair depuis l'extérieur.
+      - '3001:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      carbon-service:
+        condition: service_started
+    healthcheck:
+      # `/api/territory` est public, sans base de données lourde derrière :
+      # c'est la route la moins coûteuse qui prouve que l'application répond.
+      test:
+        [
+          'CMD-SHELL',
+          'wget --quiet --tries=1 --spider http://127.0.0.1:3001/api/territory || exit 1',
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Laisse le temps à Nest de démarrer avant de compter les échecs.
+      start_period: 20s
+
+volumes:
+  postgres_data:

@@ -1,0 +1,36 @@
+# =============================================================================
+# Caddy — terminaison HTTPS devant l'API UrbanFlow
+# =============================================================================
+# Le certificat Let's Encrypt est obtenu et renouvelé AUTOMATIQUEMENT : aucune
+# commande certbot, aucune tâche cron, aucune date d'expiration à surveiller.
+#
+#   https://api.mon-domaine.fr/api/...   →   backend:3001/api/...
+#
+# `{$API_DOMAIN}` est lu dans l'environnement du conteneur, lui-même alimenté
+# par `.env.production`. Le domaine n'est donc écrit nulle part dans le dépôt.
+# =============================================================================
+
+{$API_DOMAIN} {
+	# `backend` = nom du service Docker, résolu par le réseau interne.
+	# Caddy parle en HTTP à l'intérieur du réseau : le chiffrement s'arrête
+	# ici, ce qui est le rôle d'un terminaison TLS.
+	reverse_proxy backend:3001
+
+	# ⚠️ EN-TÊTES DE SÉCURITÉ AJOUTÉS PAR LE PROXY, en complément de ceux que
+	# NestJS pose déjà (`security-headers.middleware.ts`). Caddy est le seul à
+	# savoir que la connexion est réellement en HTTPS : c'est donc à lui de
+	# poser HSTS.
+	header {
+		# Un an, sous-domaines compris. Le navigateur refusera désormais toute
+		# connexion en clair à ce domaine.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# Ne pas divulguer le logiciel serveur.
+		-Server
+	}
+
+	# Journaux au format JSON : lisibles par un humain comme par un outil.
+	log {
+		output stdout
+		format json
+	}
+}
