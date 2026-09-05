@@ -249,6 +249,15 @@ const compterChangementsDuChemin = (chemin: PathStep[]): number => {
 // millisecondes : la conversion est isolée pour qu'elle soit visible.
 const MILLISECONDES_PAR_MINUTE = 60_000;
 
+/**
+ * Mètres parcourus par minute à vélo urbain — ~15 km/h.
+ *
+ * ⚠️ MÊME VALEUR QUE `itineraireAVelo` (le `/ 250` de la recherche). Un
+ * trajet vélo estimé à l'enregistrement doit annoncer la même durée que celui
+ * qu'on vient de voir à l'écran.
+ */
+const METRES_PAR_MINUTE_VELO = 250;
+
 /// Deux décimales, comme partout ailleurs pour les grammes de CO2
 /// (convention posée à l'étape 4D-1).
 const arrondir = (grammes: number) => Math.round(grammes * 100) / 100;
@@ -304,12 +313,31 @@ export class RoutesService {
    * userId vient TOUJOURS du JWT, jamais du corps de la requête.
    */
   async create(userId: string, dto: CreateRouteDto) {
+    // ═══ TRAJET DIRECT : À PIED OU À VÉLO, D'UN BOUT À L'AUTRE ═══
+    //
+    // ⚠️ IL N'EMPRUNTE AUCUNE LIAISON DU RÉSEAU. Pas de `resoudreLiaisons`,
+    // pas de `verifierChainage`, pas de `Segment` écrit : le client a demandé
+    // « à pied » ou « à vélo », le serveur recalcule lui-même la distance et
+    // la durée depuis les coordonnées. Le contrat « le client désigne, il ne
+    // décrit pas » tient toujours — il n'y a simplement rien à désigner.
+    if (dto.mode) {
+      return this.creerTrajetDirect(userId, dto);
+    }
+
     // UN SEUL instant pour toute l'opération : il horodate la route ET
     // chacun de ses enregistrements carbone. Laisser les @default(now())
     // de Prisma s'en charger produirait des instants distincts de quelques
     // millisecondes — de quoi ranger un trajet et son carbone dans deux
     // journées différentes à minuit, dans un futur tableau de bord.
     const requestedAt = new Date();
+
+    // ⚠️ Un trajet MULTIMODAL sans segment n'est pas un itinéraire. (Un
+    // trajet direct, lui, EXIGE la liste vide — traité juste au-dessus.)
+    if (dto.segments.length === 0) {
+      throw new BadRequestException(
+        'Un itinéraire multimodal doit comporter au moins un segment.',
+      );
+    }
 
     const liaisons = await this.resoudreLiaisons(dto.segments);
     this.verifierChainage(liaisons);
@@ -402,6 +430,143 @@ export class RoutesService {
       where: { id: routeId },
       include: { segments: { orderBy: { departureTime: 'asc' } } },
     });
+  }
+
+  /**
+   * Enregistre un trajet DIRECT — le résultat des boutons « À pied » / « À
+   * vélo » de la recherche.
+   *
+   * ═══ CE QUI LE DISTINGUE D'UN TRAJET MULTIMODAL ═══
+   *
+   *   - AUCUNE liaison réseau, donc AUCUN `Segment` écrit : `Route.mode` porte
+   *     à lui seul l'information « ce trajet s'est fait à pied / à vélo » ;
+   *   - la distance et la durée sont RECALCULÉES ICI, jamais reprises du
+   *     client — routeur rue par rue s'il est configuré, sinon estimation à
+   *     vol d'oiseau (exactement `itineraireAPied` / `itineraireAVelo`) ;
+   *   - UN SEUL `CarbonRecord`, pour le trajet entier : la marche et le vélo
+   *     n'émettent rien (0 g), mais l'économie face à la voiture, elle, compte
+   *     — c'est le chiffre qui motive l'usager.
+   *
+   * ⚠️ MÊME CONTRAT D'ERREUR QUE `create()` : 422 si un mode est incalculable
+   * (impossible ici, WALK/BIKE ont un facteur), 503 si le microservice
+   * carbone est injoignable — et alors RIEN n'est écrit.
+   */
+  private async creerTrajetDirect(userId: string, dto: CreateRouteDto) {
+    if (dto.segments.length > 0) {
+      throw new BadRequestException(
+        'Un trajet direct (à pied ou à vélo) ne comporte aucun segment.',
+      );
+    }
+
+    const requestedAt = new Date();
+    const mode: ModeTransport = dto.mode === 'BIKE' ? 'BIKE' : 'WALK';
+
+    const { distanceM, durationMin } = await this.mesurerTrajetDirect(
+      mode,
+      dto,
+    );
+
+    // APPEL RÉSEAU AVANT LA TRANSACTION (même raison que `create()` : ne pas
+    // tenir des verrous PostgreSQL pendant un aller-retour HTTP).
+    const carbone = await this.carbonService.calculate({
+      segments: [{ mode, distanceM }],
+    });
+
+    const routeId = await this.prisma.$transaction(async (tx) => {
+      const route = await tx.route.create({
+        data: {
+          originLat: dto.originLat,
+          originLng: dto.originLng,
+          destinationLat: dto.destinationLat,
+          destinationLng: dto.destinationLng,
+          requestedAt,
+          totalDistanceM: distanceM,
+          totalDurationMin: durationMin,
+          carbonEstimate: carbone.totalCo2Grams,
+          ecoScore: carbone.ecoScore,
+          mode,
+          userId,
+        },
+      });
+
+      // AUCUN `segment.createMany` : un trajet direct n'a pas de segment.
+
+      // UN enregistrement carbone pour le trajet entier. `savedVsCarGrams`
+      // vient du microservice, jamais d'un calcul local (même refus qu'en
+      // 4D-1 pour le facteur d'ESCOOTER).
+      await tx.carbonRecord.create({
+        data: {
+          date: requestedAt,
+          mode,
+          distanceM,
+          co2Grams: carbone.totalCo2Grams,
+          savedVsCarGrams: carbone.savedVsCarGrams,
+          userId,
+          routeId: route.id,
+        },
+      });
+
+      return route.id;
+    });
+
+    // Même forme de réponse que `create()` : la route relue, `segments: []`.
+    return this.prisma.route.findUniqueOrThrow({
+      where: { id: routeId },
+      include: { segments: { orderBy: { departureTime: 'asc' } } },
+    });
+  }
+
+  /**
+   * Distance et durée d'un trajet direct : le routeur rue par rue s'il est
+   * configuré, sinon l'estimation à vol d'oiseau.
+   *
+   * ⚠️ NE LÈVE JAMAIS pour une panne de routeur — même contrat que
+   * `enrichirMarche` / `enrichirVelo`. Un routeur absent ou en erreur fait
+   * retomber sur l'estimation, il n'empêche pas d'enregistrer.
+   */
+  private async mesurerTrajetDirect(
+    mode: ModeTransport,
+    dto: CreateRouteDto,
+  ): Promise<{ distanceM: number; durationMin: number }> {
+    const volDoiseauM = Math.round(
+      haversineDistanceM(
+        dto.originLat,
+        dto.originLng,
+        dto.destinationLat,
+        dto.destinationLng,
+      ),
+    );
+
+    const estimation =
+      mode === 'BIKE'
+        ? {
+            distanceM: volDoiseauM,
+            durationMin: Math.max(
+              1,
+              Math.round(volDoiseauM / METRES_PAR_MINUTE_VELO),
+            ),
+          }
+        : {
+            distanceM: volDoiseauM,
+            durationMin: minutesDeMarche(volDoiseauM),
+          };
+
+    const routeur = mode === 'BIKE' ? this.bikeRouting : this.walkRouting;
+
+    if (!routeur.estConfigure()) {
+      return estimation;
+    }
+
+    const trace = await routeur.itineraire(
+      { latitude: dto.originLat, longitude: dto.originLng },
+      { latitude: dto.destinationLat, longitude: dto.destinationLng },
+    );
+
+    // `null` = routeur non configuré, en panne, ou sans chemin : l'estimation
+    // reste une réponse honnête.
+    return trace
+      ? { distanceM: trace.distanceM, durationMin: trace.durationMin }
+      : estimation;
   }
 
   /**
@@ -2304,7 +2469,7 @@ export class RoutesService {
       gtfsLineId: null,
       distanceM,
       // ~15 km/h à vélo urbain — remplacé par la durée du moteur.
-      durationMin: Math.max(1, Math.round(distanceM / 250)),
+      durationMin: Math.max(1, Math.round(distanceM / METRES_PAR_MINUTE_VELO)),
       geometry: null,
       geometrySource: 'STRAIGHT',
     };

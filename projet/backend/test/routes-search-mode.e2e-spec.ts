@@ -246,6 +246,27 @@ describe('POST /api/routes/search — mode WALK / BIKE (e2e)', () => {
       expect(trajet.carbon.co2Grams).toBe(0);
       expect(trajet.carbon.ecoScore).toBe(100);
     });
+
+    it('NE LÈVE JAMAIS : un trajet vélo est rendu même si tout `fetch` échoue', async () => {
+      // Routeur ET microservice carbone injoignables en même temps.
+      jest.spyOn(global, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+
+      const reponse = await request(app.getHttpServer())
+        .post('/api/routes/search')
+        .send({ ...DEPART, ...ARRIVEE, mode: 'BIKE' })
+        .expect(200);
+
+      const [trajet] = reponse.body as {
+        segments: { mode: string; geometrySource: string }[];
+        carbon: { status: string };
+      }[];
+
+      // Un itinéraire vélo, estimé, avec une empreinte « indisponible » —
+      // jamais un 500, jamais un CO₂ inventé.
+      expect(trajet.segments[0].mode).toBe('BIKE');
+      expect(trajet.segments[0].geometrySource).toBe('STRAIGHT');
+      expect(trajet.carbon.status).toBe('CARBON_UNAVAILABLE');
+    });
   });
 
   // ---------------------------------------------------------------------------

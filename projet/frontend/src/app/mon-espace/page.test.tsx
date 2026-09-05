@@ -87,6 +87,7 @@ const TRAJETS: PaginatedRoutes = {
       ecoScore: 82.4,
       carbonEstimate: 310,
       userId: PROFIL.id,
+      mode: null,
     },
   ],
   page: 1,

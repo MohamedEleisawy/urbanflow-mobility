@@ -1,9 +1,10 @@
 import { Type } from 'class-transformer';
 import {
-  ArrayNotEmpty,
   IsArray,
+  IsIn,
   IsLatitude,
   IsLongitude,
+  IsOptional,
   IsUUID,
   ValidateNested,
 } from 'class-validator';
@@ -63,15 +64,38 @@ export class CreateRouteDto {
   @IsLongitude()
   destinationLng!: number;
 
+  /**
+   * Mode d'un trajet DIRECT — les boutons « À pied » / « À vélo » de la
+   * recherche.
+   *
+   * ⚠️ FACULTATIF. Absent, c'est un trajet MULTIMODAL ordinaire : `segments`
+   * est alors obligatoire et non vide, comme avant.
+   *
+   * Présent (`WALK` / `BIKE`), c'est un trajet d'une seule pièce : `segments`
+   * DOIT être vide, il n'emprunte aucune liaison du réseau. Le serveur
+   * recalcule lui-même distance et durée depuis les coordonnées — le client
+   * ne décrit rien de plus que d'où il part et où il va.
+   *
+   * Ni `TRANSIT` ni `CAR` ici : ce champ ne sert QU'À enregistrer un trajet
+   * marche/vélo direct.
+   */
+  @IsOptional()
+  @IsIn(['WALK', 'BIKE'])
+  mode?: 'WALK' | 'BIKE';
+
   // @ValidateNested({ each: true }) et @Type sont indispensables ENSEMBLE :
   // sans @Type, class-transformer laisserait des objets bruts dans le tableau
   // et @ValidateNested n'aurait aucune classe contre laquelle les valider —
   // les segments passeraient donc SANS être vérifiés (même piège qu'en 4D-2).
   //
-  // @ArrayNotEmpty : un itinéraire sans segment n'est pas un itinéraire.
+  // ⚠️ PLUS DE `@ArrayNotEmpty` ICI. La règle « vide interdit » ne vaut que
+  // pour un trajet MULTIMODAL, et « vide obligatoire » pour un trajet direct
+  // (`mode` renseigné) : cette dépendance entre deux champs se vérifie dans
+  // le service (`create()`), pas par un décorateur isolé. Défaut `[]` pour
+  // qu'un corps sans `segments` — le cas normal d'un trajet direct — soit
+  // accepté sans planter.
   @IsArray()
-  @ArrayNotEmpty()
   @ValidateNested({ each: true })
   @Type(() => RouteSegmentDto)
-  segments!: RouteSegmentDto[];
+  segments: RouteSegmentDto[] = [];
 }

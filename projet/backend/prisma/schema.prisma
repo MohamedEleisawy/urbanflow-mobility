@@ -224,6 +224,20 @@ model Route {
   ecoScore         Float
   carbonEstimate   Float
 
+  /// Mode d'un trajet DIRECT (boutons « À pied » / « À vélo » de la recherche).
+  ///
+  /// `null`        = trajet multimodal ordinaire, entièrement décrit par ses
+  ///                 `segments` (le cas de tous les trajets jusqu'ici).
+  /// `WALK`/`BIKE` = trajet d'une seule pièce, SANS aucun `Segment` : il
+  ///                 n'emprunte aucune liaison du réseau, il va d'un bout à
+  ///                 l'autre. Sa distance et sa durée sont recalculées par le
+  ///                 serveur (routeur si disponible, sinon vol d'oiseau),
+  ///                 jamais reprises du client.
+  ///
+  /// ⚠️ NULLABLE, sans reprise des lignes existantes : un trajet enregistré
+  /// avant cette colonne reste `null` et se comporte exactement comme avant.
+  mode ModeTransport?
+
   // Usager qui a enregistré cet itinéraire dans son historique.
   //
   // NULLABLE volontairement : le diagramme de cas d'utilisation place

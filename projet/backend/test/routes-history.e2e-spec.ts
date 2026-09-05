@@ -338,12 +338,15 @@ describe('GET /api/routes (e2e)', () => {
       expect(item).not.toHaveProperty('carbonRecords');
 
       // ...mais tout ce dont un affichage d'historique a besoin est là.
+      // `mode` : `null` pour un trajet multimodal, `WALK`/`BIKE` pour un
+      // trajet direct (bouton « À pied » / « À vélo »).
       expect(Object.keys(item).sort()).toEqual([
         'carbonEstimate',
         'destinationLat',
         'destinationLng',
         'ecoScore',
         'id',
+        'mode',
         'originLat',
         'originLng',
         'requestedAt',

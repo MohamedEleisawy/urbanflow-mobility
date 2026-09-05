@@ -50,7 +50,7 @@ describe('RoutesService', () => {
     // segment.findMany reste simulé UNIQUEMENT pour prouver, dans les tests
     // d'isolation, que la RECHERCHE ne l'interroge JAMAIS.
     segment: { findMany: jest.Mock; createMany: jest.Mock };
-    carbonRecord: { createMany: jest.Mock };
+    carbonRecord: { create: jest.Mock; createMany: jest.Mock };
     $transaction: jest.Mock;
   };
   let carbonService: { calculate: jest.Mock; facteurs: jest.Mock };
@@ -190,7 +190,7 @@ describe('RoutesService', () => {
       stop: { findMany: jest.fn() },
       networkLink: { findMany: jest.fn() },
       segment: { findMany: jest.fn(), createMany: jest.fn() },
-      carbonRecord: { createMany: jest.fn() },
+      carbonRecord: { create: jest.fn(), createMany: jest.fn() },
       // La transaction est simulée en exécutant simplement son contenu : ces
       // tests vérifient CE QUI est écrit, pas l'atomicité elle-même — qui ne
       // peut se prouver que sur une vraie base (étape 4E-3C).
@@ -632,6 +632,159 @@ describe('RoutesService', () => {
       // Un appel HTTP dans une transaction tiendrait des verrous PostgreSQL
       // ouverts pendant toute sa durée.
       expect(ordre).toEqual(['carbone', 'transaction']);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // create — trajet DIRECT (boutons « À pied » / « À vélo »)
+  // ---------------------------------------------------------------------------
+  describe('create — trajet direct', () => {
+    // ~2,4 km à vol d'oiseau entre les deux points du DTO.
+    const dtoMarche: CreateRouteDto = {
+      originLat: 48.8566,
+      originLng: 2.3522,
+      destinationLat: 48.8738,
+      destinationLng: 2.295,
+      mode: 'WALK',
+      segments: [],
+    };
+    const dtoVelo: CreateRouteDto = { ...dtoMarche, mode: 'BIKE' };
+
+    const CARBONE_DOUX: CarbonResultDto = {
+      totalDistanceM: 2400,
+      totalCo2Grams: 0,
+      carCo2Grams: 460,
+      savedVsCarGrams: 460,
+      ecoScore: 100,
+      breakdown: [{ mode: 'WALK', distanceM: 2400, co2Grams: 0 }],
+    };
+
+    beforeEach(() => {
+      carbonService.calculate.mockResolvedValue(CARBONE_DOUX);
+    });
+
+    it('n’interroge JAMAIS le réseau : aucun segment à résoudre', async () => {
+      await service.create(MOI, dtoMarche);
+
+      expect(prisma.networkLink.findMany).not.toHaveBeenCalled();
+      expect(prisma.segment.createMany).not.toHaveBeenCalled();
+    });
+
+    it('écrit `Route.mode = WALK` et AUCUN segment', async () => {
+      await service.create(MOI, dtoMarche);
+
+      const données = premierAppel<{ mode: string; userId: string }>(
+        prisma.route.create,
+      );
+      expect(données.mode).toBe('WALK');
+      expect(données.userId).toBe(MOI);
+      expect(prisma.segment.createMany).not.toHaveBeenCalled();
+    });
+
+    it('écrit `Route.mode = BIKE` pour le vélo', async () => {
+      await service.create(MOI, dtoVelo);
+
+      expect(premierAppel<{ mode: string }>(prisma.route.create).mode).toBe(
+        'BIKE',
+      );
+      // Le calcul carbone reçoit bien le mode BIKE, pas WALK.
+      expect(carbonService.calculate).toHaveBeenCalledWith({
+        segments: [{ mode: 'BIKE', distanceM: expect.any(Number) as number }],
+      });
+    });
+
+    it('un seul CarbonRecord, à 0 g, pour le trajet entier', async () => {
+      await service.create(MOI, dtoMarche);
+
+      expect(prisma.carbonRecord.create).toHaveBeenCalledTimes(1);
+      expect(prisma.carbonRecord.createMany).not.toHaveBeenCalled();
+      const enr = premierAppel<{
+        co2Grams: number;
+        savedVsCarGrams: number;
+        mode: string;
+      }>(prisma.carbonRecord.create);
+      expect(enr.co2Grams).toBe(0);
+      expect(enr.mode).toBe('WALK');
+      expect(enr.savedVsCarGrams).toBe(460);
+    });
+
+    it('carbonEstimate 0 et ecoScore 100 sur la route', async () => {
+      await service.create(MOI, dtoMarche);
+
+      const données = premierAppel<{
+        carbonEstimate: number;
+        ecoScore: number;
+      }>(prisma.route.create);
+      expect(données.carbonEstimate).toBe(0);
+      expect(données.ecoScore).toBe(100);
+    });
+
+    it('sans routeur : distance/durée estimées à vol d’oiseau, jamais d’exception', async () => {
+      // walkRouting non configuré (défaut du beforeEach global).
+      await service.create(MOI, dtoMarche);
+
+      const données = premierAppel<{
+        totalDistanceM: number;
+        totalDurationMin: number;
+      }>(prisma.route.create);
+      expect(données.totalDistanceM).toBeGreaterThan(1000);
+      expect(données.totalDurationMin).toBeGreaterThanOrEqual(1);
+      expect(walkRouting.itineraire).not.toHaveBeenCalled();
+    });
+
+    it('avec routeur configuré : reprend la distance et la durée du routeur', async () => {
+      bikeRouting.estConfigure.mockReturnValue(true);
+      bikeRouting.itineraire.mockResolvedValue({
+        distanceM: 3120,
+        durationMin: 13,
+        geometry: { type: 'LineString', coordinates: [] },
+      });
+
+      await service.create(MOI, dtoVelo);
+
+      const données = premierAppel<{
+        totalDistanceM: number;
+        totalDurationMin: number;
+      }>(prisma.route.create);
+      expect(données.totalDistanceM).toBe(3120);
+      expect(données.totalDurationMin).toBe(13);
+    });
+
+    it('routeur en panne (rend `null`) : repli sur l’estimation, pas d’échec', async () => {
+      bikeRouting.estConfigure.mockReturnValue(true);
+      bikeRouting.itineraire.mockResolvedValue(null);
+
+      await expect(service.create(MOI, dtoVelo)).resolves.toBeDefined();
+      expect(
+        premierAppel<{ totalDistanceM: number }>(prisma.route.create)
+          .totalDistanceM,
+      ).toBeGreaterThan(1000);
+    });
+
+    it('REFUSE un trajet direct qui porte des segments', async () => {
+      await expect(
+        service.create(MOI, {
+          ...dtoMarche,
+          segments: [
+            {
+              lineId: 'ligne-marche',
+              fromStopId: 'stop-a',
+              toStopId: 'stop-b',
+            },
+          ],
+        }),
+      ).rejects.toThrow(/aucun segment/i);
+
+      expect(prisma.route.create).not.toHaveBeenCalled();
+    });
+
+    it('propage un 503 du microservice carbone, sans rien écrire', async () => {
+      carbonService.calculate.mockRejectedValue(
+        new Error('Service de calcul carbone indisponible'),
+      );
+
+      await expect(service.create(MOI, dtoMarche)).rejects.toThrow();
+      expect(prisma.route.create).not.toHaveBeenCalled();
     });
   });
 

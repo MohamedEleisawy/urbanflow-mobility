@@ -10,23 +10,17 @@ import type { ModeVoyage } from "@/lib/types";
 // Sélecteur de mode de déplacement
 // =============================================================================
 // LE VRAI DICTIONNAIRE, LE VRAI clavier. Ce qu'on éprouve, c'est le contrat :
-// trois choix quand un routeur cyclable existe, deux sinon, et un libellé qui
-// dit franchement qu'un changement relance la recherche.
+// les TROIS choix sont toujours proposés — sans routeur cyclable, le backend
+// dégrade en estimation honnête, il ne bloque pas — et un libellé dit
+// franchement qu'un changement relance la recherche.
 // =============================================================================
 
-const monter = (
-  valeur: ModeVoyage = "TRANSIT",
-  veloDisponible = false,
-) => {
+const monter = (valeur: ModeVoyage = "TRANSIT") => {
   const onChanger = vi.fn();
   render(
     <AuthProvider>
       <LangueProvider>
-        <SelecteurModeVoyage
-          valeur={valeur}
-          onChanger={onChanger}
-          veloDisponible={veloDisponible}
-        />
+        <SelecteurModeVoyage valeur={valeur} onChanger={onChanger} />
       </LangueProvider>
     </AuthProvider>,
   );
@@ -34,23 +28,22 @@ const monter = (
 };
 
 describe("SelecteurModeVoyage", () => {
-  it("propose transports et à pied, toujours", () => {
+  it("propose transports, à pied ET à vélo, toujours", () => {
     monter();
 
     expect(screen.getByRole("radio", { name: /transports/i })).toBeDefined();
     expect(screen.getByRole("radio", { name: /à pied/i })).toBeDefined();
-  });
-
-  it("CACHE le vélo tant qu'aucun routeur cyclable n'est configuré", () => {
-    monter("TRANSIT", false);
-
-    expect(screen.queryByRole("radio", { name: /à vélo/i })).toBeNull();
-  });
-
-  it("propose le vélo quand un routeur cyclable existe", () => {
-    monter("TRANSIT", true);
-
+    // ⚠️ Le vélo n'est plus conditionné à un routeur configuré : sans lui, le
+    // résultat est une estimation annoncée comme telle, jamais un blocage.
     expect(screen.getByRole("radio", { name: /à vélo/i })).toBeDefined();
+  });
+
+  it("bascule sur le vélo comme sur la marche", async () => {
+    const { onChanger } = monter("TRANSIT");
+
+    await userEvent.setup().click(screen.getByRole("radio", { name: /à vélo/i }));
+
+    expect(onChanger).toHaveBeenCalledWith("BIKE");
   });
 
   it("marque le mode courant comme sélectionné", () => {

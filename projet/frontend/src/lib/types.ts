@@ -413,6 +413,12 @@ export interface RouteHistoryItem {
   ecoScore: number;
   carbonEstimate: number;
   userId: string | null;
+  /**
+   * Mode d'un trajet DIRECT : `"WALK"` / `"BIKE"` pour un trajet enregistré
+   * via les boutons « À pied » / « À vélo » (il n'a alors AUCUN segment).
+   * `null` pour un trajet multimodal ordinaire, décrit par ses segments.
+   */
+  mode: TransportMode | null;
 }
 
 /** Réponse paginée de `GET /api/routes`. */

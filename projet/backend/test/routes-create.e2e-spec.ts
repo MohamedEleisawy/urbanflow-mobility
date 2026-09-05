@@ -539,7 +539,8 @@ describe('POST /api/routes (e2e)', () => {
         .expect(400);
     });
 
-    it('REFUSE une liste de segments vide', async () => {
+    it('REFUSE une liste de segments vide pour un trajet MULTIMODAL', async () => {
+      // Sans `mode`, c'est un trajet de réseau : au moins un segment est exigé.
       await request(app.getHttpServer())
         .post('/api/routes')
         .set('Authorization', `Bearer ${jetonA}`)
@@ -565,6 +566,164 @@ describe('POST /api/routes (e2e)', () => {
         .post('/api/routes')
         .send(corpsValide())
         .expect(401);
+    });
+  });
+
+  // ===========================================================================
+  // Trajet DIRECT — boutons « À pied » / « À vélo »
+  // ===========================================================================
+  describe('trajet direct (mode WALK / BIKE)', () => {
+    // FastAPI pour un trajet à émission nulle. `WALK_ROUTING_*` / `BIKE_ROUTING_*`
+    // ne sont pas configurés dans l'environnement de test → estimation à vol
+    // d'oiseau, `geometrySource` sans objet (aucun segment).
+    const CARBONE_ZERO = {
+      total_distance_m: 2200,
+      total_co2_g: 0,
+      car_co2_g: 422,
+      saved_g: 422,
+      eco_score: 100,
+      breakdown: [{ mode: 'WALK', distance_m: 2200, co2_g: 0 }],
+    };
+
+    const corpsDirect = (mode: 'WALK' | 'BIKE') => ({
+      originLat: 12.0,
+      originLng: 100.0,
+      destinationLat: 12.02,
+      destinationLng: 100.0,
+      mode,
+      segments: [],
+    });
+
+    // ⚠️ ROUTAGE RUE PAR RUE DÉSACTIVÉ POUR CE BLOC. Sinon `.env` pointe
+    // Valhalla, `mesurerTrajetDirect` fait un PREMIER `fetch` — et comme
+    // `simulerFastApi` rend la MÊME `Response` à chaque appel, son corps est
+    // déjà consommé quand `CarbonService` appelle `/calculate` : 503.
+    // Ici on éprouve précisément le repli sur l'estimation à vol d'oiseau.
+    const envRouteur: Record<string, string | undefined> = {};
+    beforeAll(() => {
+      for (const cle of [
+        'WALK_ROUTING_PROVIDER',
+        'WALK_ROUTING_BASE_URL',
+        'BIKE_ROUTING_PROVIDER',
+        'BIKE_ROUTING_BASE_URL',
+      ]) {
+        envRouteur[cle] = process.env[cle];
+        delete process.env[cle];
+      }
+    });
+    afterAll(() => {
+      for (const [cle, valeur] of Object.entries(envRouteur)) {
+        if (valeur === undefined) delete process.env[cle];
+        else process.env[cle] = valeur;
+      }
+    });
+
+    it('enregistre un trajet À PIED : 201, mode WALK, aucun segment', async () => {
+      simulerFastApi(CARBONE_ZERO);
+
+      const creation = await request(app.getHttpServer())
+        .post('/api/routes')
+        .set('Authorization', `Bearer ${jetonA}`)
+        .send(corpsDirect('WALK'))
+        .expect(201);
+
+      const { id } = creation.body as { id: string };
+
+      const detail = await request(app.getHttpServer())
+        .get(`/api/routes/${id}`)
+        .set('Authorization', `Bearer ${jetonA}`)
+        .expect(200);
+
+      const trajet = detail.body as {
+        mode: string;
+        segments: unknown[];
+        carbonEstimate: number;
+        ecoScore: number;
+        totalDistanceM: number;
+        carbonRecords: { mode: string; co2Grams: number }[];
+      };
+
+      expect(trajet.mode).toBe('WALK');
+      expect(trajet.segments).toEqual([]);
+      expect(trajet.carbonEstimate).toBe(0);
+      expect(trajet.ecoScore).toBe(100);
+      expect(trajet.totalDistanceM).toBeGreaterThan(1000);
+      expect(trajet.carbonRecords).toHaveLength(1);
+      expect(trajet.carbonRecords[0]).toMatchObject({
+        mode: 'WALK',
+        co2Grams: 0,
+      });
+    });
+
+    it('enregistre un trajet À VÉLO : 201, mode BIKE', async () => {
+      simulerFastApi({
+        ...CARBONE_ZERO,
+        breakdown: [{ mode: 'BIKE', distance_m: 2200, co2_g: 0 }],
+      });
+
+      const creation = await request(app.getHttpServer())
+        .post('/api/routes')
+        .set('Authorization', `Bearer ${jetonA}`)
+        .send(corpsDirect('BIKE'))
+        .expect(201);
+
+      const { id } = creation.body as { id: string };
+      const detail = await request(app.getHttpServer())
+        .get(`/api/routes/${id}`)
+        .set('Authorization', `Bearer ${jetonA}`)
+        .expect(200);
+
+      expect((detail.body as { mode: string }).mode).toBe('BIKE');
+      expect((detail.body as { segments: unknown[] }).segments).toEqual([]);
+    });
+
+    it('REFUSE un `mode` inconnu (CAR)', async () => {
+      const appel = simulerFastApi(CARBONE_ZERO);
+
+      await request(app.getHttpServer())
+        .post('/api/routes')
+        .set('Authorization', `Bearer ${jetonA}`)
+        .send({ ...corpsDirect('WALK'), mode: 'CAR' })
+        .expect(400);
+
+      expect(appel).not.toHaveBeenCalled();
+    });
+
+    it('REFUSE un trajet direct qui porte des segments', async () => {
+      const appel = simulerFastApi(CARBONE_ZERO);
+
+      await request(app.getHttpServer())
+        .post('/api/routes')
+        .set('Authorization', `Bearer ${jetonA}`)
+        .send({
+          ...corpsDirect('WALK'),
+          segments: [
+            { lineId: ligneMarche, fromStopId: stopA, toStopId: stopB },
+          ],
+        })
+        .expect(400);
+
+      expect(appel).not.toHaveBeenCalled();
+      expect(await compter(userA)).toEqual({
+        routes: 0,
+        segments: 0,
+        carbonRecords: 0,
+      });
+    });
+
+    it('reste PRIVÉ : B ne peut pas lire le trajet direct de A', async () => {
+      simulerFastApi(CARBONE_ZERO);
+
+      const creation = await request(app.getHttpServer())
+        .post('/api/routes')
+        .set('Authorization', `Bearer ${jetonA}`)
+        .send(corpsDirect('WALK'))
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .get(`/api/routes/${(creation.body as { id: string }).id}`)
+        .set('Authorization', `Bearer ${jetonB}`)
+        .expect(404);
     });
   });
 

@@ -90,6 +90,7 @@ const arret = (id: string, name: string): Stop => ({
  */
 const TRAJET: RouteDetail = {
   id: ID_TRAJET,
+  mode: null,
   originLat: 48.88,
   originLng: 2.355,
   destinationLat: 48.853,
@@ -320,6 +321,67 @@ describe("/historique/[id]", () => {
       expect(horaires[1].getAttribute("datetime")).toBe("2026-08-25T09:39:00.000Z");
       // Et un horaire lisible est bien rendu, quel qu'il soit.
       expect(horaires[0].textContent).toMatch(/^\d{2}:\d{2}$/);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Trajet direct (« À pied » / « À vélo ») — aucun segment
+  // ---------------------------------------------------------------------------
+  describe("trajet direct", () => {
+    const DIRECT = (mode: "WALK" | "BIKE"): RouteDetail => ({
+      ...TRAJET,
+      mode,
+      totalDistanceM: 900,
+      totalDurationMin: 12,
+      carbonEstimate: 0,
+      ecoScore: 100,
+      segments: [],
+      carbonRecords: [
+        {
+          id: "cr-direct",
+          date: "2026-08-25T09:30:00.000Z",
+          co2Grams: 0,
+          mode,
+          distanceM: 900,
+          savedVsCarGrams: 173,
+          userId: PROFIL.id,
+          routeId: ID_TRAJET,
+        },
+      ],
+    });
+
+    beforeEach(() => authentifier());
+
+    it("titre « entièrement à pied » et pas de liste d'étapes vide", async () => {
+      vi.mocked(detailTrajet).mockResolvedValue(DIRECT("WALK"));
+      rendre();
+
+      expect(
+        await screen.findByRole("heading", { name: /trajet entièrement à pied/i }),
+      ).toBeDefined();
+      expect(screen.getByText(/Ce trajet se fait entièrement à pied/i)).toBeDefined();
+      // Aucune étape « Arrêt inconnu → Arrêt inconnu ».
+      expect(screen.queryByText(/arrêt inconnu/i)).toBeNull();
+    });
+
+    it("titre « entièrement à vélo » pour un trajet BIKE", async () => {
+      vi.mocked(detailTrajet).mockResolvedValue(DIRECT("BIKE"));
+      rendre();
+
+      expect(
+        await screen.findByRole("heading", { name: /trajet entièrement à vélo/i }),
+      ).toBeDefined();
+      expect(screen.getByText(/itinéraire vélo estimé/i)).toBeDefined();
+    });
+
+    it("affiche 0 g de CO₂ et un éco-score de 100", async () => {
+      vi.mocked(detailTrajet).mockResolvedValue(DIRECT("WALK"));
+      rendre();
+
+      // « 0 g » apparaît au résumé ET dans l'encart d'étapes : les deux disent
+      // la même vérité.
+      expect((await screen.findAllByText("0 g")).length).toBeGreaterThan(0);
+      expect(screen.getByText("100/100")).toBeDefined();
     });
   });
 

@@ -86,6 +86,8 @@ export interface ExportedRouteDto {
   totalDistanceM: number;
   ecoScore: number;
   carbonEstimate: number;
+  /** `null` = trajet multimodal ; `WALK`/`BIKE` = trajet direct sans étape. */
+  mode: ModeTransport | null;
   /**
    * Étapes IMBRIQUÉES plutôt que listées à plat.
    *

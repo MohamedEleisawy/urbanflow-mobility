@@ -164,6 +164,24 @@ function ContenuDetail({ id }: { id: string }) {
       ajouter(segment.toStop);
     }
 
+    // Un trajet DIRECT n'a aucun arrêt : on relie ses deux BOUTS demandés,
+    // pour que la carte montre au moins la direction générale (en pointillés,
+    // via la description — ce n'est pas le chemin exact).
+    if (points.length === 0 && trajet?.mode) {
+      ajouter({
+        id: "__direct_origine__",
+        name: "Départ",
+        latitude: trajet.originLat,
+        longitude: trajet.originLng,
+      });
+      ajouter({
+        id: "__direct_destination__",
+        name: "Destination",
+        latitude: trajet.destinationLat,
+        longitude: trajet.destinationLng,
+      });
+    }
+
     return points.length > 0 ? points : null;
   }, [trajet]);
 
@@ -231,10 +249,21 @@ function Resume({ trajet, arrets }: { trajet: RouteDetail; arrets: Map<string, s
   const depart = premier ? (arrets.get(premier.fromStopId) ?? null) : null;
   const arrivee = dernier ? (arrets.get(dernier.toStopId) ?? null) : null;
 
+  // Un trajet DIRECT (« À pied » / « À vélo ») n'a aucun segment, donc aucun
+  // nom d'arrêt : son titre dit franchement de quoi il s'agit.
+  const titre =
+    trajet.mode === "WALK"
+      ? "Trajet entièrement à pied"
+      : trajet.mode === "BIKE"
+        ? "Trajet entièrement à vélo"
+        : depart && arrivee
+          ? `${depart} → ${arrivee}`
+          : "Trajet enregistré";
+
   return (
     <div>
       <h1 className="text-ink text-2xl font-semibold tracking-tight sm:text-3xl">
-        {depart && arrivee ? `${depart} → ${arrivee}` : "Trajet enregistré"}
+        {titre}
       </h1>
       <p className="mt-2 text-neutral-700">
         <time dateTime={trajet.requestedAt}>{formaterDate(trajet.requestedAt)}</time>
@@ -279,6 +308,29 @@ function Segments({ trajet, arrets }: { trajet: RouteDetail; arrets: Map<string,
       hour: "2-digit",
       minute: "2-digit",
     });
+
+  // ⚠️ UN TRAJET DIRECT N'A PAS D'ÉTAPES. Une `<ol>` vide donnerait
+  // l'impression d'un trajet incomplet : on dit à la place ce qu'il est.
+  if (trajet.segments.length === 0 && trajet.mode) {
+    return (
+      <section aria-labelledby="etapes">
+        <h2 id="etapes" className="text-ink text-lg font-semibold">
+          Étapes du trajet
+        </h2>
+        <Card>
+          <p className="text-ink font-medium">
+            {trajet.mode === "BIKE"
+              ? "Ce trajet se fait entièrement à vélo."
+              : "Ce trajet se fait entièrement à pied."}
+          </p>
+          <p className="mt-1 text-sm text-neutral-600">
+            Aucun arrêt, aucune correspondance. La distance et la durée sont
+            estimées. CO₂ : {formaterCo2(trajet.carbonEstimate)}.
+          </p>
+        </Card>
+      </section>
+    );
+  }
 
   return (
     <section aria-labelledby="etapes">
@@ -537,14 +589,24 @@ function Suppression({ id }: { id: string }) {
  * clairement plutôt que de laisser prendre un schéma pour un relevé.
  */
 function descriptionCarte(trajet: RouteDetail, traceDessine: boolean): string {
-  const etapes = trajet.segments.length;
-  const entete = `${etapes} ${etapes === 1 ? "étape" : "étapes"}, ${formaterDistance(
-    trajet.totalDistanceM,
-  )} en ${formaterDuree(trajet.totalDurationMin)}.`;
+  const entete = `${formaterDistance(trajet.totalDistanceM)} en ${formaterDuree(
+    trajet.totalDurationMin,
+  )}.`;
 
-  if (!traceDessine) {
-    return `${entete} Le tracé ne peut pas être dessiné : la position d'au moins un arrêt de ce trajet est inconnue. Les étapes restent listées ci-dessous.`;
+  // Trajet DIRECT : aucune étape, aucun arrêt. Le trait relie les deux bouts.
+  if (trajet.mode) {
+    const aVelo = trajet.mode === "BIKE";
+    return `${entete} ${
+      aVelo ? "Itinéraire vélo estimé" : "Itinéraire piéton estimé"
+    } : le trait relie le départ et l'arrivée en ligne droite, ce n'est pas le chemin réel des rues.`;
   }
 
-  return `${entete} Le tracé relie les arrêts desservis en ligne droite : c'est un schéma du trajet, pas le chemin exact suivi par le véhicule. Le détail des étapes est listé ci-dessous.`;
+  const etapes = trajet.segments.length;
+  const enteteMulti = `${etapes} ${etapes === 1 ? "étape" : "étapes"}, ${entete}`;
+
+  if (!traceDessine) {
+    return `${enteteMulti} Le tracé ne peut pas être dessiné : la position d'au moins un arrêt de ce trajet est inconnue. Les étapes restent listées ci-dessous.`;
+  }
+
+  return `${enteteMulti} Le tracé relie les arrêts desservis en ligne droite : c'est un schéma du trajet, pas le chemin exact suivi par le véhicule. Le détail des étapes est listé ci-dessous.`;
 }

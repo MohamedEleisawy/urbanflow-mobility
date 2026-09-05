@@ -243,6 +243,9 @@ export class UsersService {
             totalDistanceM: true,
             ecoScore: true,
             carbonEstimate: true,
+            // `null` pour un trajet multimodal ; `WALK`/`BIKE` pour un trajet
+            // direct enregistré via les boutons « À pied » / « À vélo ».
+            mode: true,
             segments: {
               orderBy: { departureTime: 'asc' },
               select: {

@@ -20,10 +20,12 @@ import type { ModeVoyage } from "@/lib/types";
 // mode demande donc une nouvelle recherche, comme changer d'adresse — c'est
 // écrit sous les boutons.
 //
-// ⚠️ LE VÉLO N'APPARAÎT QUE SI `bikeRouting` EST CONFIGURÉ (voir
-// `GET /api/capabilities`). Sans moteur de routage cyclable, l'itinéraire
-// vélo serait une droite à travers les immeubles : mieux vaut ne pas le
-// proposer du tout que de proposer un tracé faux.
+// ⚠️ LES TROIS BOUTONS SONT TOUJOURS PROPOSÉS. Le vélo était autrefois masqué
+// quand aucun routeur cyclable n'était configuré ; il ne l'est plus, pour la
+// même raison que la marche ne l'a jamais été : sans routeur, le backend rend
+// une ESTIMATION à vol d'oiseau, honnêtement annoncée (« Itinéraire vélo
+// estimé », tracé en pointillés, CO₂ 0). Un repli franc vaut mieux qu'un
+// bouton absent — la fonctionnalité existe, elle est simplement dégradée.
 // =============================================================================
 
 const PICTOS: Record<ModeVoyage, string> = {
@@ -32,17 +34,16 @@ const PICTOS: Record<ModeVoyage, string> = {
   BIKE: "🚲",
 };
 
+const MODES: ModeVoyage[] = ["TRANSIT", "WALK", "BIKE"];
+
 export interface SelecteurModeVoyageProps {
   valeur: ModeVoyage;
   onChanger: (mode: ModeVoyage) => void;
-  /** `bikeRouting.status === "CONFIGURED"` — sinon le vélo n'est pas proposé. */
-  veloDisponible: boolean;
 }
 
 export function SelecteurModeVoyage({
   valeur,
   onChanger,
-  veloDisponible,
 }: SelecteurModeVoyageProps) {
   const { t } = useTraduction();
 
@@ -52,9 +53,7 @@ export function SelecteurModeVoyage({
     BIKE: t.modeVoyageVelo,
   };
 
-  const modes: ModeVoyage[] = veloDisponible
-    ? ["TRANSIT", "WALK", "BIKE"]
-    : ["TRANSIT", "WALK"];
+  const modes = MODES;
 
   return (
     <fieldset>

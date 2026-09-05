@@ -75,6 +75,8 @@ export interface ExportRoute {
   totalDistanceM: number;
   ecoScore: number;
   carbonEstimate: number;
+  /** `null` = trajet multimodal ; `"WALK"`/`"BIKE"` = trajet direct sans étape. */
+  mode: TransportMode | null;
   segments: ExportSegment[];
 }
 

@@ -932,13 +932,7 @@ export default function RecherchePage() {
                   />
                 </div>
 
-                <SelecteurModeVoyage
-                  valeur={modeVoyage}
-                  onChanger={setModeVoyage}
-                  veloDisponible={
-                    capacitesInstallation?.bikeRouting.status === "CONFIGURED"
-                  }
-                />
+                <SelecteurModeVoyage valeur={modeVoyage} onChanger={setModeVoyage} />
 
                 {/* Les arrêts du réseau restent accessibles, en RETRAIT : le
                     réseau réel en compte 1 383, et une liste de cette taille

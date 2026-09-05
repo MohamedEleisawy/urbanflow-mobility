@@ -1284,6 +1284,7 @@ describe("/recherche", () => {
         ecoScore: 90,
         carbonEstimate: 12,
         userId: PROFIL.id,
+        mode: null,
         segments: [],
       });
       rendre();
@@ -1828,13 +1829,10 @@ describe("/recherche", () => {
       );
     });
 
-    it("ne propose le vélo QUE si un routeur cyclable est configuré", async () => {
-      vi.mocked(capacites).mockResolvedValue({
-        walkRouting: { status: "CONFIGURED", provider: "valhalla" },
-        bikeRouting: { status: "CONFIGURED", provider: "valhalla" },
-        transitRealtime: { status: "NOT_CONFIGURED", provider: null },
-        legal: { entityName: null, contactEmail: null, privacyContactEmail: null },
-      });
+    it("bascule la requête en « à vélo », même sans routeur cyclable configuré", async () => {
+      // Le défaut du `beforeEach` : aucun routeur (`bikeRouting` NOT_CONFIGURED).
+      // Le bouton reste proposé : le backend rendra une estimation honnête,
+      // il ne bloque pas.
       vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
       rendre();
 
@@ -1849,15 +1847,11 @@ describe("/recherche", () => {
       );
     });
 
-    it("CACHE le bouton vélo sans routeur cyclable", async () => {
-      // Le défaut du `beforeEach` : aucun routeur. Proposer « à vélo »
-      // enverrait l'usager vers un tracé en ligne droite à travers les
-      // immeubles.
+    it("propose TOUJOURS le bouton vélo", async () => {
       vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
       rendre();
 
-      await screen.findByRole("radio", { name: /transports/i });
-      expect(screen.queryByRole("radio", { name: /à vélo/i })).toBeNull();
+      expect(await screen.findByRole("radio", { name: /à vélo/i })).toBeDefined();
     });
   });
 
@@ -2132,6 +2126,85 @@ describe("/recherche", () => {
               toStopId: ARRETS[2].id,
             },
           ]);
+        });
+      });
+
+      it("enregistre un trajet À PIED : mode WALK, aucun segment", async () => {
+        // Un trajet 100 % marche n'a aucune liaison réseau : le corps porte
+        // `mode: "WALK"` et une liste de segments VIDE — le serveur recalcule
+        // distance et durée.
+        const A_PIED: Itinerary = {
+          ...RAPIDE,
+          criterion: "FASTEST",
+          segments: [],
+          walkAccess: {
+            fromLat: ARRETS[0].latitude,
+            fromLon: ARRETS[0].longitude,
+            toLat: ARRETS[2].latitude,
+            toLon: ARRETS[2].longitude,
+            stopName: "",
+            distanceM: 900,
+            durationMin: 12,
+            source: "ESTIMATE",
+            geometry: null,
+          },
+          walkEgress: null,
+        };
+        vi.mocked(rechercherItineraires).mockResolvedValue([A_PIED]);
+        vi.mocked(enregistrerItineraire).mockResolvedValue({} as never);
+        rendre();
+        const utilisateur = await chercher();
+
+        await utilisateur.click(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+        );
+
+        await waitFor(() => {
+          const corps = vi.mocked(enregistrerItineraire).mock.calls[0][0];
+          expect(corps.mode).toBe("WALK");
+          expect(corps.segments).toEqual([]);
+        });
+      });
+
+      it("enregistre un trajet À VÉLO : mode BIKE, aucun segment", async () => {
+        const A_VELO: Itinerary = {
+          ...COURT,
+          criterion: "FASTEST",
+          segments: [
+            {
+              fromStopId: "__velo_origine__",
+              fromStopName: "Départ",
+              fromStopLat: ARRETS[0].latitude,
+              fromStopLon: ARRETS[0].longitude,
+              toStopId: "__velo_destination__",
+              toStopName: "Destination",
+              toStopLat: ARRETS[2].latitude,
+              toStopLon: ARRETS[2].longitude,
+              mode: "BIKE",
+              lineName: "",
+              operator: "",
+              lineId: "__velo__",
+              gtfsLineId: null,
+              distanceM: 4200,
+              durationMin: 17,
+              geometry: null,
+              geometrySource: "STRAIGHT",
+            },
+          ],
+        };
+        vi.mocked(rechercherItineraires).mockResolvedValue([A_VELO]);
+        vi.mocked(enregistrerItineraire).mockResolvedValue({} as never);
+        rendre();
+        const utilisateur = await chercher();
+
+        await utilisateur.click(
+          await screen.findByRole("button", { name: /enregistrer le trajet le plus rapide/i }),
+        );
+
+        await waitFor(() => {
+          const corps = vi.mocked(enregistrerItineraire).mock.calls[0][0];
+          expect(corps.mode).toBe("BIKE");
+          expect(corps.segments).toEqual([]);
         });
       });
 

@@ -50,6 +50,7 @@ const trajet = (id: string, surcharge: Partial<RouteHistoryItem> = {}): RouteHis
   ecoScore: 82.4,
   carbonEstimate: 310,
   userId: PROFIL.id,
+  mode: null,
   ...surcharge,
 });
 

@@ -164,6 +164,12 @@ export interface EnregistrerItineraireRequest {
   destinationLat: number;
   destinationLng: number;
   segments: { lineId: string; fromStopId: string; toStopId: string }[];
+  /**
+   * `WALK` / `BIKE` pour un trajet DIRECT (boutons « À pied » / « À vélo ») :
+   * `segments` est alors vide, le serveur recalcule distance et durée
+   * lui-même. Absent pour un trajet multimodal ordinaire.
+   */
+  mode?: "WALK" | "BIKE";
 }
 
 /**
@@ -180,25 +186,47 @@ export type ItineraireEnregistre = RouteHistoryItem & {
 /**
  * Traduit un itinéraire trouvé en corps de requête.
  *
- * LE CLIENT DÉSIGNE, IL NE DÉCRIT PAS. Chaque segment n'envoie que le triplet
- * `(lineId, fromStopId, toStopId)` — exactement la clé unique de
- * `NetworkLink`. Le serveur ira lire lui-même le mode, la distance, la durée,
- * la ligne et l'exploitant.
+ * LE CLIENT DÉSIGNE, IL NE DÉCRIT PAS. Pour un trajet MULTIMODAL, chaque
+ * segment n'envoie que le triplet `(lineId, fromStopId, toStopId)` — exactement
+ * la clé unique de `NetworkLink`. Le serveur ira lire lui-même le mode, la
+ * distance, la durée, la ligne et l'exploitant.
  *
- * Ce que le frontend affiche (durée, distance, empreinte) reste donc à
- * l'écran, mais n'est JAMAIS transmis comme vérité : le serveur recalcule
- * tout à partir du réseau.
+ * Pour un trajet DIRECT (« À pied » / « À vélo »), il n'y a rien à désigner :
+ * aucune liaison réseau. On envoie alors `mode` et une liste de segments VIDE,
+ * et le serveur recalcule distance et durée depuis les coordonnées.
+ *
+ *   - `segments: []`                          → trajet à pied  (`mode: "WALK"`)
+ *   - un seul segment, `mode === "BIKE"`      → trajet à vélo   (`mode: "BIKE"`)
+ *   - sinon                                   → trajet multimodal (triplets)
+ *
+ * Ce que le frontend affiche (durée, distance, empreinte) reste à l'écran mais
+ * n'est JAMAIS transmis comme vérité : le serveur recalcule tout.
  */
 export function versRequeteEnregistrement(
   segments: ItinerarySegment[],
   origine: { latitude: number; longitude: number },
   destination: { latitude: number; longitude: number },
 ): EnregistrerItineraireRequest {
-  return {
+  const base = {
     originLat: origine.latitude,
     originLng: origine.longitude,
     destinationLat: destination.latitude,
     destinationLng: destination.longitude,
+  };
+
+  const modeDirect: "WALK" | "BIKE" | null =
+    segments.length === 0
+      ? "WALK"
+      : segments.length === 1 && segments[0].mode === "BIKE"
+        ? "BIKE"
+        : null;
+
+  if (modeDirect) {
+    return { ...base, mode: modeDirect, segments: [] };
+  }
+
+  return {
+    ...base,
     segments: segments.map((segment) => ({
       lineId: segment.lineId,
       fromStopId: segment.fromStopId,
