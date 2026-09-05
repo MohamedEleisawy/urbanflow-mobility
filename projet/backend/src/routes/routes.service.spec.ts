@@ -1,4 +1,5 @@
 import { BadRequestException, Logger, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CarbonService } from '../carbon/carbon.service';
 import { ScheduleService } from '../schedule/schedule.service';
@@ -785,6 +786,39 @@ describe('RoutesService', () => {
 
       await expect(service.create(MOI, dtoMarche)).rejects.toThrow();
       expect(prisma.route.create).not.toHaveBeenCalled();
+    });
+
+    it('un échec Prisma en base est JOURNALISÉ en clair, pas avalé en 500 muet', async () => {
+      // Cause typique en production : migration `route_direct_mode` non
+      // appliquée → colonne `routes.mode` absente → l'INSERT lève.
+      const erreurPrisma = new Prisma.PrismaClientKnownRequestError(
+        'The column `routes.mode` does not exist in the current database.',
+        {
+          code: 'P2022',
+          clientVersion: '6.x',
+          meta: { column: 'routes.mode' },
+        },
+      );
+      prisma.$transaction.mockRejectedValueOnce(erreurPrisma);
+      const journal = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+
+      await expect(service.create(MOI, dtoMarche)).rejects.toMatchObject({
+        // 500, mais un message générique — le détail ne va JAMAIS au client.
+        status: 500,
+        response: expect.objectContaining({
+          message: "Le trajet n'a pas pu être enregistré.",
+        }) as unknown,
+      });
+
+      // ...et la cause EXACTE est dans les journaux du serveur.
+      expect(journal).toHaveBeenCalledWith(expect.stringContaining('P2022'));
+      expect(
+        journal.mock.calls.some(([m]) => String(m).includes('routes.mode')),
+      ).toBe(true);
+
+      journal.mockRestore();
     });
   });
 

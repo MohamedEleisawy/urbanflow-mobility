@@ -270,6 +270,103 @@ describe('POST /api/routes/search — mode WALK / BIKE (e2e)', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // mode: BIKE — Valhalla RÉPOND : le tracé suit la voirie
+  // ---------------------------------------------------------------------------
+  describe("mode: 'BIKE' — routeur cyclable actif, Valhalla répond", () => {
+    // Réponse RÉELLE de `valhalla1.openstreetmap.de` (profil bicycle), tronquée :
+    // `shape` est une polyligne encodée en PRÉCISION 6, `summary` porte la
+    // longueur (km) et la durée (s). C'est exactement la forme que
+    // `valhalla.client.ts` sait lire. Décodée en précision 6 → 18 points
+    // autour de Strasbourg ; en précision 5 → en mer du Nord.
+    const VALHALLA_BICYCLE = {
+      trip: {
+        status: 0,
+        legs: [
+          {
+            shape:
+              'omht{A_jvwM~DcImIeuA}AsGoK{`@sBmNKkAMwBc@i@gHeXwAeG{AeGi@_C}HuXqBqDaByCq@mBc@oA',
+            summary: { length: 2.89, time: 625.8 },
+          },
+        ],
+      },
+    };
+
+    const envInitial: Record<string, string | undefined> = {};
+
+    beforeAll(() => {
+      for (const [cle, valeur] of Object.entries({
+        BIKE_ROUTING_PROVIDER: 'valhalla',
+        BIKE_ROUTING_BASE_URL: 'https://valhalla.test',
+      })) {
+        envInitial[cle] = process.env[cle];
+        process.env[cle] = valeur;
+      }
+    });
+
+    afterAll(() => {
+      for (const [cle, valeur] of Object.entries(envInitial)) {
+        if (valeur === undefined) delete process.env[cle];
+        else process.env[cle] = valeur;
+      }
+    });
+
+    beforeEach(() => {
+      // ⚠️ REMET LE DISJONCTEUR À ZÉRO. Les tests « BIKE » précédents ont pu
+      // l'ouvrir (le service est un singleton partagé) : on avance l'horloge
+      // au-delà de la fenêtre d'ouverture, comme `bike-routing.service.spec.ts`.
+      jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_000);
+
+      jest.spyOn(global, 'fetch').mockImplementation((entree: unknown) => {
+        const url = typeof entree === 'string' ? entree : String(entree);
+        const corps = url.endsWith('/route')
+          ? VALHALLA_BICYCLE
+          : url.endsWith('/factors')
+            ? FACTEURS
+            : CARBONE_ZERO;
+        return Promise.resolve(
+          new Response(JSON.stringify(corps), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      });
+    });
+
+    it('rend `geometrySource: ROUTED` et la polyligne de voirie décodée', async () => {
+      const reponse = await request(app.getHttpServer())
+        .post('/api/routes/search')
+        .send({ ...DEPART, ...ARRIVEE, mode: 'BIKE' })
+        .expect(200);
+
+      const [trajet] = reponse.body as {
+        totalDistanceM: number;
+        segments: {
+          mode: string;
+          geometrySource: string;
+          geometry: { type: string; coordinates: [number, number][] } | null;
+        }[];
+      }[];
+
+      const segment = trajet.segments[0];
+      expect(segment.mode).toBe('BIKE');
+      // ⚠️ LE POINT CENTRAL : un vrai tracé, pas la ligne droite.
+      expect(segment.geometrySource).toBe('ROUTED');
+      expect(segment.geometry?.type).toBe('LineString');
+      expect(segment.geometry!.coordinates.length).toBeGreaterThan(3);
+
+      // Précision 6 → autour de Strasbourg (lon ~7.74, lat ~48.58).
+      const [lon, lat] = segment.geometry!.coordinates[0];
+      expect(lon).toBeGreaterThan(7);
+      expect(lon).toBeLessThan(8);
+      expect(lat).toBeGreaterThan(48);
+      expect(lat).toBeLessThan(49);
+
+      // La distance suit le moteur (2,89 km), pas le vol d'oiseau.
+      expect(trajet.totalDistanceM).toBe(2890);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Validation
   // ---------------------------------------------------------------------------
   it('rejette un `mode` inconnu en 400', async () => {

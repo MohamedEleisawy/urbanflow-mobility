@@ -98,7 +98,14 @@ export async function itineraireValhalla(
   try {
     const reponse = await fetch(`${baseUrl.replace(/\/+$/, '')}/route`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        // ⚠️ `User-Agent` IDENTIFIABLE, exigé par la politique d'usage des
+        // services de la fondation OpenStreetMap : un client anonyme peut être
+        // limité (429) ou bloqué (403) sans préavis, surtout depuis une IP de
+        // centre de données. `fetch` de Node n'en pose pas de fiable seul.
+        'user-agent': 'UrbanFlowMobility/1.0 (+https://github.com/urbanflow)',
+      },
       body: JSON.stringify({
         locations: [
           { lat: depuis.latitude, lon: depuis.longitude },
@@ -111,7 +118,10 @@ export async function itineraireValhalla(
     });
 
     if (!reponse.ok) {
-      logger.warn(`Valhalla (${profil}) : HTTP ${reponse.status}.`);
+      logger.warn(
+        `Valhalla (${profil}) : HTTP ${reponse.status}. ` +
+          'Repli sur l’estimation à vol d’oiseau.',
+      );
       return { erreur: true };
     }
 

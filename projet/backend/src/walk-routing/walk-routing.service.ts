@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { capabilitiesConfig } from '../config/capabilities.config';
 import { Disjoncteur } from './disjoncteur';
 import {
@@ -36,9 +36,24 @@ export type { RouteGeometrieDto as WalkRouteDto } from './valhalla.client';
 // =============================================================================
 
 @Injectable()
-export class WalkRoutingService {
+export class WalkRoutingService implements OnModuleInit {
   private readonly logger = new Logger(WalkRoutingService.name);
   private readonly disjoncteur = new Disjoncteur(this.logger, 'Routeur piéton');
+
+  /** Dit au démarrage si le routage piéton rue par rue est actif (voir
+   * `BikeRoutingService.onModuleInit` pour le raisonnement). */
+  onModuleInit(): void {
+    const capacite = capabilitiesConfig().walkRouting;
+    if (capacite.status === 'CONFIGURED') {
+      this.logger.log(`Routage piéton ACTIF (${capacite.provider}).`);
+    } else {
+      this.logger.warn(
+        'Routage piéton NON CONFIGURÉ : les portions à pied seront des ' +
+          'estimations à vol d’oiseau. Renseignez WALK_ROUTING_PROVIDER et ' +
+          'WALK_ROUTING_BASE_URL.',
+      );
+    }
+  }
 
   /** Voir `Disjoncteur.ouvert`. Public pour être diagnosticable. */
   disjoncteurOuvert(maintenant = Date.now()): boolean {

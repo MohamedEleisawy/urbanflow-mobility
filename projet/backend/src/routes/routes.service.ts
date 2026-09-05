@@ -1,11 +1,13 @@
 import {
   BadRequestException,
+  HttpException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { ModeTransport, Stop } from '@prisma/client';
+import { ModeTransport, Prisma, Stop } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CarbonService } from '../carbon/carbon.service';
 import { ScheduleService } from '../schedule/schedule.service';
@@ -380,48 +382,53 @@ export class RoutesService {
 
     const segments = this.estimerHoraires(liaisons, requestedAt);
 
-    const routeId = await this.prisma.$transaction(async (tx) => {
-      const route = await tx.route.create({
-        data: {
-          originLat: dto.originLat,
-          originLng: dto.originLng,
-          destinationLat: dto.destinationLat,
-          destinationLng: dto.destinationLng,
-          requestedAt,
-          totalDistanceM,
-          totalDurationMin,
-          // Les deux valeurs autrefois déclarées par le client.
-          carbonEstimate: carbone.totalCo2Grams,
-          ecoScore: carbone.ecoScore,
-          userId,
-        },
-      });
-
-      await tx.segment.createMany({
-        data: segments.map((segment) => ({ ...segment, routeId: route.id })),
-      });
-
-      // Un CarbonRecord par SEGMENT (décision 4E) : c'est la seule
-      // granularité où `mode` et `distanceM` ont un sens exact.
-      await tx.carbonRecord.createMany({
-        data: liaisons.map((liaison, index) => ({
-          date: requestedAt,
-          mode: liaison.line.mode,
-          distanceM: liaison.distanceM,
-          co2Grams: carbone.breakdown[index].co2Grams,
-          savedVsCarGrams: this.economieDuSegment(
-            liaison.distanceM,
+    let routeId: string;
+    try {
+      routeId = await this.prisma.$transaction(async (tx) => {
+        const route = await tx.route.create({
+          data: {
+            originLat: dto.originLat,
+            originLng: dto.originLng,
+            destinationLat: dto.destinationLat,
+            destinationLng: dto.destinationLng,
+            requestedAt,
             totalDistanceM,
-            carbone,
-            index,
-          ),
-          userId,
-          routeId: route.id,
-        })),
-      });
+            totalDurationMin,
+            // Les deux valeurs autrefois déclarées par le client.
+            carbonEstimate: carbone.totalCo2Grams,
+            ecoScore: carbone.ecoScore,
+            userId,
+          },
+        });
 
-      return route.id;
-    });
+        await tx.segment.createMany({
+          data: segments.map((segment) => ({ ...segment, routeId: route.id })),
+        });
+
+        // Un CarbonRecord par SEGMENT (décision 4E) : c'est la seule
+        // granularité où `mode` et `distanceM` ont un sens exact.
+        await tx.carbonRecord.createMany({
+          data: liaisons.map((liaison, index) => ({
+            date: requestedAt,
+            mode: liaison.line.mode,
+            distanceM: liaison.distanceM,
+            co2Grams: carbone.breakdown[index].co2Grams,
+            savedVsCarGrams: this.economieDuSegment(
+              liaison.distanceM,
+              totalDistanceM,
+              carbone,
+              index,
+            ),
+            userId,
+            routeId: route.id,
+          })),
+        });
+
+        return route.id;
+      });
+    } catch (erreur) {
+      throw this.echecEnregistrement(erreur, 'multimodal', userId);
+    }
 
     // Relecture APRÈS commit : la transaction n'a plus rien à garantir ici.
     // orderBy explicite (leçon 4C-2) : sans lui, PostgreSQL ne promet aucun
@@ -430,6 +437,54 @@ export class RoutesService {
       where: { id: routeId },
       include: { segments: { orderBy: { departureTime: 'asc' } } },
     });
+  }
+
+  /**
+   * Journalise en clair un échec d'écriture d'un trajet, puis rend
+   * l'exception à relever.
+   *
+   * ═══ POURQUOI CE PASSAGE OBLIGÉ ═══
+   *
+   * Une erreur Prisma non interceptée (colonne manquante après une migration
+   * oubliée, violation de clé étrangère, type enum inconnu) remonte jusqu'à
+   * NestJS, qui répond « Internal server error » SANS RIEN dans les journaux
+   * du serveur. L'exploitant voit un 500 opaque et ne peut rien diagnostiquer.
+   *
+   * Ici, le motif EXACT est écrit (`code` Prisma, `meta`, message) — jamais
+   * renvoyé au client, toujours visible dans `docker logs backend`. Le client,
+   * lui, reçoit un 500 générique : le détail d'une panne interne ne le regarde
+   * pas.
+   *
+   * ⚠️ UNE `HttpException` DÉJÀ FORMÉE TRAVERSE INTACTE : un 400 (segments
+   * incohérents), un 422 (mode incalculable), un 503 (microservice carbone)
+   * décrivent une cause que le client PEUT comprendre. Les réécrire en 500
+   * masquerait l'information utile.
+   */
+  private echecEnregistrement(
+    erreur: unknown,
+    contexte: 'multimodal' | 'direct',
+    userId: string,
+  ): Error {
+    if (erreur instanceof HttpException) {
+      return erreur;
+    }
+
+    if (erreur instanceof Prisma.PrismaClientKnownRequestError) {
+      this.logger.error(
+        `Échec d'enregistrement d'un trajet ${contexte} (usager ${userId}) — ` +
+          `Prisma ${erreur.code} : ${erreur.message} ` +
+          `${erreur.meta ? JSON.stringify(erreur.meta) : ''}`.trim(),
+      );
+    } else {
+      this.logger.error(
+        `Échec d'enregistrement d'un trajet ${contexte} (usager ${userId})`,
+        erreur instanceof Error ? erreur.stack : String(erreur),
+      );
+    }
+
+    return new InternalServerErrorException(
+      "Le trajet n'a pas pu être enregistré.",
+    );
   }
 
   /**
@@ -472,42 +527,51 @@ export class RoutesService {
       segments: [{ mode, distanceM }],
     });
 
-    const routeId = await this.prisma.$transaction(async (tx) => {
-      const route = await tx.route.create({
-        data: {
-          originLat: dto.originLat,
-          originLng: dto.originLng,
-          destinationLat: dto.destinationLat,
-          destinationLng: dto.destinationLng,
-          requestedAt,
-          totalDistanceM: distanceM,
-          totalDurationMin: durationMin,
-          carbonEstimate: carbone.totalCo2Grams,
-          ecoScore: carbone.ecoScore,
-          mode,
-          userId,
-        },
+    let routeId: string;
+    try {
+      routeId = await this.prisma.$transaction(async (tx) => {
+        const route = await tx.route.create({
+          data: {
+            originLat: dto.originLat,
+            originLng: dto.originLng,
+            destinationLat: dto.destinationLat,
+            destinationLng: dto.destinationLng,
+            requestedAt,
+            totalDistanceM: distanceM,
+            totalDurationMin: durationMin,
+            carbonEstimate: carbone.totalCo2Grams,
+            ecoScore: carbone.ecoScore,
+            mode,
+            userId,
+          },
+        });
+
+        // AUCUN `segment.createMany` : un trajet direct n'a pas de segment.
+
+        // UN enregistrement carbone pour le trajet entier. `savedVsCarGrams`
+        // vient du microservice, jamais d'un calcul local (même refus qu'en
+        // 4D-1 pour le facteur d'ESCOOTER).
+        await tx.carbonRecord.create({
+          data: {
+            date: requestedAt,
+            mode,
+            distanceM,
+            co2Grams: carbone.totalCo2Grams,
+            savedVsCarGrams: carbone.savedVsCarGrams,
+            userId,
+            routeId: route.id,
+          },
+        });
+
+        return route.id;
       });
-
-      // AUCUN `segment.createMany` : un trajet direct n'a pas de segment.
-
-      // UN enregistrement carbone pour le trajet entier. `savedVsCarGrams`
-      // vient du microservice, jamais d'un calcul local (même refus qu'en
-      // 4D-1 pour le facteur d'ESCOOTER).
-      await tx.carbonRecord.create({
-        data: {
-          date: requestedAt,
-          mode,
-          distanceM,
-          co2Grams: carbone.totalCo2Grams,
-          savedVsCarGrams: carbone.savedVsCarGrams,
-          userId,
-          routeId: route.id,
-        },
-      });
-
-      return route.id;
-    });
+    } catch (erreur) {
+      // ⚠️ LA CAUSE LA PLUS FRÉQUENTE ICI : la migration `route_direct_mode`
+      // n'a pas été appliquée en production (`prisma migrate deploy`), donc
+      // la colonne `routes.mode` n'existe pas et l'INSERT échoue. Le motif
+      // exact est journalisé par `echecEnregistrement`.
+      throw this.echecEnregistrement(erreur, 'direct', userId);
+    }
 
     // Même forme de réponse que `create()` : la route relue, `segments: []`.
     return this.prisma.route.findUniqueOrThrow({

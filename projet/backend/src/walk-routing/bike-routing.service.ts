@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { capabilitiesConfig } from '../config/capabilities.config';
 import { Disjoncteur } from './disjoncteur';
 import {
@@ -31,9 +31,32 @@ import {
 // =============================================================================
 
 @Injectable()
-export class BikeRoutingService {
+export class BikeRoutingService implements OnModuleInit {
   private readonly logger = new Logger(BikeRoutingService.name);
   private readonly disjoncteur = new Disjoncteur(this.logger, 'Routeur vélo');
+
+  /**
+   * ⚠️ DIT AU DÉMARRAGE si le routage vélo est actif — visible dans
+   * `docker logs backend`. Sans cette ligne, un déploiement où
+   * `BIKE_ROUTING_*` a été oublié rend des tracés en ligne droite SANS le
+   * moindre indice dans les journaux : « le vélo traverse les maisons » et
+   * personne ne sait pourquoi.
+   */
+  onModuleInit(): void {
+    const capacite = capabilitiesConfig().bikeRouting;
+    if (capacite.status === 'CONFIGURED') {
+      this.logger.log(
+        `Routage vélo ACTIF (${capacite.provider}) — les tracés suivront la voirie.`,
+      );
+    } else {
+      this.logger.warn(
+        'Routage vélo NON CONFIGURÉ : les itinéraires « Vélo uniquement » ' +
+          'seront des estimations à vol d’oiseau (ligne droite, pointillés). ' +
+          'Renseignez BIKE_ROUTING_PROVIDER et BIKE_ROUTING_BASE_URL, ' +
+          'puis recréez le conteneur (`up -d --build backend`).',
+      );
+    }
+  }
 
   disjoncteurOuvert(maintenant = Date.now()): boolean {
     return this.disjoncteur.ouvert(maintenant);
