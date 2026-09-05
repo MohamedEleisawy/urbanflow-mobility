@@ -58,6 +58,32 @@ const PRECISION_VALHALLA = 6;
  */
 const DELAI_MS = 4_000;
 
+/**
+ * Nombre d'échecs consécutifs avant d'ouvrir le disjoncteur.
+ *
+ * TROIS, et non un : un échec isolé arrive — un paquet perdu, une seconde de
+ * latence. Couper dès le premier priverait le produit de tout routage piéton
+ * pour un incident sans lendemain.
+ */
+const ECHECS_AVANT_OUVERTURE = 3;
+
+/**
+ * Durée pendant laquelle on cesse d'interroger un moteur déclaré en panne.
+ *
+ * ═══ POURQUOI UN DISJONCTEUR, ET PAS SEULEMENT UN REPLI ═══
+ *
+ * Le repli sur l'estimation existait déjà : un moteur injoignable rendait
+ * `null`, et la marche redevenait une droite annoncée comme telle. Correct,
+ * mais COÛTEUX : chaque recherche d'itinéraire attendait quand même le délai
+ * complet. Un Valhalla indisponible ajoutait donc quatre secondes à CHAQUE
+ * recherche, indéfiniment.
+ *
+ * Passé ce seuil d'échecs, on arrête d'appeler : la réponse redevient
+ * instantanée, dégradée mais franche. Une minute plus tard, un appel est
+ * retenté — le service a pu revenir.
+ */
+const DUREE_OUVERTURE_MS = 60_000;
+
 /** Forme partielle de la réponse Valhalla — seuls les champs consommés. */
 interface ReponseValhalla {
   trip?: {
@@ -76,6 +102,51 @@ export interface PointGeo {
 @Injectable()
 export class WalkRoutingService {
   private readonly logger = new Logger(WalkRoutingService.name);
+
+  /// Échecs consécutifs depuis le dernier succès.
+  private echecsConsecutifs = 0;
+
+  /**
+   * Instant (ms) jusqu'auquel le moteur est considéré en panne.
+   *
+   * `0` = disjoncteur fermé, les appels passent normalement.
+   */
+  private ouvertJusqua = 0;
+
+  /**
+   * Le disjoncteur est-il ouvert — autrement dit : renonce-t-on à appeler ?
+   *
+   * ⚠️ OBSERVABLE DE L'EXTÉRIEUR À DESSEIN. Un disjoncteur qu'on ne peut pas
+   * interroger est un disjoncteur qu'on ne peut pas diagnostiquer.
+   */
+  disjoncteurOuvert(maintenant = Date.now()): boolean {
+    return maintenant < this.ouvertJusqua;
+  }
+
+  /// Un appel a abouti : le moteur répond, on repart de zéro.
+  private succes(): void {
+    if (this.echecsConsecutifs > 0 || this.ouvertJusqua !== 0) {
+      this.logger.log('Routeur piéton de nouveau disponible.');
+    }
+
+    this.echecsConsecutifs = 0;
+    this.ouvertJusqua = 0;
+  }
+
+  /// Un appel a échoué : au troisième d'affilée, on cesse d'insister.
+  private echec(): null {
+    this.echecsConsecutifs += 1;
+
+    if (this.echecsConsecutifs >= ECHECS_AVANT_OUVERTURE) {
+      this.ouvertJusqua = Date.now() + DUREE_OUVERTURE_MS;
+      this.logger.warn(
+        `Routeur piéton déclaré indisponible après ${this.echecsConsecutifs} échecs. ` +
+          `Aucun appel pendant ${DUREE_OUVERTURE_MS / 1000} s : la marche reste une estimation.`,
+      );
+    }
+
+    return null;
+  }
 
   /**
    * Le moteur est-il configuré ?
@@ -101,6 +172,13 @@ export class WalkRoutingService {
     const base = process.env.WALK_ROUTING_BASE_URL?.trim();
 
     if (!this.estConfigure() || !base) {
+      return null;
+    }
+
+    // ⚠️ AUCUN APPEL RÉSEAU QUAND LE MOTEUR EST DÉCLARÉ EN PANNE. C'est tout
+    // l'objet du disjoncteur : rendre la main immédiatement plutôt que
+    // d'attendre quatre secondes pour un échec prévisible.
+    if (this.disjoncteurOuvert()) {
       return null;
     }
 
@@ -132,10 +210,19 @@ export class WalkRoutingService {
         this.logger.warn(
           `Routeur piéton : HTTP ${reponse.status}. Repli sur l'estimation.`,
         );
-        return null;
+        return this.echec();
       }
 
-      return this.lire((await reponse.json()) as ReponseValhalla);
+      const trace = this.lire((await reponse.json()) as ReponseValhalla);
+
+      // ⚠️ UNE RÉPONSE ILLISIBLE COMPTE COMME UN ÉCHEC, une absence de chemin
+      // NON. La première signale un moteur en mauvais état ; la seconde est
+      // une réponse légitime — il arrive qu'aucun chemin piéton n'existe.
+      if (trace !== null) {
+        this.succes();
+      }
+
+      return trace;
     } catch (erreur) {
       // ⚠️ ON NE JOURNALISE PAS LES COORDONNÉES. Un trajet à pied dit où
       // quelqu'un part et où il va : les voir dans les journaux du serveur à
@@ -145,7 +232,7 @@ export class WalkRoutingService {
           erreur instanceof Error ? erreur.name : 'erreur inconnue'
         }). Repli sur l'estimation.`,
       );
-      return null;
+      return this.echec();
     }
   }
 

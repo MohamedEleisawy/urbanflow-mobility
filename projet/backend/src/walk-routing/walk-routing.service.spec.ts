@@ -200,4 +200,69 @@ describe('WalkRoutingService', () => {
       expect(trace?.durationMin).toBe(1);
     });
   });
+
+  describe('disjoncteur — un moteur en panne ne doit pas ralentir le produit', () => {
+    it('reste FERMÉ tant que les échecs sont isolés', async () => {
+      // Un échec arrive : un paquet perdu, une seconde de latence. Couper dès
+      // le premier priverait le produit de routage piéton pour rien.
+      fetchSimule.mockRejectedValueOnce(new Error('ECONNRESET'));
+      await service.itineraire(DEPUIS, VERS);
+
+      expect(service.disjoncteurOuvert()).toBe(false);
+
+      repondre(REPONSE_VALIDE);
+      await expect(service.itineraire(DEPUIS, VERS)).resolves.not.toBeNull();
+    });
+
+    it('S’OUVRE après trois échecs consécutifs', async () => {
+      fetchSimule.mockRejectedValue(new Error('ECONNREFUSED'));
+
+      for (let n = 0; n < 3; n += 1) {
+        await service.itineraire(DEPUIS, VERS);
+      }
+
+      expect(service.disjoncteurOuvert()).toBe(true);
+    });
+
+    it('N’APPELLE PLUS le réseau une fois ouvert', async () => {
+      // ⚠️ C'EST TOUT L'INTÉRÊT. Sans lui, chaque recherche d'itinéraire
+      // attendait encore le délai complet — quatre secondes ajoutées à CHAQUE
+      // recherche, indéfiniment, pour un échec prévisible.
+      fetchSimule.mockRejectedValue(new Error('ECONNREFUSED'));
+      for (let n = 0; n < 3; n += 1) await service.itineraire(DEPUIS, VERS);
+
+      const appelsAvant = fetchSimule.mock.calls.length;
+      await expect(service.itineraire(DEPUIS, VERS)).resolves.toBeNull();
+
+      expect(fetchSimule.mock.calls.length).toBe(appelsAvant);
+    });
+
+    it('se REFERME dès qu’un appel aboutit', async () => {
+      fetchSimule.mockRejectedValue(new Error('ECONNREFUSED'));
+      for (let n = 0; n < 3; n += 1) await service.itineraire(DEPUIS, VERS);
+      expect(service.disjoncteurOuvert()).toBe(true);
+
+      // Une minute plus tard, le service est revenu.
+      jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+      repondre(REPONSE_VALIDE);
+
+      await expect(service.itineraire(DEPUIS, VERS)).resolves.not.toBeNull();
+      expect(service.disjoncteurOuvert()).toBe(false);
+    });
+
+    it('ne compte PAS une absence de chemin comme une panne', async () => {
+      // ⚠️ Deux situations différentes : un moteur en mauvais état, et un
+      // moteur qui répond correctement « aucun chemin ». Confondre les deux
+      // couperait le routage pour un trajet simplement impossible à pied.
+      repondre({
+        trip: {
+          legs: [{ shape: 'uyut{AcrywM', summary: { length: 0.1, time: 60 } }],
+        },
+      });
+
+      for (let n = 0; n < 4; n += 1) await service.itineraire(DEPUIS, VERS);
+
+      expect(service.disjoncteurOuvert()).toBe(false);
+    });
+  });
 });

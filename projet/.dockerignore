@@ -1,0 +1,46 @@
+# =============================================================================
+# Ce qui n'entre JAMAIS dans une image Docker
+# =============================================================================
+# ⚠️ CE FICHIER EST UNE MESURE DE SÉCURITÉ, PAS UNE OPTIMISATION.
+#
+# Le Dockerfile de production fait `COPY backend/ ./`. Sans cette liste, cette
+# seule ligne copierait `projet/backend/.env` — donc le JWT_SECRET réel et le
+# mot de passe de la base — DANS L'IMAGE. Une image se pousse sur un registre,
+# se partage, se rejoue : le secret aurait fuité de façon irréversible.
+#
+# Le contexte de build est `./projet` : les chemins ci-dessous sont relatifs à
+# ce dossier.
+# =============================================================================
+
+# ---------- Secrets ----------
+# Toutes les variantes : .env, .env.local, .env.production…
+**/.env
+**/.env.*
+!**/.env.example
+
+# ---------- Dépendances et artefacts reconstruits dans l'image ----------
+# Les node_modules de l'hôte sont compilés pour Windows/macOS : les copier
+# dans une image Alpine casserait les binaires natifs (Prisma, esbuild).
+**/node_modules
+**/dist
+**/.next
+**/__pycache__
+**/*.pyc
+**/.venv
+**/venv
+
+# ---------- Outils de développement, inutiles en production ----------
+**/.git
+**/.gitignore
+**/coverage
+**/.eslintcache
+**/*.log
+**/.DS_Store
+**/.vscode
+**/.idea
+
+# ---------- Tests : l'image de production ne les exécute pas ----------
+backend/test
+**/*.spec.ts
+**/*.test.ts
+**/*.test.tsx
