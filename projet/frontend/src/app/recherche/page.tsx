@@ -58,6 +58,7 @@ import {
 } from "@/lib/format";
 import type {
   Itinerary,
+  ItineraryAccessibility,
   ItineraryCarbon,
   ItineraryCriterion,
   ModeVoyage,
@@ -408,7 +409,21 @@ export default function RecherchePage() {
     destination: Coordonnees;
   } | null>(null);
 
-  const { statut: statutAuth, jeton } = useAuth();
+  const { statut: statutAuth, jeton, utilisateur } = useAuth();
+
+  /**
+   * L'usager veut un itinéraire adapté au fauteuil roulant.
+   *
+   * Pré-cochée d'après la préférence du compte (`pmrMode`), mais modifiable
+   * pour CETTE recherche — et disponible aussi pour un visiteur non connecté.
+   * L'effet resynchronise sur la préférence quand elle arrive (connexion) ou
+   * change (modification depuis l'espace perso).
+   */
+  const preferencePmr = utilisateur?.preferences?.pmrMode ?? false;
+  const [pmr, setPmr] = useState(false);
+  useEffect(() => {
+    setPmr(preferencePmr);
+  }, [preferencePmr]);
 
   useEffect(() => {
     // Aucun jeton : rien à demander. Un visiteur ne déclenche donc AUCUN
@@ -777,6 +792,9 @@ export default function RecherchePage() {
         // valeur par défaut du contrat : l'envoyer explicitement n'ajoute
         // rien et alourdirait chaque requête pour rien.
         ...(modeVoyage === "TRANSIT" ? {} : { mode: modeVoyage }),
+        // `pmr` n'a de sens que pour un trajet multimodal : un trajet direct
+        // à pied ou à vélo n'emprunte aucun arrêt.
+        ...(pmr && modeVoyage === "TRANSIT" ? { pmr: true } : {}),
       });
 
       // Les deux vont ENSEMBLE : les résultats et les points qui les ont
@@ -933,6 +951,26 @@ export default function RecherchePage() {
                 </div>
 
                 <SelecteurModeVoyage valeur={modeVoyage} onChanger={setModeVoyage} />
+
+                {/* ⚠️ N'APPARAÎT QUE POUR UN TRAJET MULTIMODAL. « À pied » et
+                    « à vélo » n'empruntent aucun arrêt : la contrainte
+                    d'accessibilité des quais n'a alors aucun sens. */}
+                {modeVoyage === "TRANSIT" && (
+                  <label className="flex items-start gap-2.5 text-sm text-neutral-700">
+                    <input
+                      type="checkbox"
+                      className="accent-brand focus-visible:outline-brand mt-0.5 h-4 w-4 shrink-0 rounded border-neutral-400 focus-visible:outline-2 focus-visible:outline-offset-2"
+                      checked={pmr}
+                      onChange={(e) => setPmr(e.target.checked)}
+                    />
+                    <span>
+                      {t.pmrOption}
+                      <span className="mt-0.5 block text-xs text-neutral-500">
+                        {t.pmrOptionAide}
+                      </span>
+                    </span>
+                  </label>
+                )}
 
                 {/* Les arrêts du réseau restent accessibles, en RETRAIT : le
                     réseau réel en compte 1 383, et une liste de cette taille
@@ -1491,6 +1529,12 @@ function ItineraireCarte({
               {t.badgeClimat}
             </span>
           )}
+          {/* ⚠️ N'APPARAÎT QUE SI LA RECHERCHE PORTAIT `pmr` (le backend ne
+              pose `accessibility` que dans ce cas). « Non garanti » ≠
+              « inaccessible » : le détail est dans le titre et l'infobulle. */}
+          {itineraire.accessibility && (
+            <BadgeAccessibilite verdict={itineraire.accessibility} />
+          )}
         </div>
         <p className="text-sm text-neutral-700">
           <span className="text-ink font-medium">{formaterDuree(itineraire.totalDurationMin)}</span>{" "}
@@ -1589,6 +1633,54 @@ function ItineraireCarte({
         />
       </div>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Verdict d'accessibilité fauteuil
+// ---------------------------------------------------------------------------
+
+/**
+ * Pastille d'accessibilité, affichée uniquement quand la recherche portait
+ * la case « fauteuil roulant ».
+ *
+ * ⚠️ DEUX ÉTATS, JAMAIS « INACCESSIBLE ». Vert : tous les arrêts sont
+ * déclarés accessibles par le flux CTS. Ambre : au moins un arrêt sans
+ * information — leurs noms sont dans l'infobulle ET dans le libellé long,
+ * jamais réduits à un pictogramme.
+ */
+function BadgeAccessibilite({ verdict }: { verdict: ItineraryAccessibility }) {
+  const { t } = useTraduction();
+
+  if (verdict.guaranteed) {
+    return (
+      <span
+        className="bg-eco/10 text-eco rounded-full px-2.5 py-0.5 text-xs font-semibold"
+        title={t.itineraireAccessibleDetail}
+      >
+        <span aria-hidden="true">♿ </span>
+        {t.itineraireAccessible}
+      </span>
+    );
+  }
+
+  const liste = verdict.uncertainStops.join(", ");
+
+  return (
+    <span
+      className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800"
+      title={`${t.itineraireAccessNonGarantiDetail} ${liste}`}
+    >
+      <span aria-hidden="true">♿ </span>
+      {t.itineraireAccessNonGaranti}
+      {verdict.uncertainStops.length > 0 && (
+        <span className="font-normal">
+          {" · "}
+          {verdict.uncertainStops.length}{" "}
+          {verdict.uncertainStops.length === 1 ? "arrêt" : "arrêts"}
+        </span>
+      )}
+    </span>
   );
 }
 

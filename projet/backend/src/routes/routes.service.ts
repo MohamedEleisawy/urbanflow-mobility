@@ -17,6 +17,7 @@ import { CreateRouteDto, RouteSegmentDto } from './dto/create-route.dto';
 import { PaginationQueryDto } from './dto/pagination-query.dto';
 import { SearchRouteDto } from './dto/search-route.dto';
 import {
+  ItineraryAccessibilityDto,
   ItineraryCarbonDto,
   ItineraryCriterion,
   ItineraryDto,
@@ -55,6 +56,22 @@ interface GraphEdge {
   /// Tracé réel du tronçon (GeoJSON LineString), `null` si le flux n'en
   /// publie pas. Transporté, jamais interprété par le calcul de chemin.
   geometry: unknown;
+  /**
+   * L'arrêt d'ARRIVÉE de ce tronçon est-il GARANTI accessible en fauteuil ?
+   *
+   * `true` seulement si `Stop.pmrAccessible` vaut `true` (soit
+   * `wheelchair_boarding = 1` dans le flux GTFS). `false` couvre à la fois
+   * « déclaré non accessible » et « non renseigné » — voir
+   * `ItineraryAccessibilityDto`.
+   *
+   * ⚠️ N'ENTRE PAS DANS LE COÛT. Dijkstra ne pondère que durée et distance.
+   * Ce booléen sert UNIQUEMENT de filtre `utilisable` quand la recherche
+   * porte `pmr: true` : chaque tronçon empruntable doit arriver à un arrêt
+   * garanti. Comme tout arrêt du chemin est l'arrivée d'un tronçon (y compris
+   * le premier, via le sommet d'origine virtuel), filtrer sur l'arrivée
+   * suffit à garantir tout le parcours.
+   */
+  toPmrAccessible: boolean;
 }
 
 // Le graphe : pour chaque arrêt, la liste des déplacements qui en partent.
@@ -1050,8 +1067,11 @@ export class RoutesService {
       return this.seulementAPied(dto);
     }
 
-    const graph = this.buildGraph(links);
     const stopsById = new Map(stops.map((stop) => [stop.id, stop]));
+    const pmrById = new Map(
+      stops.map((stop) => [stop.id, stop.pmrAccessible === true]),
+    );
+    const graph = this.buildGraph(links, pmrById);
 
     // Sommet VIRTUEL relié à coût nul à chaque quai de départ : la façon la
     // plus simple d'obtenir un Dijkstra multi-source sans toucher à
@@ -1072,12 +1092,31 @@ export class RoutesService {
     const instant = this.instantDeDepart(dto);
     const lignesActives = await this.schedule.lignesActives(instant);
 
-    const chemins = this.cheminsCandidats(
+    // ═══ ITINÉRAIRE ADAPTÉ AU FAUTEUIL ═══
+    //
+    // ⚠️ DEUX PASSES, ET LA SECONDE EST UN AVEU HONNÊTE. On cherche d'abord un
+    // trajet dont TOUS les arrêts sont garantis accessibles (`pmr: true`
+    // restreint le graphe). Si rien ne sort — le réseau réel ne déclare
+    // `wheelchair_boarding = 1` que pour une minorité d'arrêts — on
+    // recommence SANS la contrainte : mieux vaut le meilleur trajet possible,
+    // marqué « accessibilité non garantie », que « aucun itinéraire ».
+    let chemins = this.cheminsCandidats(
       graph,
       idsArrivee,
       facteurs,
       lignesActives,
+      dto.pmr === true,
     );
+
+    if (dto.pmr === true && chemins.size === 0) {
+      chemins = this.cheminsCandidats(
+        graph,
+        idsArrivee,
+        facteurs,
+        lignesActives,
+        false,
+      );
+    }
 
     // ═══ LE PLUS RAPIDE, AU SENS DE L'USAGER ═══
     //
@@ -1531,6 +1570,11 @@ export class RoutesService {
     idsArrivee: ReadonlySet<string>,
     facteurs: CarbonFactorsDto | null,
     lignesActives: CirculationDuMoment | null,
+    /**
+     * `true` = ne retenir que les tronçons arrivant à un arrêt GARANTI
+     * accessible en fauteuil. Voir la double passe dans `searchRoutes`.
+     */
+    pmr: boolean,
   ): Map<ItineraryCriterion, PathStep[]> {
     const retenus = new Map<ItineraryCriterion, PathStep[]>();
 
@@ -1546,7 +1590,7 @@ export class RoutesService {
     // ligne dans `routes.txt` sans la faire figurer dans `stop_times.txt` —
     // une navette saisonnière, par exemple. La retirer du réseau amputerait
     // le graphe sans que rien ne le signale.
-    const circule = (arete: GraphEdge): boolean => {
+    const circuleAuxHoraires = (arete: GraphEdge): boolean => {
       if (lignesActives === null) {
         return true;
       }
@@ -1561,6 +1605,15 @@ export class RoutesService {
 
       return lignesActives.actives.has(arete.lineId);
     };
+
+    // ⚠️ EN MODE `pmr`, LA MARCHE N'EST PAS EXEMPTÉE. Un tronçon à pied relie
+    // deux quais ; si le quai d'arrivée n'est pas garanti accessible, la
+    // correspondance qui s'y ferait ne l'est pas non plus. Filtrer TOUS les
+    // tronçons sur leur arrivée garantit chaque arrêt du parcours.
+    const circule = pmr
+      ? (arete: GraphEdge): boolean =>
+          circuleAuxHoraires(arete) && arete.toPmrAccessible
+      : circuleAuxHoraires;
 
     const rapide = this.plusRapide(graph, idsArrivee, circule);
 
@@ -2357,6 +2410,10 @@ export class RoutesService {
         distanceM: 0,
         durationMin: 0,
         geometry: null,
+        // ⚠️ PORTE L'ACCESSIBILITÉ DU PREMIER QUAI. Sans ce champ, une
+        // recherche `pmr` pourrait faire monter l'usager à un arrêt non
+        // garanti — le filtre ne voit que l'arête, pas le sommet source.
+        toPmrAccessible: stop.pmrAccessible === true,
       })),
     );
   }
@@ -2384,6 +2441,12 @@ export class RoutesService {
       // Tracé réel, ou null quand le flux ne publie pas shapes.txt.
       geometry?: unknown;
     }[],
+    /**
+     * Accessibilité fauteuil de chaque arrêt, par identifiant. Un arrêt
+     * absent de la table — hors du cadre chargé — est traité comme non
+     * garanti (`false`).
+     */
+    pmrById: ReadonlyMap<string, boolean>,
   ): Graph {
     const graph: Graph = new Map();
 
@@ -2403,6 +2466,7 @@ export class RoutesService {
         distanceM: link.distanceM,
         durationMin: link.durationMin,
         geometry: link.geometry ?? null,
+        toPmrAccessible: pmrById.get(link.toStopId) === true,
       });
       graph.set(link.fromStopId, edges);
     }
@@ -2706,9 +2770,54 @@ export class RoutesService {
       // plutôt qu'à `null` garantit qu'aucun chemin de code ne peut rendre un
       // itinéraire dépourvu de champ carbone.
       carbon: indisponible('Empreinte non encore calculée.'),
+      // ⚠️ CALCULÉ SUR LE CHEMIN RÉELLEMENT RETENU, pas sur la passe. Que le
+      // filtre `pmr` ait abouti (passe 1) ou non (repli passe 2), le verdict
+      // se lit directement sur les arrêts empruntés — il ne peut donc pas
+      // mentir. Absent quand la recherche ne portait pas `pmr`.
+      ...(points?.pmr === true
+        ? { accessibility: this.verdictAccessibilite(steps, stopsById) }
+        : {}),
       walkAccess,
       walkEgress,
       segments,
+    };
+  }
+
+  /**
+   * Verdict d'accessibilité fauteuil d'un chemin.
+   *
+   * ⚠️ « NON GARANTI » ≠ « INACCESSIBLE ». `Stop.pmrAccessible` ne vaut `true`
+   * que sur `wheelchair_boarding = 1` ; tout le reste (`0`, `2`, absent) est
+   * « non renseigné ». On liste donc les arrêts qu'on ne peut PAS certifier,
+   * sans jamais affirmer qu'ils sont infranchissables.
+   *
+   * Un arrêt absent de `stopsById` — hors du cadre chargé — est compté comme
+   * non garanti : on ne peut rien affirmer d'un arrêt qu'on n'a pas lu.
+   */
+  private verdictAccessibilite(
+    steps: PathStep[],
+    stopsById: Map<string, Stop>,
+  ): ItineraryAccessibilityDto {
+    const ids = new Set<string>();
+    for (const step of steps) {
+      ids.add(step.fromStopId);
+      ids.add(step.edge.toStopId);
+    }
+
+    const nonGarantis: string[] = [];
+    for (const id of ids) {
+      const arret = stopsById.get(id);
+      if (!arret || arret.pmrAccessible !== true) {
+        nonGarantis.push(arret?.name ?? 'Arrêt inconnu');
+      }
+    }
+
+    return {
+      requested: true,
+      guaranteed: nonGarantis.length === 0,
+      uncertainStops: [...new Set(nonGarantis)].sort((a, b) =>
+        a.localeCompare(b, 'fr'),
+      ),
     };
   }
 

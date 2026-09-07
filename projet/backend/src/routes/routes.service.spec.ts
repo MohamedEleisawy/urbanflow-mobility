@@ -2417,5 +2417,87 @@ describe('RoutesService', () => {
         });
       });
     });
+
+    // -----------------------------------------------------------------------
+    // Accessibilité fauteuil (pmr)
+    // -----------------------------------------------------------------------
+    //
+    // Réseau : A (Gare du Nord, accessible) ──WALK──> B (Magenta, NON
+    // renseigné) ──BUS──> C (Chatelet, accessible), et A ──BUS 30 min──> C.
+    // Le plus rapide passe par B ; le direct, plus lent, ne touche que des
+    // arrêts garantis.
+    describe('accessibilité fauteuil (pmr)', () => {
+      it('ne pose AUCUN bloc `accessibility` quand la recherche ne le demande pas', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, B, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC, aVersC]);
+
+        const result = await service.searchRoutes({ ...depuisA, ...versC });
+
+        for (const itineraire of result) {
+          expect(itineraire.accessibility).toBeUndefined();
+        }
+      });
+
+      it('privilégie le trajet garanti accessible, même plus lent', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, B, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC, aVersC]);
+
+        const result = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+          pmr: true,
+        });
+
+        // Le rapide (A→B→C, 20 min) est écarté : B n'est pas garanti.
+        // Reste le direct A→C (30 min), tout accessible.
+        expect(result).toHaveLength(1);
+        expect(result[0].segments.map((s) => s.toStopName)).toEqual([
+          'Chatelet',
+        ]);
+        expect(result[0].accessibility).toEqual({
+          requested: true,
+          guaranteed: true,
+          uncertainStops: [],
+        });
+      });
+
+      it('replie honnêtement quand aucun trajet garanti n’existe', async () => {
+        // Cette fois, PAS de liaison directe : le seul chemin passe par B.
+        prisma.stop.findMany.mockResolvedValue([A, B, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
+
+        const result = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+          pmr: true,
+        });
+
+        // On rend quand même le meilleur trajet possible…
+        expect(result.length).toBeGreaterThanOrEqual(1);
+        const trajet = result[0];
+        expect(trajet.segments.map((s) => s.toStopName)).toEqual([
+          'Magenta',
+          'Chatelet',
+        ]);
+        // …mais on le DIT.
+        expect(trajet.accessibility?.requested).toBe(true);
+        expect(trajet.accessibility?.guaranteed).toBe(false);
+        expect(trajet.accessibility?.uncertainStops).toContain('Magenta');
+      });
+
+      it('ne rend jamais « aucun itinéraire » à cause d’une donnée manquante', async () => {
+        prisma.stop.findMany.mockResolvedValue([A, B, C]);
+        prisma.networkLink.findMany.mockResolvedValue([aVersB, bVersC]);
+
+        const sansPmr = await service.searchRoutes({ ...depuisA, ...versC });
+        const avecPmr = await service.searchRoutes({
+          ...depuisA,
+          ...versC,
+          pmr: true,
+        });
+
+        expect(avecPmr.length).toBe(sansPmr.length);
+      });
+    });
   });
 });

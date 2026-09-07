@@ -1798,6 +1798,112 @@ describe("/recherche", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Accessibilité fauteuil (pmr)
+  // ---------------------------------------------------------------------------
+  describe("accessibilité fauteuil (pmr)", () => {
+    const casePmr = () => screen.queryByRole("checkbox", { name: /fauteuil roulant/i });
+
+    it("propose la case pour un trajet en transports, décochée par défaut", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      const c = await screen.findByRole("checkbox", { name: /fauteuil roulant/i });
+      expect((c as HTMLInputElement).checked).toBe(false);
+    });
+
+    it("CACHE la case pour un trajet direct (à pied / à vélo)", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      const utilisateur = userEvent.setup();
+      await utilisateur.click(await screen.findByRole("radio", { name: /à pied/i }));
+
+      expect(casePmr()).toBeNull();
+    });
+
+    it("cochée, elle ajoute `pmr: true` à la requête", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      const utilisateur = userEvent.setup();
+      await utilisateur.click(await screen.findByRole("checkbox", { name: /fauteuil roulant/i }));
+      await chercher();
+
+      await waitFor(() =>
+        expect(rechercherItineraires).toHaveBeenCalledWith(
+          expect.objectContaining({ pmr: true }),
+        ),
+      );
+    });
+
+    it("est pré-cochée d'après la préférence du compte (`pmrMode`)", async () => {
+      window.localStorage.setItem("urbanflow.token", "jeton-valide");
+      vi.mocked(utilisateurCourant).mockResolvedValue({
+        ...PROFIL,
+        preferences: {
+          id: "p1",
+          preferredModes: [],
+          pmrMode: true,
+          co2BudgetWeekly: 0,
+          notificationsEnabled: true,
+          language: "FR",
+          theme: "SYSTEM",
+          userId: PROFIL.id,
+        },
+      });
+      vi.mocked(rechercherItineraires).mockResolvedValue([RAPIDE]);
+      rendre();
+
+      await waitFor(() =>
+        expect(
+          (screen.getByRole("checkbox", { name: /fauteuil roulant/i }) as HTMLInputElement)
+            .checked,
+        ).toBe(true),
+      );
+      await chercher();
+
+      await waitFor(() =>
+        expect(rechercherItineraires).toHaveBeenCalledWith(
+          expect.objectContaining({ pmr: true }),
+        ),
+      );
+    });
+
+    it("affiche « Itinéraire accessible » quand le backend le garantit", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        {
+          ...RAPIDE,
+          accessibility: { requested: true, guaranteed: true, uncertainStops: [] },
+        },
+      ]);
+      rendre();
+      await chercher();
+
+      expect(await screen.findByText(/itinéraire accessible en fauteuil/i)).toBeDefined();
+    });
+
+    it("affiche « Accessibilité non garantie » + le nom des arrêts inconnus", async () => {
+      vi.mocked(rechercherItineraires).mockResolvedValue([
+        {
+          ...RAPIDE,
+          accessibility: {
+            requested: true,
+            guaranteed: false,
+            uncertainStops: ["Magenta", "Barbès"],
+          },
+        },
+      ]);
+      rendre();
+      await chercher();
+
+      const badge = await screen.findByText(/accessibilité non garantie/i);
+      expect(badge).toBeDefined();
+      // Les noms des arrêts non garantis sont dans l'infobulle — jamais cachés.
+      expect(badge.closest("span")?.getAttribute("title")).toMatch(/Magenta.*Barbès/);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Mode de déplacement (à pied / à vélo / transports)
   // ---------------------------------------------------------------------------
   describe("mode de déplacement", () => {

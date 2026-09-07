@@ -299,6 +299,39 @@ export interface ItineraryWalkLegDto {
   geometry: LineStringGeoJson | null;
 }
 
+/**
+ * Verdict d'accessibilité d'un itinéraire, présent UNIQUEMENT quand l'usager
+ * a demandé un trajet adapté au fauteuil roulant (`pmr: true`).
+ *
+ * ═══ POURQUOI `guaranteed` ET NON `accessible` ═══
+ *
+ * Le flux GTFS n'affirme l'accessibilité d'un arrêt que par
+ * `wheelchair_boarding = 1`. Les codes `0`, `2` et l'absence de valeur veulent
+ * tous dire « non renseigné » — et non « inaccessible ». On ne peut donc
+ * jamais dire « cet itinéraire est inaccessible », seulement « tous ses arrêts
+ * sont GARANTIS accessibles » ou « au moins un arrêt n'est pas garanti ».
+ *
+ * C'est la même règle que partout ailleurs dans ce projet : une donnée
+ * manquante se dit, elle ne se devine pas.
+ */
+export interface ItineraryAccessibilityDto {
+  /** Toujours `true` ici : ce bloc n'existe que sur demande explicite. */
+  requested: true;
+
+  /**
+   * `true` si CHAQUE arrêt emprunté (montée, descente, correspondance) porte
+   * `wheelchair_boarding = 1` dans le flux GTFS.
+   */
+  guaranteed: boolean;
+
+  /**
+   * Noms des arrêts dont l'accessibilité n'est PAS garantie par le flux.
+   * Vide quand `guaranteed` vaut `true`. Sert à afficher « 2 arrêts sans
+   * information » plutôt qu'un simple « non garanti ».
+   */
+  uncertainStops: string[];
+}
+
 export interface ItineraryDto {
   // Permet au client de savoir à quelle question cet itinéraire répond,
   // sans avoir à comparer les totaux lui-même.
@@ -362,6 +395,12 @@ export interface ItineraryDto {
 
   /// Empreinte de cet itinéraire, ou l'aveu qu'elle est incalculable.
   carbon: ItineraryCarbonDto;
+
+  /**
+   * Verdict d'accessibilité fauteuil. Présent UNIQUEMENT quand la recherche
+   * portait `pmr: true` ; absent sinon (le cas courant).
+   */
+  accessibility?: ItineraryAccessibilityDto;
 
   /**
    * Marche d'approche : du point de départ demandé au premier arrêt.

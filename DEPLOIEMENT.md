@@ -194,17 +194,106 @@ docker compose --env-file .env.production \
 autorisé et le frontend Vercel se verra refuser **toutes** ses requêtes.
 `APP_PUBLIC_URL` sert au lien de réinitialisation de mot de passe.
 
+## 9. Promouvoir un compte administrateur
+
+Il n'existe **aucune route HTTP** de promotion, et c'est voulu : personne ne
+pourrait l'appeler légitimement tant qu'aucun administrateur n'existe. La
+promotion se fait en ligne de commande, depuis le serveur — celui qui y a accès
+a déjà plus de pouvoir que n'importe quelle route ne lui en donnerait.
+
+⚠️ **La commande de production n'est PAS `npm run admin:promote`.** Ce script
+passe par `ts-node`, absent de l'image de production. Le CLI compilé
+(`dist/`, produit par `nest build`) est utilisé à la place :
+
+```bash
+# Le compte doit s'être inscrit normalement AU PRÉALABLE (page /inscription).
+docker compose --env-file .env.production -f docker-compose.production.yml \
+  exec backend node dist/users/user-promote.cli.js mon-email@example.com
+```
+
+Sortie attendue :
+
+```
+mon-email@example.com est désormais administrateur (ADMIN).
+Cette personne doit se RECONNECTER pour que son jeton porte le nouveau rôle.
+```
+
+La commande :
+
+- refuse un email inconnu (`Aucun utilisateur avec l'email …`, code de sortie 1) ;
+- refuse un compte supprimé ;
+- ne touche **que** le champ `role` — jamais l'email, le mot de passe, les préférences ;
+- n'affiche jamais `passwordHash` ni `JWT_SECRET` ;
+- est idempotente : relancée sur un compte déjà ADMIN, elle le signale sans rien écrire.
+
+Après reconnexion, le lien « Administration » apparaît dans l'en-tête et
+`/mon-espace` affiche « Administrateur ». Vérifier la session courante :
+
+```bash
+curl -s https://api.mon-domaine.fr/api/users/me -H "Authorization: Bearer <JWT>"
+# → { "id", "email", "role": "ADMIN", "createdAt", "preferences" } — jamais passwordHash
+```
+
 ---
 
 ## Mettre à jour l'application
+
+⚠️ **`migrate deploy` N'EST PAS OPTIONNEL.** Une mise à jour qui ajoute une
+colonne (par ex. `routes.mode` pour les trajets marche/vélo directs) et qu'on
+oublie de migrer produit un **500 « Internal server error » à l'enregistrement
+d'un trajet** : le code écrit une colonne que la base n'a pas encore. Le motif
+exact est alors visible dans `docker logs backend` (`Prisma P2022 …`).
 
 ```bash
 git pull
 docker compose --env-file .env.production \
   -f docker-compose.production.yml -f docker-compose.caddy.yml up -d --build
+# TOUJOURS après un up qui a reconstruit l'image :
 docker compose --env-file .env.production \
   -f docker-compose.production.yml exec backend npx prisma migrate deploy
 ```
+
+## Dépannage
+
+### « Internal server error » à l'enregistrement d'un trajet
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml \
+  logs --tail=50 backend | grep -i "enregistrement\|Prisma"
+```
+
+- `Prisma P2022 … routes.mode` → migration oubliée : lancez `migrate deploy` (ci-dessus).
+- `P2003` (clé étrangère) ou `503 carbone` → le microservice carbone ne répond
+  pas ; vérifiez `docker compose … ps` (le service `carbon-service` doit être `Up`).
+
+### Le tracé vélo (ou piéton) traverse les maisons en ligne droite
+
+Le routage rue par rue n'est pas actif. Au démarrage, le backend le dit :
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml \
+  logs backend | grep -i "Routage vélo\|Routage piéton"
+# Attendu : « Routage vélo ACTIF (valhalla) »
+# Sinon   : « Routage vélo NON CONFIGURÉ … »
+```
+
+Vérification publique :
+
+```bash
+curl -s https://api.mon-domaine.fr/api/capabilities
+# bikeRouting doit être { "status": "CONFIGURED", "provider": "valhalla" }
+```
+
+Depuis cette version, `docker-compose.production.yml` **pointe par défaut sur
+l'instance publique Valhalla d'OpenStreetMap** (`valhalla1.openstreetmap.de`).
+Un simple `up -d --build backend` suffit donc à réactiver le routage — il n'y a
+plus rien à ajouter dans `.env.production`. Pour héberger votre propre Valhalla,
+renseignez `WALK_ROUTING_BASE_URL` / `BIKE_ROUTING_BASE_URL`.
+
+Si le service est réellement injoignable depuis le serveur (pare-feu sortant,
+quota atteint), le disjoncteur le journalise et le tracé retombe **honnêtement**
+sur une estimation en pointillés — jamais une ligne droite présentée comme une
+vraie route.
 
 ## Sauvegarder la base
 
@@ -217,7 +306,8 @@ docker compose --env-file .env.production -f docker-compose.production.yml \
 
 | Service | Rôle | Si indisponible |
 |---|---|---|
-| Valhalla (OSM) | tracé piéton rue par rue | La marche redevient une **estimation à vol d'oiseau**, annoncée comme telle et tracée en pointillés. Un disjoncteur cesse d'appeler pendant 60 s après 3 échecs, pour que la recherche reste rapide. **Vérifié en conditions réelles.** |
+| Valhalla (OSM) — profil `pedestrian` | tracé piéton rue par rue | La marche redevient une **estimation à vol d'oiseau**, annoncée comme telle et tracée en pointillés. Un disjoncteur cesse d'appeler pendant 60 s après 3 échecs, pour que la recherche reste rapide. **Vérifié en conditions réelles.** |
+| Valhalla (OSM) — profil `bicycle` | tracé vélo rue par rue (bouton « Vélo uniquement ») | Le trajet vélo devient une **estimation à vol d'oiseau** (« Itinéraire vélo estimé », pointillés). Disjoncteur propre au profil vélo : une panne côté `bicycle` ne coupe pas le piéton. Le bouton « Vélo uniquement » reste proposé — le repli est honnête, pas un blocage. |
 | Nominatim (OSM) | recherche d'adresses | `503` sur `/api/geocoding/search`, avec un message clair. Le reste de l'API continue de fonctionner. |
 | Vélhop (nextbike) | vélos en libre-service | La couche vélo affiche « données indisponibles ». Aucune station inventée. |
 | carbon-service | calcul du CO₂ | Les itinéraires sont rendus avec `carbon.status = CARBON_UNAVAILABLE` et des champs à `null` — **jamais 0 g**. |

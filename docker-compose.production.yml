@@ -87,8 +87,17 @@ services:
 
       # ---- Sources extérieures ----
       BIKE_GBFS_URL: ${BIKE_GBFS_URL}
-      WALK_ROUTING_PROVIDER: ${WALK_ROUTING_PROVIDER}
-      WALK_ROUTING_BASE_URL: ${WALK_ROUTING_BASE_URL}
+
+      # ⚠️ ROUTAGE RUE PAR RUE — DÉFAUT SUR L'INSTANCE PUBLIQUE VALHALLA (OSM).
+      # `${VAR:-défaut}` : si la variable est absente de `.env.production`, on
+      # retombe sur l'instance communautaire gratuite plutôt que de laisser le
+      # routage DÉSACTIVÉ en silence — c'est ce qui faisait tracer les
+      # itinéraires piéton/vélo en ligne droite à travers les maisons.
+      # Pour héberger votre propre Valhalla, renseignez ces variables.
+      WALK_ROUTING_PROVIDER: ${WALK_ROUTING_PROVIDER:-valhalla}
+      WALK_ROUTING_BASE_URL: ${WALK_ROUTING_BASE_URL:-https://valhalla1.openstreetmap.de}
+      BIKE_ROUTING_PROVIDER: ${BIKE_ROUTING_PROVIDER:-valhalla}
+      BIKE_ROUTING_BASE_URL: ${BIKE_ROUTING_BASE_URL:-https://valhalla1.openstreetmap.de}
 
       # ---- Identité légale (RGPD) ----
       # Vides, les pages légales affichent un encadré « installation de

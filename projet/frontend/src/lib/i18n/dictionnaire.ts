@@ -94,6 +94,15 @@ const FR = {
     "Marche + tram/bus + marche, avec plusieurs itinéraires comparés.",
   modeVoyageAideDirect:
     "Trajet d'une seule pièce. Changer de mode relance une recherche.",
+  pmrOption: "Privilégier les arrêts accessibles en fauteuil roulant",
+  pmrOptionAide:
+    "D'après le flux CTS. Si aucun trajet entièrement accessible n'existe, le meilleur trajet possible est affiché avec la mention « non garanti ».",
+  itineraireAccessible: "Itinéraire accessible en fauteuil",
+  itineraireAccessibleDetail:
+    "Tous les arrêts empruntés sont déclarés accessibles par le flux CTS.",
+  itineraireAccessNonGaranti: "Accessibilité non garantie",
+  itineraireAccessNonGarantiDetail:
+    "Le flux CTS ne renseigne pas l'accessibilité de ces arrêts — ce n'est pas « inaccessible », c'est « inconnu » :",
 
   rechercheEnCours: "Recherche en cours…",
   // ⚠️ DISTINCT du libellé du bouton : les deux apparaissent EN MÊME TEMPS
@@ -355,6 +364,15 @@ const EN: typeof FR = {
     "Walk + tram/bus + walk, with several itineraries compared.",
   modeVoyageAideDirect:
     "A single-leg trip. Changing mode runs a new search.",
+  pmrOption: "Prefer wheelchair-accessible stops",
+  pmrOptionAide:
+    "Based on the CTS feed. If no fully accessible route exists, the best available route is shown, marked “not guaranteed”.",
+  itineraireAccessible: "Wheelchair-accessible route",
+  itineraireAccessibleDetail:
+    "Every stop on this route is reported accessible by the CTS feed.",
+  itineraireAccessNonGaranti: "Accessibility not guaranteed",
+  itineraireAccessNonGarantiDetail:
+    "The CTS feed gives no accessibility information for these stops — that means “unknown”, not “inaccessible”:",
 
   rechercheEnCours: "Searching…",
   rechercheIndicateur: "Looking for routes…",
@@ -591,6 +609,15 @@ const ES: typeof FR = {
     "A pie + tranvía/autobús + a pie, con varios itinerarios comparados.",
   modeVoyageAideDirect:
     "Un trayecto de un solo tramo. Cambiar de modo lanza una nueva búsqueda.",
+  pmrOption: "Priorizar las paradas accesibles en silla de ruedas",
+  pmrOptionAide:
+    "Según los datos de la CTS. Si no existe una ruta totalmente accesible, se muestra la mejor ruta posible con la indicación «no garantizada».",
+  itineraireAccessible: "Itinerario accesible en silla de ruedas",
+  itineraireAccessibleDetail:
+    "Todas las paradas de este itinerario figuran como accesibles en los datos de la CTS.",
+  itineraireAccessNonGaranti: "Accesibilidad no garantizada",
+  itineraireAccessNonGarantiDetail:
+    "Los datos de la CTS no indican la accesibilidad de estas paradas — significa «desconocida», no «inaccesible»:",
 
   rechercheEnCours: "Buscando…",
   rechercheIndicateur: "Buscando itinerarios…",

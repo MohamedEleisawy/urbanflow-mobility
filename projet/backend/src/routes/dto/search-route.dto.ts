@@ -1,4 +1,6 @@
+import { Transform } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsISO8601,
   IsLatitude,
@@ -74,4 +76,38 @@ export class SearchRouteDto {
   @IsOptional()
   @IsIn(['TRANSIT', 'WALK', 'BIKE'])
   mode?: 'TRANSIT' | 'WALK' | 'BIKE';
+
+  /**
+   * L'usager demande un itinéraire ADAPTÉ AU FAUTEUIL ROULANT.
+   *
+   * ═══ CE QUE CE DRAPEAU FAIT ═══
+   *
+   * Le moteur PRIVILÉGIE les arrêts que le flux GTFS déclare accessibles
+   * (`wheelchair_boarding = 1`). Si un itinéraire entièrement accessible
+   * existe, c'est celui-là qui est rendu — même s'il est plus lent.
+   *
+   * ═══ CE QU'IL NE FAIT PAS ═══
+   *
+   * ⚠️ IL N'INVENTE RIEN. `wheelchair_boarding` vaut 0, 2 ou est absent pour
+   * la plupart des arrêts : cela signifie « inconnu », PAS « inaccessible ».
+   * Quand aucun trajet entièrement garanti n'existe, le moteur rend le
+   * meilleur trajet possible ET le signale (`accessibility.guaranteed =
+   * false`, liste des arrêts non garantis). Il ne renvoie jamais « aucun
+   * itinéraire » parce qu'une donnée manque.
+   *
+   * ⚠️ IL NE VÉRIFIE PAS LES TROTTOIRS : seule l'accessibilité des ARRÊTS est
+   * connue, pas celle du cheminement piéton entre l'adresse et le quai.
+   *
+   * ⚠️ FACULTATIF. Absent = pas de préférence, comportement inchangé.
+   * `@Transform` : le drapeau arrive en `"true"`/`"false"` depuis une query
+   * ou en booléen depuis un corps JSON — les deux doivent être acceptés.
+   */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }): unknown => {
+    if (value === true || value === 'true') return true;
+    if (value === false || value === 'false') return false;
+    return value;
+  })
+  @IsBoolean()
+  pmr?: boolean;
 }

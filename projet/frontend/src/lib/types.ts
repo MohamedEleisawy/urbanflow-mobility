@@ -162,6 +162,29 @@ export interface SearchItineraryRequest {
    *                       un seul itinéraire, sans arrêt ni correspondance.
    */
   mode?: ModeVoyage;
+
+  /**
+   * `true` : privilégier les arrêts que le flux GTFS déclare accessibles en
+   * fauteuil roulant. Le backend rend alors un trajet entièrement garanti si
+   * possible, sinon le meilleur trajet possible marqué « non garanti »
+   * (`Itinerary.accessibility`). Jamais « aucun itinéraire » faute de donnée.
+   */
+  pmr?: boolean;
+}
+
+/**
+ * Verdict d'accessibilité d'un itinéraire — présent UNIQUEMENT quand la
+ * recherche portait `pmr: true`.
+ *
+ * ⚠️ `guaranteed: false` NE VEUT PAS DIRE « INACCESSIBLE ». Le flux GTFS
+ * n'affirme l'accessibilité que par `wheelchair_boarding = 1` ; tout le reste
+ * est « non renseigné ». `uncertainStops` liste les arrêts qu'on ne peut pas
+ * certifier — pas ceux qu'on sait infranchissables.
+ */
+export interface ItineraryAccessibility {
+  requested: true;
+  guaranteed: boolean;
+  uncertainStops: string[];
 }
 
 /**
@@ -342,6 +365,12 @@ export interface Itinerary {
    */
   numberOfTransfers: number;
   carbon: ItineraryCarbon;
+
+  /**
+   * Verdict d'accessibilité fauteuil. Présent uniquement si la recherche
+   * portait `pmr: true` ; absent sinon (le cas courant).
+   */
+  accessibility?: ItineraryAccessibility;
 
   /**
    * Marche d'approche : du point demandé au premier arrêt.
